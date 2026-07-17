@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>GLITCH_BOOTH_TERMINAL</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body { 
+            background: #000; 
+            color: #00ff00; 
+            font-family: 'Courier New', Courier, monospace; 
+            margin: 0; 
+            padding: 20px;
+            text-transform: uppercase;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }
+
+        /* Right-align all text */
+        .text-right { text-align: right; width: 100%; }
+
+        .header { border-bottom: 1px solid #00ff00; padding-bottom: 10px; margin-bottom: 5px; }
+        
+        /* Center image and QR */
+        .media-center {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            margin: 15px 0;
+        }
+
+        img.main-capture { 
+            max-width: 100%; 
+            border: 1px solid #00ff00; 
+        }
+
+        /* QR without border */
+        .qr-area { 
+            width: 200px; 
+            height: 200px; 
+            margin-top: 20px;
+        }
+        .qr-img { width: 100%; height: 100%; display: none; border: none; }
+
+        .footer { margin-top: auto; padding-top: 20px; }
+    </style>
+</head>
+<body>
+    <div class="header text-left">
+        <div>> SYS_ID: {{ latest_id }}</div>
+        <div>> STATUS: CAPTURE_SAVED</div>
+        <div id="status">INIT_UPLOADING...</div>
+    </div>
+    
+    <div class="media-center">
+        <img class="main-capture" src="/captures/{{ latest_id }}_color.jpg" alt="DATA_STREAM">
+        
+        <div class="qr-area">
+            <img id="qr-img" class="qr-img" src="" alt="LINK_QR">
+        </div>
+        <div class="footer text-left">
+            <div>> PRESS BUTTON TO RETURN TO LIVE VIEW</div>
+        </div>
+    </div>
+
+    <script>
+        const statusEl = document.getElementById('status');
+        const qrImg = document.getElementById('qr-img');
+
+        async function updateState() {
+            try {
+                const response = await fetch('/state');
+                const data = await response.json();
+
+                if (data.upload_status === "SUCCESS") {
+                    statusEl.innerText = "> UPLOAD_COMPLETE";
+                    qrImg.src = `/saved/${data.latest_id}_qr.png`;
+                    qrImg.style.display = "block";
+                } 
+                else if (data.upload_status === "FAILED") {
+                    statusEl.innerText = "ERROR: CLOUD_SYNC_FAILED";
+                }
+
+                if (data.mode === "live") {
+                    window.location.href = "/";
+                }
+            } catch (e) {
+                console.error("POLL_ERR", e);
+            }
+        }
+
+        setInterval(updateState, 500);
+    </script>
+
+    <script src="/static/audio.js"></script>
+</body>
+</html>
+

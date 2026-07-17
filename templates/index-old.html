@@ -1,0 +1,247 @@
+<html>
+
+<head>
+
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<title>GLITCH BOOTH</title>
+
+<style>
+
+body{
+    margin:0;
+    background:black;
+    color:#00ff00;
+    font-family:monospace;
+    display:flex;
+    justify-content:center;
+    padding:20px;
+}
+
+.wrap{
+    width:100%;
+    max-width:420px;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:12px;
+    position:relative;
+}
+
+img{
+    width:95%;
+    border:2px solid #00ff00;
+    transform: scaleX(-1); /* Hardware accelerated mirror layer */
+}
+
+.panel{
+    width:95%;
+    border-top:1px solid #00ff00;
+    padding-top:10px;
+}
+
+.row{
+    display:flex;
+    justify-content:space-between;
+    margin:4px 0;
+}
+
+/* ============================= */
+/* COUNTDOWN OVERLAY */
+/* ============================= */
+
+#countdownOverlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background-color: rgba(0, 0, 0, 0.92);
+    z-index: 9999;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-family: monospace;
+    color: #00ff00;
+}
+
+#countdownNumber {
+    font-size: 140px;
+    font-weight: bold;
+    color: #00ff00;
+    text-shadow: 0 0 18px rgba(0, 255, 0, 0.6);
+}
+
+#countdownStatus {
+    font-size: 18px;
+    letter-spacing: 4px;
+    color: #00ff00;
+    opacity: 0.65;
+    text-transform: uppercase;
+    margin-top: 20px;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="wrap">
+
+<div>
+    <div>> GLITCH BOOTH alpha</div>
+</div>
+
+<img
+    id="feed"
+    src="/video_feed"
+    draggable="false"
+    decoding="async"
+>
+
+<div class="panel">
+
+<div class="row">Corruption <span id="k0"></span></div>
+<div class="row">Signal Drift <span id="k1"></span></div>
+<div class="row">Data Mosh <span id="k2"></span></div>
+<div class="row">Compression Damage <span id="k3"></span></div>
+<div class="row">Pixel Melt <span id="k4"></span></div>
+<div class="row">Chroma Chaos <span id="k5"></span></div>
+
+</div>
+
+<div class="panel">
+    <div>> TURN THE KNOBS</div>
+    <div>> COMBINE EFFECTS</div>
+    <div>> SET GLITCH STRENGTH</div>
+    <div>> AS YOU LIKE, PLAY!</div>
+    <div>> PRESS BUTTON TO CAPTURE.</div>
+    <div>> YOUR PRINT WILL BE READY</div>
+    <div>> "ALMOST" INSTANTLY :)</div>
+</div>
+
+</div>
+
+<!-- COUNTDOWN OVERLAY -->
+<div id="countdownOverlay">
+    <div id="countdownNumber">3</div>
+    <div id="countdownStatus">GET READY</div>
+</div>
+
+<script>
+let lastMode = "live";
+
+// ------------------------------------------------------------------
+// REACTIVE TELEMETRY & STATE POLLING LOOP
+// ------------------------------------------------------------------
+async function update(){
+    try {
+        const r = await fetch('/state');
+        const d = await r.json();
+
+        // Synchronize physical knob status labels smoothly
+        for(let i=0; i<6; i++){
+            const el = document.getElementById('k'+i);
+            if(el) el.innerText = d.knobs[i];
+        }
+
+        const overlay = document.getElementById("countdownOverlay");
+        const numDisplay = document.getElementById("countdownNumber");
+        const statusDisplay = document.getElementById("countdownStatus");
+
+        // --- UNIFIED TELEMETRY STATE MACHINE MAPPING ---
+        
+        // STATE 1: BACKEND COUNTDOWN (Driven deterministically by hardware clock)
+        if (d.mode === "countdown") {
+            overlay.style.display = "flex";
+            numDisplay.innerText = d.countdown_seconds;
+            
+            // Map status text dynamically to match the backend phase pacing exactly
+            if (d.countdown_seconds === 3) {
+                statusDisplay.innerText = "CAPTURING FRAME...";
+            } else if (d.countdown_seconds === 2) {
+                statusDisplay.innerText = "PROCESSING GLITCH DATA...";
+            } else if (d.countdown_seconds === 1) {
+                statusDisplay.innerText = "SPOOLING TO HARDWARE...";
+            }
+        } 
+        
+        // STATE 2: HARDWARE PROCESSING GATING NODE
+        else if (d.mode === "processing") {
+            overlay.style.display = "flex";
+            numDisplay.innerText = "::";
+            statusDisplay.innerText = "FINALIZING PRINT...";
+        } 
+        
+        // STATE 3: REVIEW SCREEN REDIRECT (Triggered instantly upon print dispatch)
+        else if (d.mode === "latest") {
+            // Break loop immediately and push user to the terminal layout
+            window.location.href = "/latest?id=" + d.session_id;
+            return;
+        } 
+        
+        // STATE 4: DEFAULT LIVE VIEWPORT MONITOR
+        else if (d.mode === "live") {
+            overlay.style.display = "none";
+        }
+
+        lastMode = d.mode;
+
+        // Fallback live image canvas safety channel
+        const liveImg = document.querySelector('img[src^="/video_feed"]');
+        if (liveImg && liveImg.naturalWidth === 0) {
+            liveImg.src = "/video_feed?t=" + new Date().getTime();
+        }
+    } catch (err) {
+        console.error("TELEMETRY_POLL_LINK_DROPPED", err);
+    }
+}
+
+// Fixed low-overhead polling check execution cycle
+setInterval(update, 500);
+</script>
+
+<script>
+const feed = document.getElementById("feed");
+
+let lastFrameId = -1;
+let stalledCount = 0;
+
+async function monitorFeed() {
+    try {
+        const response = await fetch("/state");
+        const data = await response.json();
+
+        if (data.frame_id === lastFrameId) {
+            stalledCount++;
+        } else {
+            stalledCount = 0;
+        }
+
+        lastFrameId = data.frame_id;
+
+        // Only reconnect after repeated stalls
+        if (stalledCount >= 5) {
+            console.log("MJPEG stream stalled. Reconnecting...");
+
+            feed.src = "";
+            feed.src = "/video_feed?t=" + Date.now();
+
+            stalledCount = 0;
+        }
+
+    } catch (err) {
+        console.log("Feed monitor error:", err);
+    }
+}
+
+setInterval(monitorFeed, 2000);
+</script>
+
+<script src="/static/audio.js"></script>
+
+</body>
+</html>
+

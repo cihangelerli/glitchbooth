@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Glitch Booth Gallery</title>
+
+<style>
+    * { box-sizing: border-box; }
+
+    body {
+        margin: 0; padding: 0;
+        background: #000; color: #fff;
+        font-family: Arial, Helvetica, sans-serif;
+    }
+
+    .topbar {
+        position: sticky; top: 0; z-index: 100;
+        background: rgba(0, 0, 0, 0.92);
+        backdrop-filter: blur(8px);
+        border-bottom: 1px solid #222;
+        padding: 14px;
+    }
+
+    .topbar-inner { max-width: 1200px; margin: 0 auto; }
+
+    .title {
+        font-size: 20px; font-weight: bold;
+        margin-bottom: 12px; letter-spacing: 1px;
+    }
+
+    .controls { 
+        display: flex; 
+        gap: 8px; 
+        align-items: center;
+        justify-content: space-between; /* Aligns Refresh left and Menu right */
+    }
+    
+    .menu-wrapper { position: relative; }
+    
+    .hamburger {
+        font-size: 20px;
+        padding: 0 15px;
+    }
+    
+    .menu-content {
+        display: none;
+        position: absolute;
+        right: 0;
+        top: 60px;
+        background: #111;
+        border: 1px solid #333;
+        border-radius: 12px;
+        min-width: 180px;
+        z-index: 1000;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+    }
+    
+    .menu-content a {
+        display: block;
+        padding: 16px;
+        color: white;
+        text-decoration: none;
+        font-size: 14px;
+        border-bottom: 1px solid #222;
+    }
+    
+    .menu-content a:last-child { border-bottom: none; }
+    .menu-content a:active { background: #222; }
+    
+    /* Show menu class */
+    .menu-open { display: block; }
+
+    .button {
+        appearance: none; border: none;
+        background: #111; color: #fff;
+        padding: 14px 18px; border-radius: 12px;
+        font-size: 16px; cursor: pointer;
+        transition: 0.15s ease; min-height: 52px;
+    }
+
+    .button:hover { background: #1f1f1f; }
+    .button:active { transform: scale(0.97); }
+
+    .shutdown { background: #5f0000; }
+    .shutdown:hover { background: #840000; }
+
+    .gallery {
+        width: 100%; max-width: 1200px;
+        margin: 0 auto; padding: 14px;
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+        gap: 14px;
+    }
+
+    .card {
+        background: #0b0b0b; border: 1px solid #222;
+        border-radius: 14px; overflow: hidden;
+    }
+
+    .card img { width: 100%; display: block; background: #111; }
+
+    .meta { padding: 12px; }
+    .capture-id {
+        font-size: 12px; opacity: 0.7;
+        margin-bottom: 10px; word-break: break-all;
+    }
+
+    .actions { display: flex; gap: 8px; }
+    .actions a { flex: 1; text-decoration: none; }
+    .actions button { width: 100%; }
+
+    .pagination {
+        display: flex; justify-content: center; align-items: center;
+        gap: 12px; padding: 24px 14px 40px; flex-wrap: wrap;
+    }
+
+    .page-number { opacity: 0.7; font-size: 14px; }
+    .empty { padding: 60px 20px; text-align: center; opacity: 0.5; }
+
+    .overlay {
+        position: fixed; inset: 0;
+        background: rgba(0,0,0,0.88);
+        display: none; align-items: center; justify-content: center;
+        z-index: 999; padding: 20px;
+    }
+
+    .overlay-content {
+        width: 100%; max-width: 420px;
+        background: #111; border: 1px solid #333;
+        border-radius: 18px; padding: 22px; text-align: center;
+    }
+
+    .overlay h2 { margin-top: 0; margin-bottom: 14px; }
+    .overlay p { opacity: 0.8; line-height: 1.5; margin-bottom: 24px; }
+    .overlay-buttons { display: flex; gap: 10px; }
+    .overlay-buttons button { flex: 1; }
+
+    .danger { background: #8f0000; }
+    .danger:hover { background: #b40000; }
+
+    @media (max-width: 700px) {
+        .gallery { grid-template-columns: 1fr; }
+        .button { width: auto; } /* Prevent buttons from forced full-width */
+    }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+    <div class="topbar-inner">
+        <div class="title">GLITCH BOOTH — COMMAND CENTER</div>
+        
+        <div id="sys-info" style="font-size: 13px; margin-bottom: 12px; color: #00ff00; font-family: monospace;">
+            IP: <span id="display-ip" onclick="copyIp()" style="cursor: pointer; text-decoration: underline;">Loading...</span>| 
+            MODE: <span id="display-mode">...</span>
+        </div>
+
+        <div class="controls">
+            <button class="button" onclick="location.reload()">REFRESH</button>
+            
+            <div class="menu-wrapper">
+                <button class="button hamburger" onclick="toggleMenu(event)">☰</button>
+                <div class="menu-content" id="navMenu">
+                    <a href="/" target="_blank">LIVE VIEW</a>
+                    <hr style="border: 0; border-top: 1px solid #333; margin: 8px 0;">
+                    <a href="#" onclick="openRebootDialog()" style="color: #44aaff;">REBOOT PI</a>
+                    <a href="#" onclick="openShutdownDialog()" style="color: #ff4444;">POWER OFF</a>
+                    <a href="#" onclick="hardKillService()" style="color: #ff0055; font-weight: bold; border-top: 1px solid #222; margin-top: 5px; padding-top: 10px;">EXIT TO TERMINAL</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if captures %}
+<div class="gallery">
+    {% for capture in captures %}
+    <div class="card">
+        <a href="/captures/{{ capture.color }}" target="_blank">
+            <img src="/captures/{{ capture.color }}" loading="lazy" alt="Preview">
+        </a>
+        <div class="meta">
+            <div class="capture-id">{{ capture.id }}</div>
+            <div class="actions">
+                <a href="/captures/{{ capture.color }}" target="_blank">
+                    <button class="button">COLOR</button>
+                </a>
+                <a href="/captures/{{ capture.bw }}" target="_blank">
+                    <button class="button">B&W</button>
+                </a>
+                <a href="/saved/{{ capture.id }}_qr.png" target="_blank">
+                    <button class="button">QR</button>
+                </a>
+            </div>
+            <button class="button" onclick="printCapture(this, '{{ capture.id }}')" style="width: 100%; margin-top: 8px; background: #004d26;">PRINT</button>
+            <button class="button danger" onclick="deleteCapture(this, '{{ capture.id }}')" style="width: 100%; margin-top: 8px;">DELETE</button>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="empty">NO CAPTURES FOUND</div>
+{% endif %}
+
+<div class="pagination">
+    {% if page > 1 %}
+        <a href="/gallery?page={{ page - 1 }}"><button class="button">← PREVIOUS</button></a>
+    {% endif %}
+    <div class="page-number">PAGE {{ page }} / {{ total_pages }}</div>
+    {% if page < total_pages %}
+        <a href="/gallery?page={{ page + 1 }}"><button class="button">NEXT →</button></a>
+    {% endif %}
+</div>
+
+<div class="overlay" id="shutdownOverlay">
+    <div class="overlay-content">
+        <h2>SAFE SHUTDOWN</h2>
+        <p>This will safely stop the Glitch Booth system and power off the Raspberry Pi. Wait 10 seconds before unplugging power.</p>
+        <div class="overlay-buttons">
+            <button class="button" onclick="closeShutdownDialog()">CANCEL</button>
+            <button class="button danger" onclick="shutdownSystem()">POWER OFF</button>
+        </div>
+    </div>
+</div>
+
+<div class="overlay" id="rebootOverlay">
+    <div class="overlay-content">
+        <h2>REBOOT SYSTEM?</h2>
+        <p>The Pi will restart. You will lose connection for about 45-60 seconds.</p>
+        <div class="overlay-buttons">
+            <button class="button" onclick="closeRebootDialog()">CANCEL</button>
+            <button class="button" onclick="rebootSystem()" style="background: #004488;">REBOOT NOW</button>
+        </div>
+    </div>
+</div>
+
+<script>
+// Dialog Management
+function openRebootDialog() { 
+    document.getElementById("navMenu").classList.remove("menu-open");
+    document.getElementById("rebootOverlay").style.display = "flex"; 
+}
+function closeShutdownDialog() { document.getElementById("shutdownOverlay").style.display = "none"; }
+function openShutdownDialog() { 
+    document.getElementById("navMenu").classList.remove("menu-open");
+    document.getElementById("shutdownOverlay").style.display = "flex"; 
+}
+function closeRebootDialog() { document.getElementById("rebootOverlay").style.display = "none"; }
+
+function toggleMenu(event) {
+    // Crucial: Pass 'event' and use stopPropagation to make the button work
+    if (event) event.stopPropagation();
+    const menu = document.getElementById("navMenu");
+    menu.classList.toggle("menu-open");
+}
+
+// Closes the menu if you click anywhere else on the screen
+window.onclick = function(event) {
+    const menu = document.getElementById("navMenu");
+    if (menu && menu.classList.contains('menu-open')) {
+        menu.classList.remove('menu-open');
+    }
+}
+
+// System Info Loop
+async function updateStatus() {
+    try {
+        const response = await fetch("/state");
+        const data = await response.json();
+        
+        document.getElementById("display-mode").innerText = data.mode.toUpperCase();
+        document.getElementById("display-ip").innerText = data.ip + ":5000"; 
+    } catch (err) {
+        document.getElementById("display-mode").innerText = "OFFLINE";
+    }
+}
+
+// Action Functions
+async function rebootSystem() {
+    try {
+        const response = await fetch("/reboot", { method: "POST" });
+        if (response.ok) {
+            document.querySelector("#rebootOverlay .overlay-content").innerHTML = 
+                "<h2>REBOOTING</h2><p>Wait 60 seconds then refresh this page.</p>";
+        }
+    } catch (err) { alert("Could not contact server."); }
+}
+
+async function shutdownSystem() {
+    try {
+        const response = await fetch("/shutdown", { method: "POST" });
+        if (response.ok) {
+            document.querySelector("#shutdownOverlay .overlay-content").innerHTML = 
+                "<h2>SHUTTING DOWN</h2><p>Wait 10 seconds before disconnecting power.</p>";
+        }
+    } catch (err) { alert("Could not contact server."); }
+}
+
+async function hardKillService() {
+    if (!confirm("WARNING: This will completely disable the kiosk and drop the web dashboard offline. The monitor will revert to a standard Linux login prompt. Proceed?")) {
+        return;
+    }
+    
+    try {
+        const response = await fetch("/service/disable", { method: "POST" });
+        const data = await response.json();
+        alert(data.message);
+        // Refresh to show the offline state
+        location.reload();
+    } catch (err) {
+        // Since the server kills itself instantly, a network error here means it succeeded!
+        alert("Kiosk service stopped successfully. Screen released.");
+    }
+}
+
+function copyIp() {
+    const ipText = "http://" + document.getElementById("display-ip").innerText;
+    
+    // Fallback for non-HTTPS (Local IP) connections
+    const textArea = document.createElement("textarea");
+    textArea.value = ipText;
+    document.body.appendChild(textArea);
+    textArea.select();
+    textArea.setSelectionRange(0, 99999); // For mobile devices
+
+    try {
+        document.execCommand('copy');
+        // Visual feedback
+        const el = document.getElementById("display-ip");
+        const original = el.innerText;
+        el.innerText = "COPIED!";
+        el.style.color = "#ffffff";
+        setTimeout(() => { 
+            el.innerText = original; 
+            el.style.color = "#00ff00";
+        }, 1000);
+    } catch (err) {
+        console.error('Fallback copy failed', err);
+    }
+    
+    document.body.removeChild(textArea);
+}
+
+// Asynchronous manual layout printing communication handler
+async function printCapture(buttonElement, sessionId) {
+    const originalText = buttonElement.innerText;
+    const originalBg = buttonElement.style.background;
+    
+    // Optimistically lock the element to prevent double-trigger spools
+    buttonElement.disabled = true;
+    buttonElement.innerText = "SPOOLING...";
+    
+    try {
+        const response = await fetch('/print_capture/' + sessionId, {
+            method: 'POST'
+        });
+        const data = await response.json();
+        
+        if (data.status === 'success') {
+            buttonElement.innerText = "PRINTING!";
+            buttonElement.style.background = "#00ff00";
+            buttonElement.style.color = "#000000";
+            
+            // Revert layout styles gracefully after print worker thread acceptance
+            setTimeout(() => {
+                buttonElement.innerText = originalText;
+                buttonElement.disabled = false;
+                buttonElement.style.background = originalBg;
+                buttonElement.style.color = "";
+            }, 2000);
+        } else {
+            alert("Printing failed: " + data.message);
+            buttonElement.innerText = originalText;
+            buttonElement.disabled = false;
+        }
+    } catch (err) {
+        console.error("Printing communication error:", err);
+        alert("Could not contact server to execute hardware reprint.");
+        buttonElement.innerText = originalText;
+        buttonElement.disabled = false;
+    }
+}
+
+// SURGICAL CHANGE: Asynchronous storage asset cleanup communication handler
+async function deleteCapture(buttonElement, sessionId) {
+    if (!confirm("PERMANENTLY DELETE THIS CAPTURE FROM STORAGE?")) {
+        return;
+    }
+    try {
+        const response = await fetch('/delete_capture/' + sessionId, {
+            method: 'POST'
+        });
+        const data = await response.json();
+        
+        if (data.status === 'success') {
+            // Locates the parent card container wrapper dynamically for a safe UI teardown animation
+            const card = buttonElement.closest('.card');
+            if (card) {
+                card.style.transition = 'opacity 0.15s ease-out';
+                card.style.opacity = '0.3';
+                setTimeout(() => card.remove(), 150);
+            }
+        } else {
+            alert("Deletion failed: " + data.message);
+        }
+    } catch (err) {
+        console.error("Deletion communication error:", err);
+        alert("Could not contact server to execute file removal.");
+    }
+}
+
+updateStatus();
+setInterval(updateStatus, 3000);
+</script>
+</body>
+</html>

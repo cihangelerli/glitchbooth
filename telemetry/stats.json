@@ -1,0 +1,16 @@
+{
+  "total_captures": 11,
+  "uptime_hours": 0.64,
+  "first_capture_iso": "2026-07-02T06:56:44Z",
+  "last_capture_iso": "2026-07-13T16:33:37Z",
+  "effects_popularity": {
+    "ascii_matrix_usage_pct": 17.4,
+    "signal_drift_usage_pct": 13.0,
+    "data_corruption_usage_pct": 17.4,
+    "pixel_damage_usage_pct": 8.7,
+    "melt_usage_pct": 17.4,
+    "chroma_shift_usage_pct": 21.7,
+    "no_glitch_usage_pct": 4.3
+  },
+  "most_popular_combo": "Chroma Shift"
+}

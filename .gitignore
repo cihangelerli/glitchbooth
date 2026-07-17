@@ -1,0 +1,30 @@
+# Secrets and environment variables
+.env*
+
+# User data and media folders (trailing slash ignores the whole directory)
+captures/
+saved/
+backup-files/
+
+# Python Virtual Environment
+venv/
+
+# Redundant backups
+server-backup.py
+telemetry-backup.py
+pygame_display-backup.py
+auido-old.js
+
+# Python system/cache files
+__pycache__/
+*.pyc
+
+# other
+
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+!.env.example

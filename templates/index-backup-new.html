@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+
+<meta charset="utf-8">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+
+<title>GLITCH BOOTH</title>
+
+<style>
+
+html,
+body{
+    margin:0;
+    padding:0;
+    width:100%;
+    height:100%;
+    background:#000;
+    color:#00ff00;
+    font-family:Courier, monospace;
+    overflow:hidden;
+}
+
+html, body, img, div{ -webkit-touch-callout:none; -webkit-user-select:none; user-select:none; }
+
+/* MAIN WRAPPER */
+.wrap{
+    width:90%;
+    max-width:700px;
+
+    margin-left:auto;
+    margin-right:auto;
+
+    padding-top:4vh;
+
+    box-sizing:border-box;
+}
+
+/* TITLE */
+.header{
+    margin-bottom:12px;
+    font-size:18px;
+}
+
+/* LIVE FEED */
+#feed{
+    display:block;
+
+    width:100%;
+    height:auto;
+
+    border:2px solid #00ff00;
+
+    box-sizing:border-box;
+
+    /* Mirror camera */
+    transform: scaleX(-1);
+}
+
+/* PANELS */
+.panel{
+    width:100%;
+
+    margin-top:14px;
+
+    border-top:1px solid #00ff00;
+
+    padding-top:10px;
+
+    box-sizing:border-box;
+}
+
+/* TELEMETRY ROWS */
+.row{
+    margin:4px 0;
+    overflow:hidden;
+
+    /* Safely handles the fade-out on iOS 9 Safari */
+    -webkit-transition: color 0.2s ease, text-shadow 0.2s ease;
+    transition: color 0.2s ease, text-shadow 0.2s ease;
+}
+
+/* NEW: Highlight target when value shifts */
+.row.changing {
+    color: #d1ffc9;
+    text-shadow: 0 0 8px #00ff00;
+}
+
+.row span{
+    float:right;
+}
+
+/* FULL SCREEN SHUTDOWN OVERLAY */
+#shutdownOverlay {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; width: 100%; height: 100%;
+    background: #000000;
+    text-align:center;
+    color: #aa0000; /* Dark crimson terminal text */
+    font-size:22px;
+    font-family: Courier, monospace;
+    padding: 40px;
+    box-sizing: border-box;
+    z-index: 9999;
+}
+
+/* COUNTDOWN OVERLAY */
+#countdownOverlay{
+    display:none;
+
+    position:fixed;
+
+    top:0;
+    left:0;
+
+    width:100%;
+    height:100%;
+
+    background:#000;
+    opacity:0.6;
+
+    text-align:center;
+
+    z-index:9999;
+}
+
+#countdownNumber{
+    font-size:120px;
+
+    margin-top:32vh;
+
+    color:#00ff00;
+}
+
+#countdownStatus{
+    margin-top:20px;
+
+    font-size:22px;
+
+    color:#00ff00;
+}
+
+/* SMALLER DEVICES */
+@media screen and (max-width: 600px){
+
+    #countdownNumber{
+        font-size:90px;
+    }
+
+    #countdownStatus{
+        font-size:18px;
+    }
+
+    .header{
+        font-size:16px;
+    }
+
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="wrap">
+
+    <div class="header">
+        > GLITCH BOOTH alpha
+    </div>
+
+    <img
+        id="feed"
+        src="/video_feed"
+        draggable="false"
+    >
+
+    <div class="panel">
+
+        <div class="row">Corruption <span id="k0"></span></div>
+        <div class="row">Signal Drift <span id="k1"></span></div>
+        <div class="row">Compression Damage <span id="k3"></span></div>
+        <div class="row">Pixel Melt <span id="k4"></span></div>
+        <div class="row">Data Mosh <span id="k2"></span></div>
+        <div class="row">Chroma Shift <span id="k5"></span></div>
+
+    </div>
+
+    <div class="panel">
+
+        <div>> TURN THE KNOBS</div>
+        <div>> COMBINE EFFECTS</div>
+        <div>> SET GLITCH STRENGTH</div>
+        <div>> PLAY WITH THE SIGNAL</div>
+        <div>> PRESS BUTTON TO CAPTURE</div>
+        <div>> PRINT READY ALMOST INSTANTLY :)</div>
+
+    </div>
+
+</div>
+
+<!-- COUNTDOWN OVERLAY -->
+
+<div id="countdownOverlay">
+
+    <div id="countdownNumber">3</div>
+
+    <div id="countdownStatus">GET READY</div>
+
+</div>
+
+<!-- SHOTDOWN OVERLAY -->
+
+<div id="shutdownOverlay">
+    <div id="shutdownMessage">> SYSTEM OFFLINE</div>
+</div>
+
+<script>
+
+/* Global state tracking */
+var lastKnobValues = [];
+var stateFailures = 0;
+var lastFrameId = -1;
+var stalledCount = 0;
+
+/* Kills the loop completely to protect Waitress queues when the server is truly dead */
+function killBoothLoop(message) {
+    var shutEl = document.getElementById('shutdownOverlay');
+    var msgEl = document.getElementById('shutdownMessage');
+    if (shutEl && msgEl) {
+        msgEl.innerHTML = "> " + message;
+        shutEl.style.display = "block";
+    }
+    console.log("BOOTH_LOOP_TERMINATED: " + message);
+    /* Notice: setTimeout is NOT called here. The loop dies permanently. */
+}
+
+function update(){
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', '/state', true);
+    xhr.timeout = 3000; /* Give each request 3 seconds to answer before timing out */
+
+    /* Gatekeeper flag to ensure we only handle one outcome per request lifecycle */
+    var requestHandled = false;
+
+    function handleFailure(logMessage) {
+        if (requestHandled) return;
+        requestHandled = true;
+
+        stateFailures++;
+        console.log("POLL_FAIL (" + stateFailures + "/6): " + logMessage);
+
+        /* CRITICAL THRESHOLD: Only commit suicide if it fails 6 times in a row (~6 seconds) */
+        if (stateFailures >= 6) {
+            killBoothLoop("CONNECTION_LOST... POLLING TERMINATED. REFRESH PAGE WHEN SERVER IS ALIVE.");
+        } else {
+            /* SELF-HEALING: Relax the polling rate to 1 second during a hiccup to let the network recover */
+            setTimeout(update, 1000);
+        }
+    }
+
+    xhr.onreadystatechange = function(){
+        if(xhr.readyState === 4){
+            if(xhr.status === 200){
+                try{
+                    var d = JSON.parse(xhr.responseText);
+                    
+                    /* SUCCESS! Instant reset of the failure chain */
+                    stateFailures = 0;
+                    requestHandled = true;
+
+                    /* DELIBERATE REMOTE SHUTDOWN/RESTART (Triggered via gallery.html) */
+                    if(d.mode === "shutdown" || d.mode === "restart"){
+                        killBoothLoop("SERVER_SHUTDOWN_SEQUENCE... SAFE TO POWER OFF BOOTH");
+                        return;
+                    }
+
+                    /* HARDENED KNOB LOOP */
+                    if(d.knobs && d.knobs.length >= 6){
+                        for(var i=0; i<6; i++){
+                            var el = document.getElementById('k' + i);
+                            if(!el) continue;
+                            var currentVal = d.knobs[i];
+
+                            if(lastKnobValues[i] !== currentVal){
+                                el.textContent = currentVal;
+                                if(lastKnobValues[i] !== undefined){
+                                    el.parentNode.className = "row changing";
+                                }else{
+                                    el.parentNode.className = "row";
+                                }
+                                lastKnobValues[i] = currentVal;
+                            }else{
+                                el.parentNode.className = "row";
+                            }
+                        }
+                    }
+
+                    var overlay = document.getElementById('countdownOverlay');
+                    var num = document.getElementById('countdownNumber');
+                    var status = document.getElementById('countdownStatus');
+
+                    /* COUNTDOWN MODES */
+                    if(d.mode === "countdown"){
+                        overlay.style.display = "block";
+                        num.innerHTML = d.countdown_seconds;
+                        if(d.countdown_seconds === 3){ status.innerHTML = "CAPTURING FRAME"; }
+                        else if(d.countdown_seconds === 2){ status.innerHTML = "PROCESSING GLITCH"; }
+                        else if(d.countdown_seconds === 1){ status.innerHTML = "SPOOLING TO PRINTER"; }
+                    }
+                    else if(d.mode === "processing"){
+                        overlay.style.display = "block";
+                        num.innerHTML = "::";
+                        status.innerHTML = "FINALIZING PRINT";
+                    }
+                    else if(d.mode === "latest"){
+                        window.location.href = "/latest?id=" + d.session_id;
+                        return;
+                    }
+                    else{
+                        overlay.style.display = "none";
+                    }
+
+                    /* MJPEG STALL DETECTION */
+                    if(d.frame_id === lastFrameId){ stalledCount++; }
+                    else { stalledCount = 0; }
+                    lastFrameId = d.frame_id;
+
+                    if(stalledCount >= 5){
+                        var feed = document.getElementById('feed');
+                        feed.src = "";
+                        feed.src = "/video_feed?t=" + new Date().getTime();
+                        stalledCount = 0;
+                    }
+
+                    /* Schedule the next normal fast poll */
+                    setTimeout(update, 500);
+
+                }
+                catch(err){
+                    handleFailure("PARSE_ERROR: " + err.message);
+                }
+            } else {
+                /* Triggers if server returns 500/404, or status 0 (network down) */
+                handleFailure("SERVER_STATUS_" + xhr.status);
+            }
+        }
+    };
+
+    /* Handle brief physical network drops */
+    xhr.onerror = function(){
+        handleFailure("NETWORK_ERROR");
+    };
+
+    /* Handle lag spikes where server takes > 3 seconds to reply */
+    xhr.ontimeout = function(){
+        handleFailure("TIMEOUT_ERROR");
+    };
+
+    xhr.send();
+}
+
+/* START INITIAL POLL */
+update();
+
+</script>
+
+<script src="/static/audio.js"></script>
+
+</body>
+</html>

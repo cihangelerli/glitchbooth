@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+
+<meta charset="utf-8">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+
+<title>GLITCH BOOTH TERMINAL</title>
+
+<style>
+
+html,
+body{
+    margin:0;
+    padding:0;
+
+    width:100%;
+    height:100%;
+
+    background:#000;
+    color:#00ff00;
+
+    font-family:Courier, monospace;
+
+    overflow:hidden;
+}
+
+html, body, img, div{ -webkit-touch-callout:none; -webkit-user-select:none; user-select:none; }
+
+.wrap{
+
+    width:90%;
+    max-width:700px;
+
+    margin-left:auto;
+    margin-right:auto;
+
+    padding-top:5vh;
+
+    box-sizing:border-box;
+
+}
+
+/* HEADER */
+
+.header{
+
+    border-bottom:1px solid #00ff00;
+
+    padding-bottom:10px;
+
+    margin-bottom:18px;
+
+}
+
+/* MAIN IMAGE */
+
+.capture{
+
+    width:100%;
+
+    border:1px solid #00ff00;
+
+    box-sizing:border-box;
+
+    transform: scaleX(-1); /* ADD THIS HERE to flip the captured photo */
+}
+
+/* QR */
+
+.qr-wrap{
+
+    width:100%;
+
+    text-align:center;
+
+    margin-top:20px;
+
+}
+
+#qr-img{
+
+    width:180px;
+    height:180px;
+
+    display:none;
+
+    border:none;
+
+}
+
+/* FOOTER */
+
+.footer{
+
+    margin-top:20px;
+
+    border-top:1px solid #00ff00;
+
+    padding-top:10px;
+
+}
+
+/* SMALLER DEVICES */
+
+@media screen and (max-width: 600px){
+
+    #qr-img{
+
+        width:140px;
+        height:140px;
+        transform: scaleX(-1);
+
+    }
+
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="wrap">
+
+    <div class="header">
+
+        <div>> SYS_ID: {{ latest_id }}</div>
+
+        <div>> STATUS: CAPTURE_SAVED</div>
+
+        <div id="status">> INIT_UPLOADING...</div>
+
+    </div>
+
+    <img
+        class="capture"
+        src="/captures/{{ latest_id }}_color.jpg"
+        alt="capture"
+    >
+
+    <div class="qr-wrap">
+
+        <img
+            id="qr-img"
+            src=""
+            alt="qr"
+        >
+
+    </div>
+
+    <div class="footer">
+
+        <div>> PRESS BUTTON TO RETURN TO LIVE VIEW</div>
+
+    </div>
+
+</div>
+
+<script>
+
+var latestFailures = 0;
+
+function updateState(){
+
+    var xhr = new XMLHttpRequest();
+
+    xhr.open('GET', '/state', true);
+
+    /* Guard against zombie connections stalling the iPad */
+    xhr.timeout = 4000;
+
+    xhr.onreadystatechange = function(){
+
+        if(xhr.readyState === 4){
+
+            var nextDelay = 500; /* Default fast poll rate */
+
+            if(xhr.status === 200){
+
+                try{
+
+                    var data = JSON.parse(xhr.responseText);
+                    latestFailures = 0; /* Reset counter on success */
+
+                    var statusEl = document.getElementById('status');
+                    var qrImg = document.getElementById('qr-img');
+
+                    if(data.upload_status === "SUCCESS"){
+                        statusEl.innerHTML = "> UPLOAD_COMPLETE";
+                        qrImg.src = "/saved/" + data.latest_id + "_qr.png";
+                        qrImg.style.display = "inline";
+                    }
+                    else if(data.upload_status === "FAILED"){
+                        statusEl.innerHTML = "> CLOUD_UPLOAD_FAILED";
+                    }
+
+                    if(data.mode === "live"){
+                        window.location.href = "/";
+                        return;
+                    }
+
+                }
+                catch(err){
+                    console.log("LATEST_PARSE_ERROR:", err.message);
+                    latestFailures++;
+                }
+
+            } else {
+                /* Server responded with an error (500/404) or is down (status 0) */
+                latestFailures++;
+                nextDelay = 5000; /* Drop to a 5-second penalty delay to protect Waitress */
+            }
+
+            /* If completely blacked out for ~30 seconds, reload to clear browser cache */
+            if(latestFailures >= 60){
+                location.reload();
+                return;
+            }
+
+            setTimeout(updateState, nextDelay);
+
+        }
+
+    };
+
+    /* Handle complete offline events with a 5-second backoff safety margin */
+    xhr.onerror = function(){
+        console.log("LATEST_NETWORK_ERROR");
+        latestFailures++;
+        setTimeout(updateState, 5000); 
+    };
+
+    xhr.ontimeout = function(){
+        console.log("LATEST_TIMEOUT_ERROR");
+        latestFailures++;
+        setTimeout(updateState, 5000);
+    };
+
+    xhr.send();
+
+}
+
+/* KICK OFF THE CHAIN ONCE */
+updateState();
+
+</script>
+
+<script src="/static/audio.js"></script>
+
+</body>
+</html>
