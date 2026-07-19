@@ -1,8 +1,8 @@
 # GLITCH BOOTH
 
-An experimental digital installation designed to explore the aesthetics of technology in states of distress. **Glitch Booth** doesn't just take photos; it documents the digital ghost in the machine, transforming fleeting electronic anomalies into a raw, tactile urban artifact.
+An experimental digital installation designed to explore the aesthetics of technology in states of distress while giving the user agency and control. **Glitch Booth** doesn't just take photos; it documents the digital ghost in the machine, transforming fleeting electronic anomalies into a raw, tactile urban artifact.
 
-Powered by **Dirtcake Studio**.
+Powered by [**Dirtcake Studio**](https://dirtcakestudio.com)
 
 ---
 
