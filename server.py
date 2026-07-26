@@ -1748,6 +1748,44 @@ def generate_frames():
 
 
 def graceful_shutdown_handler(signum, frame):
+    print("\n\n[SHUTDOWN] Signal intercepted! Initiating formal teardown...")
+    SHUTDOWN_EVENT.set()
+
+    try:
+        telemetry.request_shutdown()
+    except Exception as e:
+        print(f"  [WARNING] Failed to request telemetry shutdown boundary: {e}")
+
+    try:
+        import subprocess
+
+        # If disable was requested via web route, handle it now
+        if ACTIVE_SESSION.get("disable_service_on_exit", False):
+            print("[SHUTDOWN] Softly disabling glitchbooth.service for next boot...")
+            subprocess.run(["sudo", "systemctl", "disable", "glitchbooth.service"], check=False)
+
+        # ONLY run TTY/getty rescue if we are exiting to terminal (NOT powering off or rebooting)
+        if ACTIVE_SESSION.get("exit_to_terminal", False):
+            print("[SHUTDOWN TTY RESCUE] Resetting console input streams...")
+            subprocess.run(["stty", "sane"], check=False)
+            subprocess.run(["sudo", "kbd_mode", "-a"], check=False)
+
+            print("[SHUTDOWN TTY RESCUE] Spawning fresh login prompt on tty1...")
+            subprocess.run(["sudo", "systemctl", "start", "getty@tty1.service"], check=False)
+            subprocess.run(["sudo", "chvt", "1"], check=False)
+            print("[SHUTDOWN TTY RESCUE] Local terminal login prompt restored!")
+        else:
+            print("[SHUTDOWN] System reboot/poweroff in progress. Skipping TTY rescue.")
+
+    except Exception as tty_err:
+        print(f"[SHUTDOWN TTY RESCUE] Terminal rescue routine failed: {tty_err}")
+
+    print("[SYSTEM EXIT] Teardown complete. Process terminated.")
+    os._exit(0)
+
+
+"""
+def graceful_shutdown_handler(signum, frame):
     print(
         "\n\n[SHUTDOWN] Signal intercepted (Ctrl+C / SIGTERM)! Initiating formal teardown..."
     )
@@ -1776,11 +1814,27 @@ def graceful_shutdown_handler(signum, frame):
     try:
         import subprocess
 
+        # If disable was requested via web route, run it synchronously now that workers are stopped
+        if ACTIVE_SESSION.get("disable_service_on_exit", False):
+            print("[SHUTDOWN] Softly disabling glitchbooth.service for next boot...")
+            subprocess.run(
+                ["sudo", "systemctl", "disable", "glitchbooth.service"], check=False
+            )
+
         print("[SHUTDOWN TTY RESCUE] Forcefully resetting console input streams...")
         # Reset terminal flags and text echoes
         subprocess.run(["stty", "sane"], check=False)
         # Shift keyboard out of raw binary graphics mode into standard ASCII mode
         subprocess.run(["sudo", "kbd_mode", "-a"], check=False)
+
+        print("[SHUTDOWN TTY RESCUE] Spawning fresh login prompt on tty1...")
+        subprocess.run(
+            ["sudo", "systemctl", "start", "getty@tty1.service"], check=False
+        )
+
+        # Optional display refresh fallback
+        subprocess.run(["sudo", "chvt", "1"], check=False)
+
         print(
             "[SHUTDOWN TTY RESCUE] Local keyboard focus successfully restored to terminal!"
         )
@@ -1789,6 +1843,7 @@ def graceful_shutdown_handler(signum, frame):
 
     print("[SYSTEM EXIT] Teardown complete. Process terminated.")
     os._exit(0)
+"""
 
 
 # BACKEND ENGINE STARTING ANd OWNING ALL THE WORKERS
@@ -2054,11 +2109,42 @@ def captures(filename):
 def remote_shutdown():
     global cam_thread_alive
     cam_thread_alive = False
+
+    def delayed_poweroff():
+        time.sleep(0.5)  # Allow HTTP response to flush back to client first
+        subprocess.run(["sudo", "systemctl", "poweroff"], check=False)
+
+    threading.Thread(target=delayed_poweroff, daemon=True).start()
+
+    return jsonify({"status": "shutting_down", "message": "Powering off now..."})
+
+
+"""
+@app.route("/shutdown", methods=["POST"])
+def remote_shutdown():
+    global cam_thread_alive
+    cam_thread_alive = False
     time.sleep(0.2)
     subprocess.Popen(["sudo", "systemctl", "poweroff"])
     return jsonify({"status": "shutting_down"})
+"""
 
 
+@app.route("/reboot", methods=["POST"])
+def remote_reboot():
+    global cam_thread_alive
+    cam_thread_alive = False
+
+    def delayed_reboot():
+        time.sleep(0.5)  # Allow HTTP response to flush back to client first
+        subprocess.run(["sudo", "systemctl", "reboot"], check=False)
+
+    threading.Thread(target=delayed_reboot, daemon=True).start()
+
+    return jsonify({"status": "rebooting", "message": "Rebooting system now..."})
+
+
+"""
 @app.route("/reboot", methods=["POST"])
 def remote_reboot():
     global cam_thread_alive
@@ -2066,33 +2152,29 @@ def remote_reboot():
     time.sleep(0.2)
     subprocess.Popen(["sudo", "systemctl", "reboot"])
     return jsonify({"status": "rebooting"})
-
-
 """
+
+
 @app.route("/service/disable", methods=["POST"])
 def remote_service_disable():
     global cam_thread_alive
     cam_thread_alive = False
-    time.sleep(0.2)
 
-    def execute_kill():
-        # Give Flask 1 second to cleanly transmit the response packet back to the phone/browser
-        time.sleep(1.0)
-        # Stop the service right now and prevent it from starting on next boot
-        subprocess.Popen(
-            ["sudo", "systemctl", "disable", "--now", "glitchbooth.service"]
-        )
+    # 1. Flag service to be disabled during the graceful shutdown sequence
+    ACTIVE_SESSION["disable_service_on_exit"] = True
 
-    threading.Thread(target=execute_kill).start()
+    # 2. Break Pygame loop -> triggers finally block -> calls graceful_shutdown_handler
+    ACTIVE_SESSION["exit_to_terminal"] = True
+
     return jsonify(
         {
-            "status": "killing_service",
-            "message": "Kiosk disabled. Screen released to terminal. SSH or manual restart required to restore!",
+            "status": "exiting",
+            "message": "Disabling service and releasing terminal to getty login prompt...",
         }
     )
+
+
 """
-
-
 @app.route("/service/disable", methods=["POST"])
 def remote_service_disable():
     global cam_thread_alive
@@ -2111,6 +2193,7 @@ def remote_service_disable():
             "message": "Kiosk disabling... Screen releasing cleanly to terminal layout now!",
         }
     )
+"""
 
 
 @app.route("/ping")

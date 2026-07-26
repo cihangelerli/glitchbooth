@@ -28,3 +28,5 @@ coverage/
 .DS_Store
 *.log
 !.env.example
+capture_log.jsonl
+stats.json
