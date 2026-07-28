@@ -10,6 +10,7 @@ from flask import (
 
 import os
 import base64
+import json
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -1156,8 +1157,9 @@ def print_booth_receipt(ts):
                 printer.text(" > NETWORK OFFLINE // CACHED LOCALLY  \n")
                 printer.text(" > Upload link down. Capture is stored safely. \n")
                 printer.text(" > Sync will auto-resume when booth is online. \n")
-                printer.text(" > Visit glitchbooth.online later \n")
-                printer.text(" > to manually to retrieve your capture. \n")
+                printer.text(f" > Visit https://glitchbooth.online/p/{ts} later \n")
+                printer.text(" > or scan your qr later \n")
+                printer.text(" > to manually retrieve your capture \n")
             else:
                 printer.text(" > Scan to save your digital copy!   \n")
                 printer.text(" > Follow us on socials: @dirtcakestudio   \n")
@@ -1328,8 +1330,8 @@ def upload_queue_worker():
                 upload_status_msg = "FAILED"
 
                 try:
-                    generic_url = "https://glitchbooth.online"
-                    qr_img = qrcode.make(generic_url)
+                    landing_url = f"https://glitchbooth.online/p/{ts}"
+                    qr_img = qrcode.make(landing_url)
                     qr_img.save(qr_path)
 
                     with cache_file_lock:
