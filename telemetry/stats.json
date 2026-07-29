@@ -1,16 +1,16 @@
 {
-  "total_captures": 12,
-  "uptime_hours": 0.03,
+  "total_captures": 14,
+  "uptime_hours": 0.0,
   "first_capture_iso": "2026-07-02T06:56:44Z",
-  "last_capture_iso": "2026-07-26T11:59:53Z",
+  "last_capture_iso": "2026-07-29T08:23:29Z",
   "effects_popularity": {
-    "ascii_matrix_usage_pct": 16.7,
-    "signal_drift_usage_pct": 12.5,
-    "data_corruption_usage_pct": 16.7,
-    "pixel_damage_usage_pct": 8.3,
-    "melt_usage_pct": 16.7,
-    "chroma_shift_usage_pct": 20.8,
-    "no_glitch_usage_pct": 8.3
+    "ascii_matrix_usage_pct": 15.4,
+    "signal_drift_usage_pct": 11.5,
+    "data_corruption_usage_pct": 15.4,
+    "pixel_damage_usage_pct": 7.7,
+    "melt_usage_pct": 15.4,
+    "chroma_shift_usage_pct": 23.1,
+    "no_glitch_usage_pct": 11.5
   },
   "most_popular_combo": "Chroma Shift"
 }

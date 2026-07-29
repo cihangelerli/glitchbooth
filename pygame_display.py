@@ -441,11 +441,10 @@ try:
             panel_y += LINE_PADDING
 
             instructions = [
-                "> TURN THE KNOBS",
-                "> COMBINE EFFECTS",
-                "> SET GLITCH STRENGTH",
-                "> PLAY WITH THE SIGNAL",
-                "> PRESS BUTTON TO CAPTURE",
+                "> -- <- LEFT          RIGHT -> ++",
+                "> TURN THE KNOBS, COMBINE EFFECTS",
+                "> SET GLITCH STRENGTH AS YOU WISH",
+                "> PRESS BUTTON TO CAPTURE, WAIT 3 SEC",
                 "> PRINT READY ALMOST INSTANTLY :)",
             ]
 
