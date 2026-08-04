@@ -30,6 +30,12 @@ Every physical receipt includes a embedded direct token link. Scanning it instan
 
 **Dirtcake Studio** is a DIY-focused, tech-forward creative studio based in Istanbul. Established in 2023 by Tuğba Girgiç and Cihan Gelerli, the studio designs and produces limited-edition designer toys, interactive installations, and urban collectibles that challenge the contemporary art establishment.
 
-*   **Studio Web:** [dirtcakestudio.com](https://dirtcakestudio.com)
-*   **Studio Instagram:** [@dirtcakestudio](https://www.instagram.com/dirtcakestudio/)
-*   **Cihan Gelerli Instagram:** [@gelerli](https://www.instagram.com/gelerli/)
+## Powered by [**Dirtcake Studio**](https://www.dirtcakestudio.com)
+
+- Website: [https://www.dirtcakestudio.com](https://www.dirtcakestudio.com)
+- Instagram: [@dirtcakestudio] (https://www.instagram.com/dirtcakestudio/)
+- Twitter / X: [@dirtcakestudio] (https://www.x.com/dirtcakestudio/)
+- Behance: [dirtcakestudio] (https://www.behance.net/dirtcakestudio)
+- Bluesky: [dirtcakestudio.bsky.social] (https://bsky.app/profile/dirtcakestudio.bsky.social)
+- Youtube: [@dirtcakestudio] (https://www.youtube.com/@dirtcakestudio)
+- **Cihan Gelerli Instagram:** [@gelerli](https://www.instagram.com/gelerli/)
