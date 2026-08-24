@@ -1,18 +1,18 @@
+import base64
+import json
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
 from flask import (
     Flask,
     Response,
     jsonify,
-    send_from_directory,
     redirect,
     render_template,
     request,
+    send_from_directory,
 )
-
-import os
-import base64
-import json
-from pathlib import Path
-from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent / ".env", override=False)
 
@@ -22,22 +22,28 @@ import cv2
 
 cv2.setNumThreads(1)
 
-import serial
-import time
-import numpy as np
-import random
-import threading
-import subprocess
+import logging
+import math
+import queue
+import resource
 import socket
+import subprocess
+
+# import random
+import threading
+import time
+
+import numpy as np
 import qrcode
 import requests
-import math
-import resource
+import serial
 from escpos.printer import File
 from PIL import Image, ImageDraw, ImageFont
-import queue
-import gc
+
+# import gc
 import telemetry
+
+logger = logging.getLogger("glitchbooth.server")
 
 app = Flask(__name__)
 
@@ -68,7 +74,8 @@ SERIAL_PORTS = ["/dev/ttyUSB0", "/dev/ttyACM0"]
 CAMERA_STALE_TIMEOUT = 5
 CAMERA_REFRESH_INTERVAL = 21600
 STREAM_FPS = 15
-SHUTDOWN_THRESHOLD = 20
+# Disabling button-knobs combo shutdown feature
+# SHUTDOWN_THRESHOLD = 20
 
 CRT_ENABLED = True
 CRT_SCANLINE_STRENGTH = 0.12
@@ -182,9 +189,9 @@ def initialize_crt_mask():
     for i in range(CRT_APERTURE_PERIOD):
         col_idx = i % 3
         channel = 2 - col_idx
-        float_mask[
-            :, x_indices % CRT_APERTURE_PERIOD == i, channel
-        ] += CRT_APERTURE_STRENGTH
+        float_mask[:, x_indices % CRT_APERTURE_PERIOD == i, channel] += (
+            CRT_APERTURE_STRENGTH
+        )
 
     np.clip(float_mask, 0.0, 1.0, out=float_mask)
     CRT_MASK[:] = (float_mask * 255.0).astype(np.uint8)
@@ -297,7 +304,8 @@ capture_lock_until = 0
 
 last_good_camera = time.time()
 camera_started_at = time.time()
-shutdown_hold_start = None
+# Disabling button-knobs combo shutdown feature
+# shutdown_hold_start = None
 last_frame_time = time.time()
 camera_fail_count = 0
 
@@ -357,7 +365,7 @@ def init_ascii_tiles():
             font = ImageFont.truetype(path, target_font_size)
             print("ASCII font loaded.")
             break
-        except IOError:
+        except OSError:
             continue
 
     if font is None:
@@ -521,14 +529,22 @@ def camera_io_worker():
             time.sleep(1)
 
 
+# NOT IN USE CURRENTLY BUT NOT DELETED YET. MAY BE USED FOR FUTURE HARDWARE INTEGRATION
 def open_serial():
     while True:
         for port in SERIAL_PORTS:
             try:
                 ser = serial.Serial(port, 9600, timeout=0.05)
+                logger.info("[HARDWARE LINK] Connected to serial port: %s", port)
                 return ser
-            except:
+            except (OSError, serial.SerialException) as exc:
+                logger.debug(
+                    "[HARDWARE LINK] Serial port unavailable: %s: %s",
+                    port,
+                    exc,
+                )
                 continue
+
         time.sleep(2)
 
 
@@ -541,15 +557,18 @@ def update_knobs(ser):
                 return
             vals = line.split(",")
             if len(vals) != 7:
+                logger.debug("[SERIAL] Ignoring malformed packet: %r", line)
                 return
             try:
                 parsed = [int(v) for v in vals]
             except ValueError:
+                logger.debug("[SERIAL] Ignoring non-integer packet: %r", line)
                 return
             GLOBAL_KNOBS = tuple(parsed[:6])
             GLOBAL_BUTTON = parsed[6]
     except Exception as e:
         print(f"SERIAL NODE PARSE WARNING: {e}")
+        logger.debug("[SERIAL] Error reading from serial: %s", e)
         raise e
 
 
@@ -651,7 +670,14 @@ def n(val):
 
 def apply_glitch_pipeline(current_time, control_packet):
     global WARMUP_COUNTER, LAST_TEMPORAL_PURGE, CORRUPTION_ENERGY, CORRUPTION_MODE
-    global ASCII_LOWRES_GRAY, ASCII_UPRES_GRAY, ASCII_BLOCK_BUFFER, ASCII_COLOR_BUFFER, ASCII_GREEN_BUFFER, ASCII_NOISE_LOW, ASCII_NOISE_UP
+    global \
+        ASCII_LOWRES_GRAY, \
+        ASCII_UPRES_GRAY, \
+        ASCII_BLOCK_BUFFER, \
+        ASCII_COLOR_BUFFER, \
+        ASCII_GREEN_BUFFER, \
+        ASCII_NOISE_LOW, \
+        ASCII_NOISE_UP
     global SPARK_COUNTER, SPARK_INTERVAL
     h, w = FRAME_H, FRAME_W
     pkt_knobs = control_packet.knobs
@@ -669,7 +695,6 @@ def apply_glitch_pipeline(current_time, control_packet):
         CORRUPTION_ENERGY[DATAMOSH_VX != 0] += 0.1
 
     if knob2_val > 0.02 and np.random.rand() < (knob2_val * 0.33):
-
         if np.random.rand() < 0.80:
             gy = np.random.randint(0, GRID_H)
             gx = np.random.randint(0, GRID_W)
@@ -768,7 +793,6 @@ def apply_glitch_pipeline(current_time, control_packet):
     if ana_val > 0.05:
         shift = int(ana_val * ANA_SHIFT_MAX)
         if shift != 0:
-
             red = MUTABLE_PROCESSING_BUFFER[:, :, 2]
 
             if shift > 0:
@@ -851,7 +875,6 @@ def apply_glitch_pipeline(current_time, control_packet):
     # =========================================================================
     drift = n(pkt_knobs[1])
     if drift > 0:
-
         h, w = MUTABLE_PROCESSING_BUFFER.shape[:2]
 
         global STATIC_V_BUFFER
@@ -982,7 +1005,6 @@ def apply_glitch_pipeline(current_time, control_packet):
     # =========================================================================
     ascii_val = n(pkt_knobs[0])
     if ascii_val > 0.02:
-
         cv2.cvtColor(
             MUTABLE_PROCESSING_BUFFER, cv2.COLOR_BGR2GRAY, dst=ASCII_UPRES_GRAY
         )
@@ -1361,7 +1383,9 @@ def upload_queue_worker():
 
 
 def background_loop():
-    global last_button_state, capture_lock_until, FRAME_ID, shutdown_hold_start
+    global last_button_state, capture_lock_until, FRAME_ID
+    # Disabling button-knobs combo shutdown feature
+    # global shutdown_hold_start
     global SHARED_JPEG_STREAM_BUFFER, SHARED_JPEG_ARRAY
     global PRINT_ALPHA, PRINT_BETA
 
@@ -1382,8 +1406,16 @@ def background_loop():
                         try:
                             serial_connection = serial.Serial(port, 9600, timeout=0.05)
                             print(f"[HARDWARE LINK] Connected to serial port: {port}")
+                            logger.info(
+                                "[HARDWARE LINK] Connected to serial port: %s", port
+                            )
                             break
-                        except:
+                        except Exception as exc:
+                            logger.debug(
+                                "[HARDWARE LINK] Serial port unavailable: %s: %s",
+                                port,
+                                exc,
+                            )
                             continue
             else:
                 try:
@@ -1392,8 +1424,11 @@ def background_loop():
                     print(f"[HARDWARE LINK] Serial connection lost: {serial_err}")
                     try:
                         serial_connection.close()
-                    except:
-                        pass
+                    except Exception as exc:
+                        logger.debug(
+                            "[HARDWARE LINK] Error occurred while closing serial connection: %s",
+                            exc,
+                        )
                     serial_connection = None
 
             with mode_lock:
@@ -1494,6 +1529,8 @@ def background_loop():
                     SHARED_JPEG_STREAM_BUFFER = memoryview(SHARED_JPEG_ARRAY)
                     FRAME_ID += 1
 
+            # Disabling button-knobs combo shutdown feature
+            """
             shutdown_ready = all(0 <= k <= SHUTDOWN_THRESHOLD for k in packet.knobs)
             if shutdown_ready and packet.button == 0:
                 if shutdown_hold_start is None:
@@ -1506,6 +1543,7 @@ def background_loop():
                     return
             else:
                 shutdown_hold_start = None
+            """
 
             # CENTRAL CONTROL MATRIX & TRANSITION MACHINE
             # ------------------------------------------------------------------
@@ -1556,12 +1594,28 @@ def background_loop():
                             print(
                                 f"[STATE ENGINE CRITICAL] Disk IO failure writing session {disk_id}. Tripping fallback flag."
                             )
+                            logger.error(
+                                "[STATE ENGINE] Disk IO failure writing session %s. color_ok=%s bw_ok=%s",
+                                disk_id,
+                                color_ok,
+                                bw_ok,
+                            )
                             with mode_lock:
                                 ACTIVE_SESSION["upload_failed"] = True
                             return
 
+                        logger.info(
+                            "[CAPTURE] Session files written: %s color_ok=%s bw_ok=%s",
+                            disk_id,
+                            color_ok,
+                            bw_ok,
+                        )
+
                         try:
                             upload_queue.put(disk_id, block=False)
+                            logger.info(
+                                "[UPLOAD QUEUE] Session queued for upload: %s", disk_id
+                            )
                             cleanup_sessions(limit=500)
                         except queue.Full:
                             print(
@@ -1618,6 +1672,11 @@ def background_loop():
                     with mode_lock:
                         ACTIVE_SESSION["mode"] = "processing"
 
+                    logger.info(
+                        "[STATE ENGINE] Countdown complete. Session %s advanced to processing.",
+                        session_key,
+                    )
+
             # STATE 3: UNIFIED PROCESSING & PRINT DISPATCH GATING NODE
             elif loop_mode == "processing":
                 with mode_lock:
@@ -1625,7 +1684,6 @@ def background_loop():
                         ACTIVE_SESSION["upload_complete"]
                         or ACTIVE_SESSION["upload_failed"]
                     ) and not ACTIVE_SESSION["print_dispatched"]:
-
                         ACTIVE_SESSION["mode"] = "latest"
                         ACTIVE_SESSION["print_dispatched"] = True
                         local_session_key = ACTIVE_SESSION["session_id"]
@@ -1764,7 +1822,9 @@ def graceful_shutdown_handler(signum, frame):
         # If disable was requested via web route, handle it now
         if ACTIVE_SESSION.get("disable_service_on_exit", False):
             print("[SHUTDOWN] Softly disabling glitchbooth.service for next boot...")
-            subprocess.run(["sudo", "systemctl", "disable", "glitchbooth.service"], check=False)
+            subprocess.run(
+                ["sudo", "systemctl", "disable", "glitchbooth.service"], check=False
+            )
 
         # ONLY run TTY/getty rescue if we are exiting to terminal (NOT powering off or rebooting)
         if ACTIVE_SESSION.get("exit_to_terminal", False):
@@ -1773,7 +1833,9 @@ def graceful_shutdown_handler(signum, frame):
             subprocess.run(["sudo", "kbd_mode", "-a"], check=False)
 
             print("[SHUTDOWN TTY RESCUE] Spawning fresh login prompt on tty1...")
-            subprocess.run(["sudo", "systemctl", "start", "getty@tty1.service"], check=False)
+            subprocess.run(
+                ["sudo", "systemctl", "start", "getty@tty1.service"], check=False
+            )
             subprocess.run(["sudo", "chvt", "1"], check=False)
             print("[SHUTDOWN TTY RESCUE] Local terminal login prompt restored!")
         else:
@@ -2111,6 +2173,8 @@ def captures(filename):
 def remote_shutdown():
     global cam_thread_alive
     cam_thread_alive = False
+    client_ip = request.remote_addr if request else "unknown"
+    logger.warning("[REMOTE CONTROL] Shutdown requested from %s", client_ip)
 
     def delayed_poweroff():
         time.sleep(0.5)  # Allow HTTP response to flush back to client first
@@ -2136,6 +2200,8 @@ def remote_shutdown():
 def remote_reboot():
     global cam_thread_alive
     cam_thread_alive = False
+    client_ip = request.remote_addr if request else "unknown"
+    logger.warning("[REMOTE CONTROL] Reboot requested from %s", client_ip)
 
     def delayed_reboot():
         time.sleep(0.5)  # Allow HTTP response to flush back to client first
@@ -2161,6 +2227,8 @@ def remote_reboot():
 def remote_service_disable():
     global cam_thread_alive
     cam_thread_alive = False
+    client_ip = request.remote_addr if request else "unknown"
+    logger.warning("[REMOTE CONTROL] Service disable requested from %s", client_ip)
 
     # 1. Flag service to be disabled during the graceful shutdown sequence
     ACTIVE_SESSION["disable_service_on_exit"] = True
@@ -2267,6 +2335,12 @@ def server_local_stats_page():
 
 
 if __name__ == "__main__":
+    LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+    logging.basicConfig(
+        level=getattr(logging, LOG_LEVEL, logging.INFO),
+        format="%(asctime)s %(levelname)s [%(threadName)s] %(name)s: %(message)s",
+    )
 
     # Running independently: block on Waitress natively
     start_backend_engine(blocking=True)

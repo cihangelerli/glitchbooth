@@ -5,9 +5,11 @@ Production-Ready Freeze: Implements atomic snapshot frame decoupling, micro-prof
 telemetry, dynamic layout invariants, and unified event-driven shutdown integration.
 """
 
-import sys
+import logging
 import os
+import sys
 import time
+
 import numpy as np
 
 # Force SDL to target the Pi 5 direct hardware DRM pipeline
@@ -16,31 +18,46 @@ os.environ["SDL_VIDEODRIVER"] = "kmsdrm"
 os.environ["SDL_AUDIODRIVER"] = "alsa"
 os.environ["SDL_VIDEO_KMSDRM_SCALING"] = "1"
 
+import random
+import threading
+from pathlib import Path
+
 import pygame
+
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s [%(threadName)s] %(name)s: %(message)s",
+)
+
+logger = logging.getLogger("glitchbooth.display")
+
+logger.info("[DISPLAY INIT] Importing backend server module")
 
 # Import backend shared state and layout buffers directly from server context
 import server
 
-import threading
-import random
-from pathlib import Path
+logger.info("[DISPLAY INIT] Starting backend engine in embedded mode")
 
 # Launch the backend workers and Flask API seamlessly without blocking Pygame
 server.start_backend_engine(blocking=False)
+
+logger.info("[DISPLAY INIT] Backend engine started")
 
 # ==============================================================================
 # DYNAMIC STARTUP INVARIANTS & ENFORCEMENT
 # ==============================================================================
 print("\n[DISPLAY INIT] Executing structural memory layout assertions...")
-assert (
-    server.UI_DISPLAY_BUFFER.ndim == 3
-), f"CRITICAL: Shape mismatch! Expected 3 dimensions (H, W, C), got {server.UI_DISPLAY_BUFFER.ndim}"
-assert (
-    server.UI_DISPLAY_BUFFER.shape[2] == 3
-), f"CRITICAL: Channel mismatch! Expected 3 color channels, got {server.UI_DISPLAY_BUFFER.shape[2]}"
-assert (
-    server.UI_DISPLAY_BUFFER.flags["C_CONTIGUOUS"] == True
-), "CRITICAL: Memory layout fault! Shared buffer array is not C-contiguous."
+assert server.UI_DISPLAY_BUFFER.ndim == 3, (
+    f"CRITICAL: Shape mismatch! Expected 3 dimensions (H, W, C), got {server.UI_DISPLAY_BUFFER.ndim}"
+)
+assert server.UI_DISPLAY_BUFFER.shape[2] == 3, (
+    f"CRITICAL: Channel mismatch! Expected 3 color channels, got {server.UI_DISPLAY_BUFFER.shape[2]}"
+)
+assert server.UI_DISPLAY_BUFFER.flags["C_CONTIGUOUS"] == True, (
+    "CRITICAL: Memory layout fault! Shared buffer array is not C-contiguous."
+)
 
 # Ingest current resolution parameters dynamically from backend memory allocation
 OP_FRAME_H, OP_FRAME_W = (
@@ -112,20 +129,36 @@ KNOB_ROWS = [
 # RUN-ONCE BOOT DRIVER ENCODING ANALYSIS
 # ==============================================================================
 print("[DISPLAY INIT] Testing host OS image buffer driver capabilities...")
+logger.info("[DISPLAY INIT] Testing zero-copy frame buffer path")
+
 USE_FROMBUFFER = True
 try:
     test_matrix = np.zeros((OP_FRAME_H, OP_FRAME_W, 3), dtype=np.uint8, order="C")
     _ = pygame.image.frombuffer(test_matrix.data, (OP_FRAME_W, OP_FRAME_H), "BGR")
-except ValueError:
+except ValueError as exc:
     USE_FROMBUFFER = False
+    logger.warning(
+        "[DISPLAY INIT] Zero-copy frame buffer unavailable; using surfarray fallback: %s",
+        exc,
+    )
 
 print(
     f"[DISPLAY INIT] Execution Pipeline Selected: {'Zero-Copy Frame View' if USE_FROMBUFFER else 'Surfarray Matrix Convert Fallback'}"
+)
+logger.info(
+    "[DISPLAY INIT] Execution pipeline selected: %s",
+    "zero-copy frame view" if USE_FROMBUFFER else "surfarray matrix fallback",
 )
 
 # ==============================================================================
 # SURGICAL SUBSYSTEM INITIALIZATION (ALSA AUDIOLOCK BYPASS)
 # ==============================================================================
+logger.info(
+    "[DISPLAY INIT] Initializing Pygame display. SDL_VIDEODRIVER=%s SDL_AUDIODRIVER=%s",
+    os.getenv("SDL_VIDEODRIVER"),
+    os.getenv("SDL_AUDIODRIVER"),
+)
+
 pygame.display.init()
 pygame.font.init()
 
@@ -136,8 +169,18 @@ except Exception:
     ui_font = pygame.font.Font(None, 24)
 
 flags = pygame.DOUBLEBUF | pygame.HWSURFACE | pygame.FULLSCREEN
+
+logger.info(
+    "[DISPLAY INIT] Creating fullscreen hardware surface: %sx%s flags=%s",
+    DISPLAY_W,
+    DISPLAY_H,
+    flags,
+)
+
 hardware_screen = pygame.display.set_mode((DISPLAY_W, DISPLAY_H), flags)
 virtual_canvas = pygame.Surface((DISPLAY_W, DISPLAY_H))
+
+logger.info("[DISPLAY INIT] Fullscreen hardware surface created")
 
 pygame.mouse.set_visible(False)
 clock = pygame.time.Clock()
@@ -175,7 +218,6 @@ all_images = []
 
 if os.path.exists(server.CAPTURE_DIR):
     for f in os.listdir(server.CAPTURE_DIR):
-
         # Only include final color captures
         if not f.endswith("_color.jpg"):
             continue
@@ -244,7 +286,6 @@ def audio_loop():
         return
 
     while RUN_AUDIO:
-
         sound = random.choice(sounds)
 
         channel = sound.play()
@@ -329,7 +370,7 @@ try:
                         t_duration > 0.002
                     ):  # Log warning flags if copy exceeds 2.0ms window
                         print(
-                            f"[PERF WARNING] Frame copy latency spike detected: {t_duration*1000:.2f}ms"
+                            f"[PERF WARNING] Frame copy latency spike detected: {t_duration * 1000:.2f}ms"
                         )
 
                 finally:
@@ -530,7 +571,10 @@ try:
                             ).convert()
 
                         except Exception:
-                            pass
+                            logger.exception(
+                                "[DISPLAY LOGIC] Failed to build latest-screen frozen-frame fallback for session %s",
+                                current_session_id,
+                            )
 
                 if latest_display_surface is not None:
                     virtual_canvas.blit(latest_display_surface, VIDEO_RECT)
@@ -593,6 +637,10 @@ try:
 
 except KeyboardInterrupt:
     print("\n[WATCHDOG] Intercepted exit signal.")
+    logger.info("[WATCHDOG] Intercepted display exit signal")
+except Exception:
+    logger.exception("[DISPLAY LOOP] Unexpected display loop crash")
+    raise
 finally:
     # 1. Alert the backend workers to stop processing immediately
     server.SHUTDOWN_EVENT.set()
