@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Glitch Booth Kiosk Presentation Engine - pygame_display.py (v8.2)
+Glitch Booth Kiosk Presentation Engine - pygame_display.py (v8.3)
 Production-Ready Freeze: Implements atomic snapshot frame decoupling, micro-profiling
 telemetry, dynamic layout invariants, and unified event-driven shutdown integration.
 """
@@ -427,9 +427,7 @@ try:
                 )
 
             # Draw Header Title above the video stream
-            header_surf = ui_font.render(
-                "> GLITCH BOOTH release candidate 01", True, (0, 255, 0)
-            )
+            header_surf = ui_font.render("> GLITCH BOOTH beta 02", True, (0, 255, 0))
             virtual_canvas.blit(header_surf, (PADDING_LEFT, CLEARANCE_MARGIN))
 
             # Draw Telemetry Panel (Knobs matched directly with index.html layouts)
@@ -482,11 +480,12 @@ try:
             panel_y += LINE_PADDING
 
             instructions = [
-                "> -- <- LEFT          RIGHT -> ++",
+                "> LESS <- LEFT          RIGHT -> MORE",
+                ">  -                              +  ",
                 "> TURN THE KNOBS, COMBINE EFFECTS",
-                "> SET GLITCH STRENGTH AS YOU WISH",
+                "> SET GLITCH STRENGTH AS YOU LIKE",
                 "> PRESS BUTTON TO CAPTURE, WAIT 3 SEC",
-                "> PRINT READY ALMOST INSTANTLY :)",
+                "> PRINT IS READY ALMOST INSTANTLY :)",
             ]
 
             for line in instructions:
