@@ -189,9 +189,9 @@ def initialize_crt_mask():
     for i in range(CRT_APERTURE_PERIOD):
         col_idx = i % 3
         channel = 2 - col_idx
-        float_mask[:, x_indices % CRT_APERTURE_PERIOD == i, channel] += (
-            CRT_APERTURE_STRENGTH
-        )
+        float_mask[
+            :, x_indices % CRT_APERTURE_PERIOD == i, channel
+        ] += CRT_APERTURE_STRENGTH
 
     np.clip(float_mask, 0.0, 1.0, out=float_mask)
     CRT_MASK[:] = (float_mask * 255.0).astype(np.uint8)
@@ -320,8 +320,9 @@ upload_queue = queue.Queue(maxsize=32)
 
 # PRINT VARIABLES
 # ==================================================
-PRINT_ALPHA = 1.5
-PRINT_BETA = 37
+# 1.2 & 11 for bright days and 1.4 & 37 for night
+PRINT_ALPHA = 1.2
+PRINT_BETA = 11
 
 
 # ASCII TILES
@@ -670,14 +671,7 @@ def n(val):
 
 def apply_glitch_pipeline(current_time, control_packet):
     global WARMUP_COUNTER, LAST_TEMPORAL_PURGE, CORRUPTION_ENERGY, CORRUPTION_MODE
-    global \
-        ASCII_LOWRES_GRAY, \
-        ASCII_UPRES_GRAY, \
-        ASCII_BLOCK_BUFFER, \
-        ASCII_COLOR_BUFFER, \
-        ASCII_GREEN_BUFFER, \
-        ASCII_NOISE_LOW, \
-        ASCII_NOISE_UP
+    global ASCII_LOWRES_GRAY, ASCII_UPRES_GRAY, ASCII_BLOCK_BUFFER, ASCII_COLOR_BUFFER, ASCII_GREEN_BUFFER, ASCII_NOISE_LOW, ASCII_NOISE_UP
     global SPARK_COUNTER, SPARK_INTERVAL
     h, w = FRAME_H, FRAME_W
     pkt_knobs = control_packet.knobs
