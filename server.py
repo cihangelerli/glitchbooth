@@ -321,7 +321,7 @@ upload_queue = queue.Queue(maxsize=32)
 # PRINT VARIABLES
 # ==================================================
 # 1.2 & 11 for bright days and 1.4 & 37 for night
-PRINT_ALPHA = 1.2
+PRINT_ALPHA = 1.5
 PRINT_BETA = 11
 
 
