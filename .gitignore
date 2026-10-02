@@ -8,6 +8,7 @@ backup-files/
 
 # Python Virtual Environment
 venv/
+.venv/
 
 # Redundant backups
 server-backup.py
