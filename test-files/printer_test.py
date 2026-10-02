@@ -11,17 +11,17 @@ def test_printer():
     printer.hw("INIT")
 
     # Print custom text
-    printer.text("@->----------------------------------------<-@\n")
-    printer.text("@->-~-~-~-~-~-~-~-~-~-~~-~-~-~-~-~-~-~-~-~-<-@\n")
-    printer.text("||                                          ||\n")
-    printer.text("||       GLITCH BOOTH SYNTHISTAN'DA         ||\n")
-    printer.text("||                                          ||\n")
-    printer.text("|⎱~<{@}>~-~<{@}>~-~<{@ @}>~-~<{@}>~-~<{@}>~⎱|\n")
-    printer.text("||                                          ||\n")
-    printer.text("||  10 Ekim'de Bina Moda'da Görüşmek Üzere! ||\n")
-    printer.text("||                                          ||\n")
-    printer.text("@->-~-~-~-~-~-~-~-~-~-~~-~-~-~-~-~-~-~-~-~-<-@\n")
-    printer.text("@->-~q9#M!2$v&8^k*7%#zL1#_wP5oX3/fN6cR0?#<-@\n\n")
+    printer.text("@->------------------------------------------<-@\n")
+    printer.text("@->------------------------------------------<-@\n")
+    printer.text("||                                            ||\n")
+    printer.text("||         GLITCH BOOTH SYNTHISTAN'DA         ||\n")
+    printer.text("||                                            ||\n")
+    printer.text("@->------------------------------------------<-@\n")
+    printer.text("||                                            ||\n")
+    printer.text("||   10 Ekim'de Bina Moda'da Görüşmek Üzere!  ||\n")
+    printer.text("||                                            ||\n")
+    printer.text("@->------------------------------------------<-@\n")
+    printer.text("@->------------------------------------------<-@\n\n")
 
     # Feed 3 lines so the cut happens past the text
     printer.ln(3)
