@@ -526,8 +526,8 @@ try:
             panel_y += LINE_PADDING
 
             instructions = [
-                "> SOL <- DAHA AZ EFEKT       DAHA ÇOK EFEKT -> SAĞ",
-                ">  -                                           +  ",
+                "> SOL <- DAHA AZ               DAHA ÇOK -> SAĞ",
+                ">  -      EFEKT                 EFEKT       + ",
                 "> KONTROLLERLE OYNA, KENDİ EFEKTİNİ YARAT,",
                 "> GLITCH ETKİSİNİ İSTEDİĞİN GİBİ AYARLA,",
                 "> POZUNU VER, DÜĞMEYE BAS, GLITCH FOTONU ÇEK!",
