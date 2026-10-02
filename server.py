@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import shutil
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -56,6 +57,9 @@ os.makedirs(CAPTURE_DIR, exist_ok=True)
 
 SAVED_DIR = "saved"
 os.makedirs(SAVED_DIR, exist_ok=True)
+
+ARCHIVE_DIR = "captures_archive"
+os.makedirs(ARCHIVE_DIR, exist_ok=True)
 
 IK_URL_ENDPOINT = os.getenv("IK_URL_ENDPOINT")
 IK_PRIVATE_KEY = os.getenv("IK_PRIVATE_KEY")
@@ -189,9 +193,9 @@ def initialize_crt_mask():
     for i in range(CRT_APERTURE_PERIOD):
         col_idx = i % 3
         channel = 2 - col_idx
-        float_mask[
-            :, x_indices % CRT_APERTURE_PERIOD == i, channel
-        ] += CRT_APERTURE_STRENGTH
+        float_mask[:, x_indices % CRT_APERTURE_PERIOD == i, channel] += (
+            CRT_APERTURE_STRENGTH
+        )
 
     np.clip(float_mask, 0.0, 1.0, out=float_mask)
     CRT_MASK[:] = (float_mask * 255.0).astype(np.uint8)
@@ -671,7 +675,14 @@ def n(val):
 
 def apply_glitch_pipeline(current_time, control_packet):
     global WARMUP_COUNTER, LAST_TEMPORAL_PURGE, CORRUPTION_ENERGY, CORRUPTION_MODE
-    global ASCII_LOWRES_GRAY, ASCII_UPRES_GRAY, ASCII_BLOCK_BUFFER, ASCII_COLOR_BUFFER, ASCII_GREEN_BUFFER, ASCII_NOISE_LOW, ASCII_NOISE_UP
+    global \
+        ASCII_LOWRES_GRAY, \
+        ASCII_UPRES_GRAY, \
+        ASCII_BLOCK_BUFFER, \
+        ASCII_COLOR_BUFFER, \
+        ASCII_GREEN_BUFFER, \
+        ASCII_NOISE_LOW, \
+        ASCII_NOISE_UP
     global SPARK_COUNTER, SPARK_INTERVAL
     h, w = FRAME_H, FRAME_W
     pkt_knobs = control_packet.knobs
@@ -1100,26 +1111,56 @@ def apply_glitch_pipeline(current_time, control_packet):
 # ==================================================
 
 
-def cleanup_sessions(limit=500):
+def cleanup_sessions(limit=100):
     try:
         files = os.listdir(CAPTURE_DIR)
         timestamps = sorted(
             [f.replace("_color.jpg", "") for f in files if "_color.jpg" in f]
         )
         if len(timestamps) > limit:
-            to_delete = timestamps[:-limit]
-            for ts in to_delete:
-                targets = [
-                    (CAPTURE_DIR, f"{ts}_color.jpg"),
-                    (CAPTURE_DIR, f"{ts}_bw.jpg"),
-                    (SAVED_DIR, f"{ts}_qr.png"),
-                ]
-                for folder, filename in targets:
-                    path = os.path.join(folder, filename)
-                    if os.path.exists(path):
-                        os.remove(path)
+            to_archive = timestamps[:-limit]
+            archived_count = 0
+            for ts in to_archive:
+                # 1. Safely move the Color capture to the Archive folder
+                src_color = os.path.join(CAPTURE_DIR, f"{ts}_color.jpg")
+                dst_color = os.path.join(ARCHIVE_DIR, f"{ts}_color.jpg")
+                if os.path.exists(src_color):
+                    try:
+                        if os.path.exists(dst_color):
+                            os.remove(dst_color)
+                        shutil.move(src_color, dst_color)
+                        archived_count += 1
+                    except Exception as move_err:
+                        logger.error(
+                            f"[ARCHIVE ERROR] Failed to archive {src_color}: {move_err}"
+                        )
+
+                # 2. Delete Black & White receipt print file
+                bw_path = os.path.join(CAPTURE_DIR, f"{ts}_bw.jpg")
+                if os.path.exists(bw_path):
+                    try:
+                        os.remove(bw_path)
+                    except Exception:
+                        pass
+
+                # 3. Delete saved QR code image
+                qr_path = os.path.join(SAVED_DIR, f"{ts}_qr.png")
+                if os.path.exists(qr_path):
+                    try:
+                        os.remove(qr_path)
+                    except Exception:
+                        pass
+
+            if archived_count > 0:
+                logger.info(
+                    f"[ARCHIVE] Safely relocated {archived_count} color captures to {ARCHIVE_DIR}"
+                )
+                print(
+                    f"[ARCHIVE] Relocated {archived_count} excess captures to {ARCHIVE_DIR} (kept newest {limit})"
+                )
     except Exception as e:
-        print(f"File purging pipeline exception: {e}")
+        logger.error(f"Archival pipeline exception: {e}")
+        print(f"Archival pipeline exception: {e}")
 
 
 def print_booth_receipt(ts):
@@ -1610,7 +1651,7 @@ def background_loop():
                             logger.info(
                                 "[UPLOAD QUEUE] Session queued for upload: %s", disk_id
                             )
-                            cleanup_sessions(limit=500)
+                            cleanup_sessions(limit=100)
                         except queue.Full:
                             print(
                                 f"[STATE ENGINE WARNING] Queue full. Enqueuing {disk_id} directly to offline cache file."
