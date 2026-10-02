@@ -1185,7 +1185,9 @@ def print_booth_receipt(ts):
             printer.text("|             SYNTHISTAN HATIRA$I             |\n")
             printer.text("|                 powered by                  |\n")
             printer.text("|       GLITCH BOOTH & Dirtcake Studio        |\n")
-            printer.text(f"|    {time.strftime('%Y-%m-%d %H:%M:%S')}     |\n")
+            printer.text(
+                f"|            {time.strftime('%Y-%m-%d %H:%M:%S')}             |\n"
+            )
             printer.text("@->>=======================================<<-@\n")
 
             bw_image_path = f"{CAPTURE_DIR}/{ts}_bw.jpg"
