@@ -30,3 +30,9 @@ coverage/
 !.env.example
 capture_log.jsonl
 stats.json
+
+# Persistent storage symlinks
+captures
+saved
+telemetry
+pending_uploads.txt
