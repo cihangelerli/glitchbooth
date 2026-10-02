@@ -523,6 +523,7 @@ try:
                 (PADDING_LEFT + VIDEO_RENDER_W, panel_y),
                 1,
             )
+            panel_y += LINE_PADDING
             pygame.draw.line(
                 virtual_canvas,
                 (0, 255, 0),
