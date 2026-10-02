@@ -265,9 +265,19 @@
       <div class="card">
         <div class="card-title">SYSTEM STATUS</div>
         <div class="stat-grid">
-          <div class="stat-item" onclick="copyIp()" style="cursor: pointer">
-            <span class="stat-label">IP ADDRESS (TAP TO COPY)</span>
-            <span class="stat-value" id="val-ip">Connecting...</span>
+          <div class="stat-item">
+            <span class="stat-label">IP ADDRESS</span>
+            <span
+              class="stat-value"
+              id="display-ip"
+              onclick="copyIp()"
+              style="
+                cursor: pointer;
+                text-decoration: underline;
+                color: #00ff00;
+              "
+              >Connecting...</span
+            >
           </div>
           <div class="stat-item">
             <span class="stat-label">BOOTH MODE</span>
@@ -422,8 +432,13 @@
           if (xhr.readyState === 4 && xhr.status === 200) {
             try {
               var data = JSON.parse(xhr.responseText);
-              document.getElementById("val-ip").innerText =
-                (data.ip || "Unknown") + ":5000";
+              var ipEl = document.getElementById("display-ip");
+
+              // Only update text if not currently showing the "COPIED!" animation
+              if (ipEl && ipEl.innerText !== "COPIED!") {
+                ipEl.innerText = (data.ip || "Unknown") + ":5000";
+              }
+
               document.getElementById("val-mode").innerText = (
                 data.mode || "UNKNOWN"
               ).toUpperCase();
@@ -491,20 +506,31 @@
       }
 
       function copyIp() {
-        var ipText = "http://" + document.getElementById("val-ip").innerText;
+        var ipEl = document.getElementById("display-ip");
+        var ipText = "http://" + ipEl.innerText;
+
+        // Fallback for non-HTTPS (Local IP) connections on mobile Safari & Chrome
         var textArea = document.createElement("textarea");
         textArea.value = ipText;
         document.body.appendChild(textArea);
         textArea.select();
+        if (textArea.setSelectionRange) {
+          textArea.setSelectionRange(0, 99999); // Mobile Safari focus helper
+        }
         try {
           document.execCommand("copy");
-          var el = document.getElementById("val-ip");
-          var orig = el.innerText;
-          el.innerText = "COPIED!";
+          // Visual feedback animation
+          var original = ipEl.innerText;
+          ipEl.innerText = "COPIED!";
+          ipEl.style.color = "#ffffff";
           setTimeout(function () {
-            el.innerText = orig;
+            ipEl.innerText = original;
+            ipEl.style.color = "#00ff00";
           }, 1000);
-        } catch (err) {}
+        } catch (err) {
+          console.error("Fallback copy failed", err);
+        }
+
         document.body.removeChild(textArea);
       }
 

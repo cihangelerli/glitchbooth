@@ -214,6 +214,7 @@ for _ in range(15):
 
 ticker_surface_array = []
 
+"""
 all_images = []
 
 if os.path.exists(server.CAPTURE_DIR):
@@ -248,6 +249,51 @@ for img_path, _ in all_images[:100]:
         )
         ticker_surface_array.append(scaled_surf.convert())
 
+    except Exception as err:
+        print(f"[DISPLAY INIT] Skipping unreadable image asset {img_path}: {err}")
+
+"""
+
+# Target captures_archive folder (with fallback to captures if archive is empty or missing)
+target_dir = getattr(server, "ARCHIVE_DIR", "captures_archive")
+if not os.path.exists(target_dir):
+    target_dir = server.CAPTURE_DIR
+
+candidate_images = []
+
+# 1. Collect all images from the archive folder (Name-Agnostic: accepts any valid image extension)
+if os.path.exists(target_dir):
+    for f in os.listdir(target_dir):
+        if f.lower().endswith((".jpg", ".jpeg", ".png")):
+            candidate_images.append(os.path.join(target_dir, f))
+
+# 2. If archive has fewer than 100 images, supplement with images from active captures
+if (
+    len(candidate_images) < 100
+    and os.path.exists(server.CAPTURE_DIR)
+    and server.CAPTURE_DIR != target_dir
+):
+    for f in os.listdir(server.CAPTURE_DIR):
+        if f.lower().endswith((".jpg", ".jpeg", ".png")):
+            candidate_images.append(os.path.join(server.CAPTURE_DIR, f))
+
+# 3. Select up to 100 random unique images across the entire pool
+sample_size = min(100, len(candidate_images))
+selected_images = (
+    random.sample(candidate_images, sample_size) if candidate_images else []
+)
+print(
+    f"[DISPLAY INIT] Selected {len(selected_images)} random photos from archive (out of {len(candidate_images)} available)."
+)
+
+# 4. Pre-scale and load the random pool into the ticker tape
+for img_path in selected_images:
+    try:
+        loaded_surf = pygame.image.load(img_path)
+        scaled_surf = pygame.transform.scale(
+            loaded_surf, (TICKER_ITEM_W, TICKER_ITEM_H)
+        )
+        ticker_surface_array.append(scaled_surf.convert())
     except Exception as err:
         print(f"[DISPLAY INIT] Skipping unreadable image asset {img_path}: {err}")
 
@@ -427,7 +473,7 @@ try:
                 )
 
             # Draw Header Title above the video stream
-            header_surf = ui_font.render("> GLITCH BOOTH beta 02", True, (0, 255, 0))
+            header_surf = ui_font.render("> GLITCH BOOTH beta 03", True, (0, 255, 0))
             virtual_canvas.blit(header_surf, (PADDING_LEFT, CLEARANCE_MARGIN))
 
             # Draw Telemetry Panel (Knobs matched directly with index.html layouts)
@@ -480,12 +526,12 @@ try:
             panel_y += LINE_PADDING
 
             instructions = [
-                "> LESS <- LEFT          RIGHT -> MORE",
-                ">  -                              +  ",
-                "> TURN THE KNOBS, COMBINE EFFECTS",
-                "> SET GLITCH STRENGTH AS YOU LIKE",
-                "> PRESS BUTTON TO CAPTURE, WAIT 3 SEC",
-                "> PRINT IS READY ALMOST INSTANTLY :)",
+                "> SOL <- DAHA AZ EFEKT       DAHA ÇOK EFEKT -> SAĞ",
+                ">  -                                           +  ",
+                "> KONTROLLERLE OYNA, KENDİ EFEKTİNİ YARAT,",
+                "> GLITCH ETKİSİNİ İSTEDİĞİN GİBİ AYARLA,",
+                "> POZUNU VER, DÜĞMEYE BAS, GLITCH FOTONU ÇEK!",
+                "> FOTOĞRAFIN 3 SANİYEDE ELİNDE :)",
             ]
 
             for line in instructions:
@@ -616,7 +662,7 @@ try:
                         server.ACTIVE_SESSION["mode"] = "live"
                     latest_mode_start_time = None
                 # Render terminal footer copy below the scannable area
-                footer_text = "> PRESS BUTTON TO RETURN TO LIVE VIEW"
+                footer_text = "> FOTOĞRAF ÇEKME MODUNA GERİ DÖNMEK İÇİN DÜĞMEYE BAS!"
                 footer_surf = ui_font.render(footer_text, True, (0, 255, 0))
                 virtual_canvas.blit(
                     footer_surf,
