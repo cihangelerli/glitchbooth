@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <title>Glitch Booth — Command Center</title>
+
+    <style>
+      * {
+        -webkit-box-sizing: border-box;
+        -moz-box-sizing: border-box;
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        padding: 0;
+        background: #000;
+        color: #fff;
+        font-family: Arial, Helvetica, sans-serif;
+        -webkit-touch-callout: none;
+        -webkit-user-select: none;
+        user-select: none;
+      }
+
+      .container {
+        max-width: 700px;
+        margin: 0 auto;
+        padding: 16px;
+      }
+
+      /* TOP BAR */
+      .topbar {
+        border-bottom: 1px solid #222;
+        padding-bottom: 14px;
+        margin-bottom: 18px;
+        display: -webkit-box;
+        display: -webkit-flex;
+        display: flex;
+        -webkit-box-pack: justify;
+        -webkit-justify-content: space-between;
+        justify-content: space-between;
+        -webkit-box-align: center;
+        -webkit-align-items: center;
+        align-items: center;
+      }
+
+      .title {
+        font-size: 18px;
+        font-weight: bold;
+        letter-spacing: 1px;
+        color: #00ff00;
+        font-family: Courier, monospace;
+      }
+
+      .nav-links a {
+        color: #888;
+        text-decoration: none;
+        font-size: 14px;
+        margin-left: 12px;
+        padding: 6px 10px;
+        border: 1px solid #333;
+        border-radius: 8px;
+      }
+      .nav-links a:hover,
+      .nav-links a:active {
+        color: #fff;
+        border-color: #555;
+      }
+
+      /* CARDS */
+      .card {
+        background: #0b0b0b;
+        border: 1px solid #222;
+        border-radius: 14px;
+        padding: 16px;
+        margin-bottom: 16px;
+      }
+
+      .card-title {
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 1.5px;
+        color: #888;
+        margin-bottom: 12px;
+        font-family: Courier, monospace;
+        border-bottom: 1px solid #1a1a1a;
+        padding-bottom: 6px;
+      }
+
+      /* TELEMETRY ROWS */
+      .stat-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        font-family: Courier, monospace;
+        font-size: 13px;
+      }
+
+      .stat-item {
+        background: #111;
+        padding: 10px;
+        border-radius: 8px;
+        border: 1px solid #1c1c1c;
+      }
+
+      .stat-label {
+        color: #666;
+        font-size: 11px;
+        margin-bottom: 4px;
+        display: block;
+      }
+
+      .stat-value {
+        color: #00ff00;
+        font-weight: bold;
+        font-size: 14px;
+        word-break: break-all;
+      }
+
+      /* BUTTONS */
+      .button-stack {
+        display: -webkit-box;
+        display: -webkit-flex;
+        display: flex;
+        -webkit-box-orient: vertical;
+        -webkit-box-direction: normal;
+        -webkit-flex-direction: column;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .button {
+        -webkit-appearance: none;
+        appearance: none;
+        border: none;
+        background: #161616;
+        color: #fff;
+        padding: 16px;
+        border-radius: 12px;
+        font-size: 15px;
+        font-weight: bold;
+        letter-spacing: 0.5px;
+        cursor: pointer;
+        min-height: 54px;
+        width: 100%;
+        text-align: center;
+        transition: 0.15s ease;
+      }
+      .button:active {
+        -webkit-transform: scale(0.98);
+        transform: scale(0.98);
+      }
+
+      /* SPECIFIC ACTION COLORS */
+      .btn-reboot {
+        background: #003366;
+        border: 1px solid #0055aa;
+      }
+      .btn-reboot:active {
+        background: #004488;
+      }
+
+      .btn-shutdown {
+        background: #550000;
+        border: 1px solid #880000;
+      }
+      .btn-shutdown:active {
+        background: #770000;
+      }
+
+      .btn-disable {
+        background: #440022;
+        border: 1px solid #880044;
+        color: #ff3377;
+      }
+      .btn-disable:active {
+        background: #660033;
+      }
+
+      .btn-secondary {
+        background: #1a1a1a;
+        border: 1px solid #333;
+        color: #ccc;
+      }
+
+      /* OVERLAYS */
+      .overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.92);
+        display: none;
+        -webkit-box-align: center;
+        -webkit-align-items: center;
+        align-items: center;
+        -webkit-box-pack: center;
+        -webkit-justify-content: center;
+        justify-content: center;
+        z-index: 999;
+        padding: 20px;
+      }
+
+      .overlay-content {
+        width: 100%;
+        max-width: 420px;
+        background: #111;
+        border: 1px solid #333;
+        border-radius: 16px;
+        padding: 22px;
+        text-align: center;
+      }
+
+      .overlay-content h2 {
+        margin-top: 0;
+        font-size: 18px;
+        margin-bottom: 12px;
+      }
+      .overlay-content p {
+        font-size: 14px;
+        opacity: 0.8;
+        line-height: 1.5;
+        margin-bottom: 22px;
+      }
+
+      .overlay-buttons {
+        display: -webkit-box;
+        display: -webkit-flex;
+        display: flex;
+        gap: 10px;
+      }
+      .overlay-buttons .button {
+        -webkit-box-flex: 1;
+        -webkit-flex: 1;
+        flex: 1;
+      }
+
+      .danger-confirm {
+        background: #880000;
+      }
+      .reboot-confirm {
+        background: #004488;
+      }
+      .disable-confirm {
+        background: #aa0044;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <!-- TOP HEADER -->
+      <div class="topbar">
+        <div class="title">GLITCH BOOTH</div>
+        <div class="nav-links">
+          <a href="/">LIVE VIEW</a>
+          <a href="/gallery">GALLERY</a>
+        </div>
+      </div>
+
+      <!-- LIVE TELEMETRY MATRIX -->
+      <div class="card">
+        <div class="card-title">SYSTEM STATUS</div>
+        <div class="stat-grid">
+          <div class="stat-item" onclick="copyIp()" style="cursor: pointer">
+            <span class="stat-label">IP ADDRESS (TAP TO COPY)</span>
+            <span class="stat-value" id="val-ip">Connecting...</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">BOOTH MODE</span>
+            <span class="stat-value" id="val-mode">...</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">CPU TEMPERATURE</span>
+            <span class="stat-value" id="val-temp">--°C</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">MEMORY USAGE</span>
+            <span class="stat-value" id="val-mem">-- MB</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- POWER & REBOOT CONTROLS -->
+      <div class="card">
+        <div class="card-title">HARDWARE & POWER MANAGEMENT</div>
+        <div class="button-stack">
+          <button class="button btn-reboot" onclick="openDialog('rebootModal')">
+            REBOOT PI
+          </button>
+          <button
+            class="button btn-shutdown"
+            onclick="openDialog('shutdownModal')"
+          >
+            POWER OFF SYSTEM
+          </button>
+          <button
+            class="button btn-disable"
+            onclick="openDialog('disableModal')"
+          >
+            RESTART WITH SERVICE DISABLED
+          </button>
+        </div>
+      </div>
+
+      <!-- FUTURE EXTENSIBILITY CONTAINER -->
+      <div class="card">
+        <div class="card-title">BOOTH OPERATIONS & RECOVERY</div>
+        <div class="button-stack">
+          <button class="button btn-secondary" onclick="forceLiveMode()">
+            FORCE RESET TO LIVE STREAM
+          </button>
+          <!-- Drop future action buttons here (e.g. Test Print, Camera Re-init, Storage Flush) -->
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL: REBOOT -->
+    <div class="overlay" id="rebootModal">
+      <div class="overlay-content">
+        <h2>REBOOT SYSTEM?</h2>
+        <p>
+          The Raspberry Pi will reboot. The connection will drop for about 45-60
+          seconds while the kiosk restarts.
+        </p>
+        <div class="overlay-buttons">
+          <button
+            class="button btn-secondary"
+            onclick="closeDialog('rebootModal')"
+          >
+            CANCEL
+          </button>
+          <button class="button reboot-confirm" onclick="triggerReboot()">
+            REBOOT NOW
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL: SHUTDOWN -->
+    <div class="overlay" id="shutdownModal">
+      <div class="overlay-content">
+        <h2>SAFE SHUTDOWN</h2>
+        <p>
+          This safely halts system processes and powers off the Pi. Wait 10
+          seconds after screen turns black before unplugging power.
+        </p>
+        <div class="overlay-buttons">
+          <button
+            class="button btn-secondary"
+            onclick="closeDialog('shutdownModal')"
+          >
+            CANCEL
+          </button>
+          <button class="button danger-confirm" onclick="triggerShutdown()">
+            POWER OFF
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL: DISABLE & REBOOT -->
+    <div class="overlay" id="disableModal">
+      <div class="overlay-content">
+        <h2 style="color: #ff3377">DISABLE SERVICE & REBOOT?</h2>
+        <p style="color: #ff99aa">
+          This will disable the kiosk service and reboot the Pi directly to a
+          standard Linux console login prompt.<br /><br />The web dashboard will
+          go offline until manually restored via SSH.
+        </p>
+        <div class="overlay-buttons">
+          <button
+            class="button btn-secondary"
+            onclick="closeDialog('disableModal')"
+          >
+            CANCEL
+          </button>
+          <button
+            class="button disable-confirm"
+            onclick="triggerDisableAndReboot()"
+          >
+            DISABLE & REBOOT
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // --- MODAL CONTROLS ---
+      function openDialog(id) {
+        document.getElementById(id).style.display = "flex";
+      }
+      function closeDialog(id) {
+        document.getElementById(id).style.display = "none";
+      }
+
+      // --- LEGACY-SAFE AJAX HELPER (XHR supports iOS 9+ and all browsers) ---
+      function sendPost(url, onSuccess, onError) {
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", url, true);
+        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.onreadystatechange = function () {
+          if (xhr.readyState === 4) {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              if (onSuccess) onSuccess(xhr.responseText);
+            } else {
+              if (onError) onError(xhr.status);
+            }
+          }
+        };
+        xhr.send();
+      }
+
+      // --- TELEMETRY POLL ---
+      function updateTelemetry() {
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", "/state", true);
+        xhr.onreadystatechange = function () {
+          if (xhr.readyState === 4 && xhr.status === 200) {
+            try {
+              var data = JSON.parse(xhr.responseText);
+              document.getElementById("val-ip").innerText =
+                (data.ip || "Unknown") + ":5000";
+              document.getElementById("val-mode").innerText = (
+                data.mode || "UNKNOWN"
+              ).toUpperCase();
+              document.getElementById("val-temp").innerText = data.cpu_temp
+                ? data.cpu_temp + "°C"
+                : "--";
+              document.getElementById("val-mem").innerText = data.memory_rss_mb
+                ? data.memory_rss_mb + " MB"
+                : "--";
+            } catch (e) {}
+          }
+        };
+        xhr.send();
+      }
+
+      // --- ACTION DISPATCHERS ---
+      function triggerReboot() {
+        sendPost(
+          "/reboot",
+          function () {
+            document.querySelector("#rebootModal .overlay-content").innerHTML =
+              "<h2>REBOOTING</h2><p>System restarting. Wait 60 seconds then refresh.</p>";
+          },
+          function () {
+            alert("Server did not acknowledge reboot command.");
+          },
+        );
+      }
+
+      function triggerShutdown() {
+        sendPost(
+          "/shutdown",
+          function () {
+            document.querySelector(
+              "#shutdownModal .overlay-content",
+            ).innerHTML =
+              "<h2>SHUTTING DOWN</h2><p>Safe to disconnect power once monitor is dark (10 seconds).</p>";
+          },
+          function () {
+            alert("Server did not acknowledge power off command.");
+          },
+        );
+      }
+
+      function triggerDisableAndReboot() {
+        sendPost(
+          "/service/disable",
+          function () {
+            document.querySelector("#disableModal .overlay-content").innerHTML =
+              "<h2 style='color: #ff3377;'>REBOOTING TO CONSOLE</h2><p>Kiosk service disabled. Pi is restarting to terminal login prompt.<br><br>SSH is required to restart booth!</p>";
+          },
+          function () {
+            // Even on immediate network drop, the server initiates the reboot sequence
+            document.querySelector("#disableModal .overlay-content").innerHTML =
+              "<h2>DISPATCHED</h2><p>Signal received. Pi is restarting to console.</p>";
+          },
+        );
+      }
+
+      function forceLiveMode() {
+        sendPost("/clear_session", function () {
+          alert("Session cleared. Booth returned to Live Mode.");
+          updateTelemetry();
+        });
+      }
+
+      function copyIp() {
+        var ipText = "http://" + document.getElementById("val-ip").innerText;
+        var textArea = document.createElement("textarea");
+        textArea.value = ipText;
+        document.body.appendChild(textArea);
+        textArea.select();
+        try {
+          document.execCommand("copy");
+          var el = document.getElementById("val-ip");
+          var orig = el.innerText;
+          el.innerText = "COPIED!";
+          setTimeout(function () {
+            el.innerText = orig;
+          }, 1000);
+        } catch (err) {}
+        document.body.removeChild(textArea);
+      }
+
+      // Initial poll + 3-second cycle
+      updateTelemetry();
+      setInterval(updateTelemetry, 3000);
+    </script>
+  </body>
+</html>

@@ -2031,6 +2031,11 @@ def audio_node():
     return render_template("sounds.html")
 
 
+@app.route("/control")
+def control_panel():
+    return render_template("control.html")
+
+
 @app.route("/gallery")
 def gallery():
     page = int(request.args.get("page", 1))
@@ -2263,6 +2268,35 @@ def remote_service_disable():
     global cam_thread_alive
     cam_thread_alive = False
     client_ip = request.remote_addr if request else "unknown"
+    logger.warning(
+        "[REMOTE CONTROL] Service disable & reboot requested from %s", client_ip
+    )
+
+    def delayed_disable_and_reboot():
+        time.sleep(
+            0.8
+        )  # Allows HTTP response packet to transmit cleanly back to phone/browser
+        subprocess.run(
+            ["sudo", "systemctl", "disable", "glitchbooth.service"], check=False
+        )
+        subprocess.run(["sudo", "systemctl", "reboot"], check=False)
+
+    threading.Thread(target=delayed_disable_and_reboot, daemon=True).start()
+
+    return jsonify(
+        {
+            "status": "disabling_and_rebooting",
+            "message": "Kiosk disabled. Rebooting Pi to console login. SSH or manual restart required to restore!",
+        }
+    )
+
+
+"""
+@app.route("/service/disable", methods=["POST"])
+def remote_service_disable():
+    global cam_thread_alive
+    cam_thread_alive = False
+    client_ip = request.remote_addr if request else "unknown"
     logger.warning("[REMOTE CONTROL] Service disable requested from %s", client_ip)
 
     # 1. Flag service to be disabled during the graceful shutdown sequence
@@ -2279,7 +2313,7 @@ def remote_service_disable():
     )
 
 
-"""
+
 @app.route("/service/disable", methods=["POST"])
 def remote_service_disable():
     global cam_thread_alive
