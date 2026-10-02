@@ -2,21 +2,17 @@
 Description=Glitch Booth Release Candidate 01 (Pygame Kiosk)
 After=network.target
 Wants=network.target
-# CRITICAL: Tells systemd to temporarily stop the login screen on tty1 so it doesn't fight our kiosk
 Conflicts=getty@tty1.service
 
 [Service]
 Type=simple
-WorkingDirectory=/home/glitchbooth/glitch-booth
-ExecStart=/home/glitchbooth/glitch-booth/venv/bin/python /home/glitchbooth/glitch-booth/pygame_display.py
+WorkingDirectory=/home/glitchbooth/glitchbooth
+ExecStart=/home/glitchbooth/glitchbooth/.venv/bin/python /home/glitchbooth/glitchbooth/pygame_display.py
 
-# Drop root permissions and run as the standard user
 User=glitchbooth
 Group=glitchbooth
-# Pass through essential hardware access permissions explicitly
-SupplementaryGroups=video input audio tty
+SupplementaryGroups=video input audio tty lp dialout
 
-# Monitor and input device targeting
 StandardInput=tty
 StandardOutput=tty
 TTYPath=/dev/tty1
@@ -28,9 +24,9 @@ RestartSec=2
 
 Environment=PYTHONUNBUFFERED=1
 Environment=SDL_VIDEODRIVER=kmsdrm
+Environment=SDL_AUDIODRIVER=alsa
 
 ExecStartPre=/bin/sleep 2
 
 [Install]
 WantedBy=multi-user.target
-
