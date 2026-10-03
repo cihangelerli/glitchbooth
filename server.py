@@ -1186,7 +1186,7 @@ def print_booth_receipt(ts):
             printer.text("|                 powered by                  |\n")
             printer.text("|       GLITCH BOOTH & Dirtcake Studio        |\n")
             printer.text(
-                f"|             {time.strftime('%Y-%m-%d %H:%M:%S')}             |\n"
+                f"|             {time.strftime('%Y-%m-%d %H:%M:%S')}              |\n"
             )
             printer.text("@->>=======================================<<-@\n")
 
