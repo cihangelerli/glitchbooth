@@ -1181,14 +1181,14 @@ def print_booth_receipt(ts):
             TARGET_WIDTH = 576
             printer = File("/dev/usb/lp0")
             printer.hw("INIT")
-            printer.text("@->>=======================================<<-@\n")
-            printer.text("|             SYNTHISTAN HATIRA$I             |\n")
-            printer.text("|                 powered by                  |\n")
-            printer.text("|       GLITCH BOOTH & Dirtcake Studio        |\n")
+            printer.text("@->>--     =========================     --<<-@\n")
+            printer.text("              SYNTHISTAN HATIRA$I              \n")
+            printer.text("                  powered by                   \n")
+            printer.text("        GLITCH BOOTH & Dirtcake Studio         \n")
             printer.text(
-                f"|             {time.strftime('%Y-%m-%d %H:%M:%S')}             |\n"
+                f"              {time.strftime('%Y-%m-%d %H:%M:%S')}              \n"
             )
-            printer.text("@->>=======================================<<-@\n")
+            printer.text("@->>--     ========================     --<<-@\n")
 
             bw_image_path = f"{CAPTURE_DIR}/{ts}_bw.jpg"
             if os.path.exists(bw_image_path):
@@ -1223,7 +1223,7 @@ def print_booth_receipt(ts):
                 printer.text(" > Scan to save your digital copy!   \n")
                 printer.text(" > Follow us on socials: @dirtcakestudio   \n")
 
-            printer.text("@->>=======================================<<-@\n")
+            printer.text("@->>--     ========================     --<<-@\n")
             printer.ln(3)
             printer.cut()
             time.sleep(0.5)

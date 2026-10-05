@@ -692,21 +692,40 @@ try:
 except KeyboardInterrupt:
     print("\n[WATCHDOG] Intercepted exit signal.")
     logger.info("[WATCHDOG] Intercepted display exit signal")
+    # Flag that this was a manual keyboard exit to release the terminal
+    server.ACTIVE_SESSION["exit_to_terminal"] = True
+
 except Exception:
     logger.exception("[DISPLAY LOOP] Unexpected display loop crash")
+    # Even on crash, ensure terminal is restored so system isn't left frozen
+    server.ACTIVE_SESSION["exit_to_terminal"] = True
     raise
+
 finally:
     # 1. Alert the backend workers to stop processing immediately
     server.SHUTDOWN_EVENT.set()
 
-    # 2. Alert the backend workers to stop processing immediately
+    # 2. Stop audio processing
     RUN_AUDIO = False
-    pygame.mixer.quit()
-    print("[AUDIO SHUTDOWN] Glitch Audio Stopped.")
+    try:
+        pygame.mixer.quit()
+        print("[AUDIO SHUTDOWN] Glitch Audio Stopped.")
+    except Exception:
+        pass
 
     # 3. Release Pygame graphics contexts and unmount KMSDRM buffers
-    pygame.quit()
-    print("[UI SHUTDOWN COMPLETE] Kiosk graphics engine unmounted.")
+    try:
+        pygame.quit()
+        print("[UI SHUTDOWN COMPLETE] Kiosk graphics engine unmounted.")
+    except Exception:
+        pass
+
+    # Safety check: If no reboot or shutdown flag was set by web routes, force exit_to_terminal
+    if not (
+        server.ACTIVE_SESSION.get("is_rebooting")
+        or server.ACTIVE_SESSION.get("is_shutting_down")
+    ):
+        server.ACTIVE_SESSION["exit_to_terminal"] = True
 
     # 4. Hand over total execution control to the final server handler
     try:
