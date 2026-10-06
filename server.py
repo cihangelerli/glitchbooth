@@ -74,6 +74,72 @@ IK_AUTH_STRING = base64.b64encode(f"{IK_PRIVATE_KEY}:".encode()).decode()
 
 HTTP_SESSION = requests.Session()
 
+# =========================================================================
+# EVENT MODE CONFIGURATION
+# =========================================================================
+# - NAKED MODE: Set EVENT_SLUG = ""
+#   Target: /booth_captures
+#   URL:    https://glitchbooth.online/p/{timestamp}
+#
+# - EVENT MODE: Set EVENT_SLUG = "your-event-slug" (e.g., "synthistan2026")
+#   Target: /booth_captures/your-event-slug
+#   URL:    https://glitchbooth.online/your-event-slug/p/{timestamp}
+#
+# CRITICAL CHECKLIST WHEN CHANGING EVENT_SLUG:
+# 1. WEBSITE SLUG MATCH: 'EVENT_SLUG' MUST match 'SLUG' in 'event.config.ts' EXACTLY.
+# 2. IMAGEKIT FOLDER: Ensure '/booth_captures/<EVENT_SLUG>/' exists on ImageKit.
+# 3. THERMAL RECEIPT: Manually update event title, subtitle, and social handles
+#    inside 'print_booth_receipt()' below!
+# 4. PENDING UPLOADS: Ensure 'pending_uploads.txt' is empty or flushed before
+#    switching EVENT_SLUG to prevent previous event captures syncing to the new folder.
+#    To quickly flush/empty in bash:
+#        > pending_uploads.txt      (or: rm -f pending_uploads.txt)
+# =========================================================================
+EVENT_SLUG = os.getenv("EVENT_SLUG", "synthistan2026")
+IK_BASE_FOLDER = os.getenv("IK_BASE_FOLDER", "booth_captures")
+BASE_DOMAIN = os.getenv("BASE_DOMAIN", "https://glitchbooth.online")
+
+# Print contrast variables (1.2 & 11 for bright days, 1.4 & 37 for night)
+PRINT_ALPHA = float(os.getenv("PRINT_ALPHA", "1.5"))
+PRINT_BETA = int(os.getenv("PRINT_BETA", "11"))
+
+
+def get_ik_target_folder() -> str:
+    """
+    Computes the ImageKit folder path dynamically at call-time.
+    - Naked Mode (""):      '/booth_captures'
+    - Event Mode ("slug"):  '/booth_captures/slug'
+    """
+    slug = (EVENT_SLUG or "").strip().strip("/")
+    if slug:
+        return f"/{IK_BASE_FOLDER}/{slug}"
+    return f"/{IK_BASE_FOLDER}"
+
+
+def get_landing_url(ts: str) -> str:
+    """
+    Constructs the landing URL for capture timestamp 'ts'.
+    - Naked Mode (""):      'https://glitchbooth.online/p/{ts}'
+    - Event Mode ("slug"):  'https://glitchbooth.online/slug/p/{ts}'
+    """
+    slug = (EVENT_SLUG or "").strip().strip("/")
+    domain = BASE_DOMAIN.rstrip("/")
+    if slug:
+        return f"{domain}/{slug}/p/{ts}"
+    return f"{domain}/p/{ts}"
+
+
+print("==================================================")
+print(" GLITCHBOOTH SERVER RUNTIME CONFIGURATION")
+print(
+    f" [MODE]          : {'EVENT MODE (' + EVENT_SLUG + ')' if EVENT_SLUG else 'NAKED MODE'}"
+)
+print(f" [IMAGEKIT PATH] : {get_ik_target_folder()}")
+print(f" [PRINT CONTRAST]: ALPHA={PRINT_ALPHA}, BETA={PRINT_BETA}")
+print(f" [SAMPLE URL]    : {get_landing_url(str(int(time.time() * 1000)))}")
+print("==================================================")
+
+
 SERIAL_PORTS = ["/dev/ttyUSB0", "/dev/ttyACM0"]
 CAMERA_STALE_TIMEOUT = 5
 CAMERA_REFRESH_INTERVAL = 21600
@@ -321,12 +387,6 @@ FRAME_ID = 0
 STREAM_FRAME_ID = -1
 
 upload_queue = queue.Queue(maxsize=32)
-
-# PRINT VARIABLES
-# ==================================================
-# 1.2 & 11 for bright days and 1.4 & 37 for night
-PRINT_ALPHA = 1.5
-PRINT_BETA = 11
 
 
 # ASCII TILES
@@ -1181,6 +1241,9 @@ def print_booth_receipt(ts):
             TARGET_WIDTH = 576
             printer = File("/dev/usb/lp0")
             printer.hw("INIT")
+            # -------------------------------------------------------------
+            # MANUAL RECEIPT TEXT: Update header text below per event
+            # -------------------------------------------------------------
             printer.text("@->>--     =========================     --<<-@\n")
             printer.text("              SYNTHISTAN HATIRA$I              \n")
             printer.text("                  powered by                   \n")
@@ -1188,7 +1251,7 @@ def print_booth_receipt(ts):
             printer.text(
                 f"              {time.strftime('%Y-%m-%d %H:%M:%S')}              \n"
             )
-            printer.text("@->>--     ========================     --<<-@\n")
+            printer.text("@->>--     =========================     --<<-@\n")
 
             bw_image_path = f"{CAPTURE_DIR}/{ts}_bw.jpg"
             if os.path.exists(bw_image_path):
@@ -1216,14 +1279,13 @@ def print_booth_receipt(ts):
                 printer.text(" > NETWORK OFFLINE // CACHED LOCALLY  \n")
                 printer.text(" > Upload link down. Capture is stored safely. \n")
                 printer.text(" > Sync will auto-resume when booth is online. \n")
-                printer.text(f" > Visit https://glitchbooth.online/p/{ts} later \n")
-                printer.text(" > or scan your qr later \n")
-                printer.text(" > to manually retrieve your capture \n")
+                printer.text(" > Or retrieve your capture online:\n")
+                printer.text(f"   {get_landing_url(ts)}\n")
             else:
                 printer.text(" > Scan to save your digital copy!   \n")
                 printer.text(" > Follow us on socials: @dirtcakestudio   \n")
 
-            printer.text("@->>--     ========================     --<<-@\n")
+            printer.text("@->>--     =========================     --<<-@\n")
             printer.ln(3)
             printer.cut()
             time.sleep(0.5)
@@ -1275,7 +1337,7 @@ def idle_sync_worker():
                             "file": (remote_filename, f, "image/jpeg"),
                             "fileName": (None, remote_filename),
                             "useUniqueFileName": (None, "false"),
-                            "folder": (None, "/booth_captures"),
+                            "folder": (None, get_ik_target_folder()),
                         }
                         headers = {"Authorization": f"Basic {IK_AUTH_STRING}"}
 
@@ -1342,6 +1404,14 @@ def upload_queue_worker():
             qr_filename = f"{ts}_qr.png"
             qr_path = os.path.join(SAVED_DIR, qr_filename)
 
+            # Generate QR code upfront (unified for online and offline fallback)
+            landing_url = get_landing_url(ts)
+            try:
+                qr_img = qrcode.make(landing_url)
+                qr_img.save(qr_path)
+            except Exception as qr_err:
+                print(f"[QR ERROR] Failed to generate/save QR code for {ts}: {qr_err}")
+
             upload_status_msg = "UPLOADING"
             upload_success = False
             MAX_UPLOAD_RETRIES = 2
@@ -1354,7 +1424,7 @@ def upload_queue_worker():
                             "file": (remote_filename, f, "image/jpeg"),
                             "fileName": (None, remote_filename),
                             "useUniqueFileName": (None, "false"),
-                            "folder": (None, "/booth_captures"),
+                            "folder": (None, get_ik_target_folder()),
                         }
                         headers = {"Authorization": f"Basic {IK_AUTH_STRING}"}
 
@@ -1364,10 +1434,6 @@ def upload_queue_worker():
 
                     if response.status_code == 200:
                         res_data = response.json()
-
-                        landing_url = f"https://glitchbooth.online/p/{ts}"
-                        qr_img = qrcode.make(landing_url)
-                        qr_img.save(qr_path)
 
                         upload_status_msg = "SUCCESS"
                         upload_success = True
@@ -1389,16 +1455,12 @@ def upload_queue_worker():
                 upload_status_msg = "FAILED"
 
                 try:
-                    landing_url = f"https://glitchbooth.online/p/{ts}"
-                    qr_img = qrcode.make(landing_url)
-                    qr_img.save(qr_path)
-
                     with cache_file_lock:
                         with open("pending_uploads.txt", "a") as cache_log:
                             cache_log.write(f"{ts}\n")
 
                     print(
-                        f"[OFFLINE FALLBACK] Link offline. Generated generic QR and cached session {ts} locally."
+                        f"[OFFLINE FALLBACK] Link offline. Cached session {ts} locally."
                     )
                 except Exception as fallback_err:
                     print(
