@@ -1279,7 +1279,7 @@ def print_booth_receipt(ts):
                 printer.text(" > NETWORK OFFLINE // CACHED LOCALLY  \n")
                 printer.text(" > Upload link down. Capture is stored safely. \n")
                 printer.text(" > Sync will auto-resume when booth is online. \n")
-                printer.text(" > Or retrieve your capture online:\n")
+                printer.text(" > You can get your digital copy online later: \n")
                 printer.text(f"   {get_landing_url(ts)}\n")
             else:
                 printer.text(" > Scan to save your digital copy!   \n")
