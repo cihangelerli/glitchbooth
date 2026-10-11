@@ -95,7 +95,8 @@ HTTP_SESSION = requests.Session()
 #    To quickly flush/empty in bash:
 #        > pending_uploads.txt      (or: rm -f pending_uploads.txt)
 # =========================================================================
-EVENT_SLUG = os.getenv("EVENT_SLUG", "synthistan2026")
+
+EVENT_SLUG = os.getenv("EVENT_SLUG", "")
 IK_BASE_FOLDER = os.getenv("IK_BASE_FOLDER", "booth_captures")
 BASE_DOMAIN = os.getenv("BASE_DOMAIN", "https://glitchbooth.online")
 
