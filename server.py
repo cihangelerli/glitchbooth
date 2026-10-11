@@ -103,6 +103,16 @@ BASE_DOMAIN = os.getenv("BASE_DOMAIN", "https://glitchbooth.online")
 PRINT_ALPHA = float(os.getenv("PRINT_ALPHA", "1.5"))
 PRINT_BETA = int(os.getenv("PRINT_BETA", "11"))
 
+# Receipt QR composite configuration
+RECEIPT_QR_SIZE = int(os.getenv("RECEIPT_QR_SIZE", "250"))
+RECEIPT_QR_MARGIN = int(os.getenv("RECEIPT_QR_MARGIN", "15"))
+RECEIPT_QR_ROTATION = int(
+    os.getenv("RECEIPT_QR_ROTATION", "90")
+)  # 90 degrees clockwise
+RECEIPT_QR_CORNER = os.getenv(
+    "RECEIPT_QR_CORNER", "bottom-left"
+)  # Options: "bottom-left", "bottom-right", "top-left", "top-right"
+
 
 def get_ik_target_folder() -> str:
     """
@@ -347,6 +357,7 @@ ACTIVE_SESSION = {
     "session_id": None,
     "upload_complete": False,
     "upload_failed": False,
+    "composite_ready": False,
     "print_dispatched": False,
     "countdown_start_time": 0.0,
     "countdown_remaining": 3,
@@ -1211,6 +1222,14 @@ def cleanup_sessions(limit=100):
                     except Exception:
                         pass
 
+                # 4. Delete composite receipt image
+                comp_png = os.path.join(CAPTURE_DIR, f"{ts}_composite.png")
+                if os.path.exists(comp_png):
+                    try:
+                        os.remove(comp_png)
+                    except Exception:
+                        pass
+
             if archived_count > 0:
                 logger.info(
                     f"[ARCHIVE] Safely relocated {archived_count} color captures to {ARCHIVE_DIR}"
@@ -1221,6 +1240,125 @@ def cleanup_sessions(limit=100):
     except Exception as e:
         logger.error(f"Archival pipeline exception: {e}")
         print(f"Archival pipeline exception: {e}")
+
+
+def generate_composite_receipt_image(ts: str) -> str:
+    """
+    Composites the QR code into a corner of the rotated B&W capture.
+    Saves as a lossless PNG intermediate (captures/{ts}_composite.png).
+    Leaves '{ts}_bw.jpg' unchanged.
+    Returns composite path on verified success, or None on failure.
+    """
+    composite_path = os.path.join(CAPTURE_DIR, f"{ts}_composite.png")
+    if os.path.exists(composite_path) and os.path.getsize(composite_path) > 0:
+        return composite_path
+
+    bw_path = os.path.join(CAPTURE_DIR, f"{ts}_bw.jpg")
+    qr_path = os.path.join(SAVED_DIR, f"{ts}_qr.png")
+
+    if not os.path.exists(bw_path):
+        logger.error("[COMPOSITE] Base B&W capture missing for %s: %s", ts, bw_path)
+        return None
+
+    # Verify or generate QR upfront
+    if not os.path.exists(qr_path):
+        try:
+            landing_url = get_landing_url(ts)
+            qr_img = qrcode.make(landing_url)
+            qr_img.save(qr_path)
+            logger.info("[COMPOSITE] QR code generated on demand for session %s", ts)
+        except Exception as qr_err:
+            logger.error("[COMPOSITE] QR generation failed for %s: %s", ts, qr_err)
+            return None
+
+    try:
+        with Image.open(bw_path) as bw_img, Image.open(qr_path) as qr_img:
+            composite = bw_img.convert("L").copy()
+            bw_w, bw_h = composite.size
+
+            # 1. Orientation assertion: receipt frame is expected in portrait orientation (height > width)
+            if bw_h <= bw_w:
+                logger.warning(
+                    "[COMPOSITE] Base image for %s is landscape (%dx%d); expected portrait.",
+                    ts,
+                    bw_w,
+                    bw_h,
+                )
+
+            # 2. Dimension validation: ensure QR and margins fit comfortably within frame
+            max_allowed_qr = min(bw_w, bw_h) - (2 * RECEIPT_QR_MARGIN)
+            effective_qr_size = RECEIPT_QR_SIZE
+            if effective_qr_size > max_allowed_qr:
+                logger.warning(
+                    "[COMPOSITE] QR size (%dpx) exceeds safe boundary (%dpx). Clamping to fit.",
+                    effective_qr_size,
+                    max_allowed_qr,
+                )
+                effective_qr_size = max(64, max_allowed_qr)
+
+            # 3. Resize QR with NEAREST resampling to keep pure 1-bit square modules
+            qr_resized = qr_img.convert("L").resize(
+                (effective_qr_size, effective_qr_size), Image.Resampling.NEAREST
+            )
+
+            # 4. Apply rotation (90° clockwise by default to match capture viewing axis)
+            if RECEIPT_QR_ROTATION == 90:
+                qr_rotated = qr_resized.rotate(-90, expand=True)
+            elif RECEIPT_QR_ROTATION == 180:
+                qr_rotated = qr_resized.rotate(180, expand=True)
+            elif RECEIPT_QR_ROTATION == 270:
+                qr_rotated = qr_resized.rotate(90, expand=True)
+            else:
+                qr_rotated = qr_resized
+
+            # 5. Calculate position based on specified corner
+            corner = RECEIPT_QR_CORNER.lower()
+            if corner == "bottom-right":
+                x_pos = bw_w - effective_qr_size - RECEIPT_QR_MARGIN
+                y_pos = bw_h - effective_qr_size - RECEIPT_QR_MARGIN
+            elif corner == "top-left":
+                x_pos = RECEIPT_QR_MARGIN
+                y_pos = RECEIPT_QR_MARGIN
+            elif corner == "top-right":
+                x_pos = bw_w - effective_qr_size - RECEIPT_QR_MARGIN
+                y_pos = RECEIPT_QR_MARGIN
+            else:  # default: "bottom-left"
+                x_pos = RECEIPT_QR_MARGIN
+                y_pos = bw_h - effective_qr_size - RECEIPT_QR_MARGIN
+
+            x_pos = max(0, min(x_pos, bw_w - effective_qr_size))
+            y_pos = max(0, min(y_pos, bw_h - effective_qr_size))
+
+            # 6. Paste QR into position (including its white quiet zone)
+            composite.paste(qr_rotated, (x_pos, y_pos))
+
+            # 7. Save as lossless PNG to avoid compression artifacts on print edges
+            composite.save(composite_path, format="PNG")
+
+            # Final validation check
+            if (
+                not os.path.exists(composite_path)
+                or os.path.getsize(composite_path) == 0
+            ):
+                logger.error(
+                    "[COMPOSITE] Verification failed: %s is empty or missing.",
+                    composite_path,
+                )
+                return None
+
+            logger.info(
+                "[COMPOSITE] Lossless composite created successfully: %s",
+                composite_path,
+            )
+            return composite_path
+
+    except Exception as comp_err:
+        logger.error(
+            "[COMPOSITE] Unexpected failure generating composite for %s: %s",
+            ts,
+            comp_err,
+        )
+        return None
 
 
 def print_booth_receipt(ts):
@@ -1253,9 +1391,18 @@ def print_booth_receipt(ts):
             )
             printer.text("@->>--     =========================     --<<-@\n")
 
-            bw_image_path = f"{CAPTURE_DIR}/{ts}_bw.jpg"
-            if os.path.exists(bw_image_path):
-                with Image.open(bw_image_path) as img:
+            # Ensure composite image is ready
+            composite_path = os.path.join(CAPTURE_DIR, f"{ts}_composite.png")
+            if not os.path.exists(composite_path):
+                composite_path = generate_composite_receipt_image(ts)
+
+            using_composite = bool(composite_path and os.path.exists(composite_path))
+            target_image_path = (
+                composite_path if using_composite else f"{CAPTURE_DIR}/{ts}_bw.jpg"
+            )
+
+            if os.path.exists(target_image_path):
+                with Image.open(target_image_path) as img:
                     aspect_ratio = img.height / img.width
                     target_height = int(TARGET_WIDTH * aspect_ratio)
                     resized_img = img.resize(
@@ -1265,15 +1412,18 @@ def print_booth_receipt(ts):
                     printer.image(dithered_img)
                 printer.text("\n")
 
-            qr_path = os.path.join(SAVED_DIR, f"{ts}_qr.png")
-            if os.path.exists(qr_path):
-                with Image.open(qr_path) as qr_img:
-                    qr_target_size = 384
-                    resized_qr = qr_img.resize(
-                        (qr_target_size, qr_target_size), Image.Resampling.NEAREST
+                if not using_composite:
+                    # Explicit fallback notice printed directly on paper if composite failed
+                    logger.warning(
+                        "[PRINTER FALLBACK] Session %s printed without embedded QR.", ts
                     )
-                    printer.image(resized_qr)
-                printer.text("\n")
+                    printer.text(" > NOTICE: QR EMBEDDING UNAVAILABLE  \n")
+                    printer.text(f" > RETRIEVE AT: {get_landing_url(ts)}\n\n")
+            else:
+                logger.error(
+                    "[PRINTER ERROR] No printable photo found for session %s", ts
+                )
+                print(f"[PRINTER ERROR] No printable photo found for session {ts}")
 
             if is_offline_capture:
                 printer.text(" > NETWORK OFFLINE // CACHED LOCALLY  \n")
@@ -1404,13 +1554,37 @@ def upload_queue_worker():
             qr_filename = f"{ts}_qr.png"
             qr_path = os.path.join(SAVED_DIR, qr_filename)
 
-            # Generate QR code upfront (unified for online and offline fallback)
+            # --- PHASE A: Unified QR Code Generation ---
             landing_url = get_landing_url(ts)
+            qr_generated = False
             try:
                 qr_img = qrcode.make(landing_url)
                 qr_img.save(qr_path)
+                qr_generated = True
             except Exception as qr_err:
+                logger.error(
+                    "[QR GENERATION ERROR] Session %s QR creation failed: %s",
+                    ts,
+                    qr_err,
+                )
                 print(f"[QR ERROR] Failed to generate/save QR code for {ts}: {qr_err}")
+
+            # --- PHASE B: Pre-generate Composite Receipt Image ---
+            composite_ready = False
+            if qr_generated:
+                comp_result = generate_composite_receipt_image(ts)
+                if comp_result:
+                    composite_ready = True
+                else:
+                    logger.error(
+                        "[COMPOSITE WARNING] Composite prep failed for %s; print pipeline will handle fallback.",
+                        ts,
+                    )
+
+            with mode_lock:
+                ACTIVE_SESSION["composite_ready"] = composite_ready
+
+            # --- PHASE C: ImageKit Cloud Upload (Independent of composite) ---
 
             upload_status_msg = "UPLOADING"
             upload_success = False
@@ -1673,6 +1847,7 @@ def background_loop():
                         ACTIVE_SESSION["session_id"] = high_res_id
                         ACTIVE_SESSION["upload_complete"] = False
                         ACTIVE_SESSION["upload_failed"] = False
+                        ACTIVE_SESSION["composite_ready"] = False
                         ACTIVE_SESSION["print_dispatched"] = False
                         ACTIVE_SESSION["countdown_start_time"] = loop_execution_time
                         ACTIVE_SESSION["countdown_remaining"] = 3
@@ -1947,68 +2122,6 @@ def graceful_shutdown_handler(signum, frame):
     os._exit(0)
 
 
-"""
-def graceful_shutdown_handler(signum, frame):
-    print(
-        "\n\n[SHUTDOWN] Signal intercepted (Ctrl+C / SIGTERM)! Initiating formal teardown..."
-    )
-    SHUTDOWN_EVENT.set()  # Tripped for both server.py workers AND pygame_display.py loops
-
-    # Inject the bounded sentinel token to signal the storage consumer to flush and exit
-    try:
-        telemetry.request_shutdown()
-    except Exception as e:
-        print(f"  [WARNING] Failed to request telemetry shutdown boundary: {e}")
-
-    print(
-        f"[SHUTDOWN] Marshalling {len(CRITICAL_WORKERS)} active background processes..."
-    )
-    for thread in CRITICAL_WORKERS:
-        thread.join(timeout=1.5)
-        if thread.is_alive():
-            print(
-                f"  [WARNING] Thread {thread.name} failed to exit. Proceeding with safety unmount."
-            )
-        else:
-            print(f"  [OK] Thread {thread.name} terminated gracefully.")
-
-    print("[SHUTDOWN] Hardware released. Teardown sequence finalized.")
-
-    try:
-        import subprocess
-
-        # If disable was requested via web route, run it synchronously now that workers are stopped
-        if ACTIVE_SESSION.get("disable_service_on_exit", False):
-            print("[SHUTDOWN] Softly disabling glitchbooth.service for next boot...")
-            subprocess.run(
-                ["sudo", "systemctl", "disable", "glitchbooth.service"], check=False
-            )
-
-        print("[SHUTDOWN TTY RESCUE] Forcefully resetting console input streams...")
-        # Reset terminal flags and text echoes
-        subprocess.run(["stty", "sane"], check=False)
-        # Shift keyboard out of raw binary graphics mode into standard ASCII mode
-        subprocess.run(["sudo", "kbd_mode", "-a"], check=False)
-
-        print("[SHUTDOWN TTY RESCUE] Spawning fresh login prompt on tty1...")
-        subprocess.run(
-            ["sudo", "systemctl", "start", "getty@tty1.service"], check=False
-        )
-
-        # Optional display refresh fallback
-        subprocess.run(["sudo", "chvt", "1"], check=False)
-
-        print(
-            "[SHUTDOWN TTY RESCUE] Local keyboard focus successfully restored to terminal!"
-        )
-    except Exception as tty_err:
-        print(f"[SHUTDOWN TTY RESCUE] Terminal rescue routine failed: {tty_err}")
-
-    print("[SYSTEM EXIT] Teardown complete. Process terminated.")
-    os._exit(0)
-"""
-
-
 # BACKEND ENGINE STARTING ANd OWNING ALL THE WORKERS
 # ==================================================
 
@@ -2184,9 +2297,10 @@ def delete_capture(session_id):
     color_path = os.path.join(CAPTURE_DIR, f"{session_id}_color.jpg")
     bw_path = os.path.join(CAPTURE_DIR, f"{session_id}_bw.jpg")
     qr_path = os.path.join(SAVED_DIR, f"{session_id}_qr.png")
+    comp_png = os.path.join(CAPTURE_DIR, f"{session_id}_composite.png")
 
     deleted_any = False
-    for path in [color_path, bw_path, qr_path]:
+    for path in [color_path, bw_path, qr_path, comp_png]:
         if os.path.exists(path):
             try:
                 os.remove(path)
@@ -2289,17 +2403,6 @@ def remote_shutdown():
     return jsonify({"status": "shutting_down", "message": "Powering off now..."})
 
 
-"""
-@app.route("/shutdown", methods=["POST"])
-def remote_shutdown():
-    global cam_thread_alive
-    cam_thread_alive = False
-    time.sleep(0.2)
-    subprocess.Popen(["sudo", "systemctl", "poweroff"])
-    return jsonify({"status": "shutting_down"})
-"""
-
-
 @app.route("/reboot", methods=["POST"])
 def remote_reboot():
     global cam_thread_alive
@@ -2314,17 +2417,6 @@ def remote_reboot():
     threading.Thread(target=delayed_reboot, daemon=True).start()
 
     return jsonify({"status": "rebooting", "message": "Rebooting system now..."})
-
-
-"""
-@app.route("/reboot", methods=["POST"])
-def remote_reboot():
-    global cam_thread_alive
-    cam_thread_alive = False
-    time.sleep(0.2)
-    subprocess.Popen(["sudo", "systemctl", "reboot"])
-    return jsonify({"status": "rebooting"})
-"""
 
 
 @app.route("/service/disable", methods=["POST"])
@@ -2353,50 +2445,6 @@ def remote_service_disable():
             "message": "Kiosk disabled. Rebooting Pi to console login. SSH or manual restart required to restore!",
         }
     )
-
-
-"""
-@app.route("/service/disable", methods=["POST"])
-def remote_service_disable():
-    global cam_thread_alive
-    cam_thread_alive = False
-    client_ip = request.remote_addr if request else "unknown"
-    logger.warning("[REMOTE CONTROL] Service disable requested from %s", client_ip)
-
-    # 1. Flag service to be disabled during the graceful shutdown sequence
-    ACTIVE_SESSION["disable_service_on_exit"] = True
-
-    # 2. Break Pygame loop -> triggers finally block -> calls graceful_shutdown_handler
-    ACTIVE_SESSION["exit_to_terminal"] = True
-
-    return jsonify(
-        {
-            "status": "exiting",
-            "message": "Disabling service and releasing terminal to getty login prompt...",
-        }
-    )
-
-
-
-@app.route("/service/disable", methods=["POST"])
-def remote_service_disable():
-    global cam_thread_alive
-    cam_thread_alive = False
-    time.sleep(0.2)
-
-    # Softly disable so it doesn't launch on next boot
-    subprocess.Popen(["sudo", "systemctl", "disable", "glitchbooth.service"])
-
-    # Flip the graceful exit flag for the Pygame loop
-    ACTIVE_SESSION["exit_to_terminal"] = True
-
-    return jsonify(
-        {
-            "status": "exiting",
-            "message": "Kiosk disabling... Screen releasing cleanly to terminal layout now!",
-        }
-    )
-"""
 
 
 @app.route("/ping")
