@@ -85,6 +85,14 @@ PADDING_TOP = (DISPLAY_W - VIDEO_RENDER_W) // 2
 # video bounds calculation
 VIDEO_RECT = pygame.Rect(PADDING_LEFT, PADDING_TOP, VIDEO_RENDER_W, VIDEO_RENDER_H)
 
+# ==============================================================================
+# LIVE FEED QR GUIDE INDICATOR CONFIGURATION
+# ==============================================================================
+QR_GUIDE_ENABLED = True
+QR_GUIDE_SIZE    = 130        # px — square side length
+QR_GUIDE_MARGIN  = 2         # px — gap from image edges
+QR_GUIDE_CORNER  = "bottom-left"  # Options: "bottom-left", "bottom-right", "top-left", "top-right"
+
 # Ticker Tape Presentation Layer Geometry
 TICKER_ITEM_W = 240
 TICKER_ITEM_H = 180
@@ -211,6 +219,39 @@ for _ in range(15):
     )
     noise_surf = pygame.surfarray.make_surface(np.transpose(noise_arr, (1, 0, 2)))
     NOISE_CACHE.append(noise_surf.convert())
+
+# QR Guide Indicator — pre-render once at startup
+if QR_GUIDE_ENABLED:
+    qr_guide_surface = pygame.Surface((QR_GUIDE_SIZE, QR_GUIDE_SIZE))
+    qr_guide_surface.fill((0, 255, 0))
+    try:
+        qr_guide_font = pygame.font.SysFont("Impact", int(QR_GUIDE_SIZE * 0.55))
+    except Exception:
+        qr_guide_font = pygame.font.Font(None, int(QR_GUIDE_SIZE * 0.6))
+    qr_text_surf = qr_guide_font.render("QR", True, (0, 0, 0))
+    qr_text_rect = qr_text_surf.get_rect(center=(QR_GUIDE_SIZE // 2, QR_GUIDE_SIZE // 2))
+    qr_guide_surface.blit(qr_text_surf, qr_text_rect)
+    _corner = QR_GUIDE_CORNER.lower()
+    if _corner == "bottom-right":
+        QR_GUIDE_POS = (
+            VIDEO_RECT.right  - QR_GUIDE_SIZE - QR_GUIDE_MARGIN,
+            VIDEO_RECT.bottom - QR_GUIDE_SIZE - QR_GUIDE_MARGIN,
+        )
+    elif _corner == "top-left":
+        QR_GUIDE_POS = (
+            VIDEO_RECT.left + QR_GUIDE_MARGIN,
+            VIDEO_RECT.top  + QR_GUIDE_MARGIN,
+        )
+    elif _corner == "top-right":
+        QR_GUIDE_POS = (
+            VIDEO_RECT.right - QR_GUIDE_SIZE - QR_GUIDE_MARGIN,
+            VIDEO_RECT.top   + QR_GUIDE_MARGIN,
+        )
+    else:  # default: bottom-left
+        QR_GUIDE_POS = (
+            VIDEO_RECT.left + QR_GUIDE_MARGIN,
+            VIDEO_RECT.bottom - QR_GUIDE_SIZE - QR_GUIDE_MARGIN,
+        )
 
 ticker_surface_array = []
 
@@ -449,6 +490,10 @@ try:
 
             # Draw crisp frame housing border
             pygame.draw.rect(virtual_canvas, (0, 255, 0), VIDEO_RECT, 2)
+
+            # Draw QR placement guide indicator (live & countdown only)
+            if QR_GUIDE_ENABLED:
+                virtual_canvas.blit(qr_guide_surface, QR_GUIDE_POS)
 
             # Compute Ticker Tape Ribbon Physics
             ticker_scroll_x += ticker_velocity

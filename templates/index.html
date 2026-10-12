@@ -178,6 +178,51 @@ html, body, img, div{ -webkit-touch-callout:none; -webkit-user-select:none; user
 
 }
 
+/* ============================================================
+   QR PLACEMENT GUIDE INDICATOR CONFIGURATION
+   Edit --qr-* custom properties to adjust the overlay.
+   Set --qr-guide-display to "none" to disable entirely.
+   ============================================================ */
+:root {
+    --qr-guide-display:    flex;
+    --qr-guide-width-pct:  20.31%;   /* 130 / 640 = ~20.31% of feed width */
+    --qr-guide-max-size:   130px;    /* hard cap — matches Pygame QR_GUIDE_SIZE */
+    --qr-guide-margin:     2px;      /* gap from feed edges */
+}
+
+/* Wrapper so the absolute overlay can be positioned relative to the feed */
+.feed-container {
+    position: relative;
+    width: 100%;
+    line-height: 0;   /* removes phantom gap below <img> */
+}
+
+#qrOverlay {
+    position: absolute;
+    bottom:   var(--qr-guide-margin);
+    left:     var(--qr-guide-margin);
+    width:    var(--qr-guide-width-pct);
+    max-width: var(--qr-guide-max-size);
+    aspect-ratio: 1 / 1;
+    background: #00ff00;
+    color: #000000;
+    display: var(--qr-guide-display);
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    z-index: 10;
+    container-type: inline-size;   /* enables cqi units on children */
+}
+
+/* Font scales with the guide box — never overflows regardless of screen size */
+#qrOverlayText {
+    font-family: Arial, Helvetica, sans-serif;
+    font-weight: bold;
+    line-height: 1;
+    font-size: 58px;   /* px fallback for browsers without container-query support */
+    font-size: 45cqi;  /* scales proportionally with the guide box width */
+}
+
 </style>
 
 </head>
@@ -190,11 +235,17 @@ html, body, img, div{ -webkit-touch-callout:none; -webkit-user-select:none; user
         > GLITCH BOOTH alpha
     </div>
 
-    <img
-        id="feed"
-        src="/video_feed"
-        draggable="false"
-    >
+    <div class="feed-container">
+
+        <img
+            id="feed"
+            src="/video_feed"
+            draggable="false"
+        >
+
+        <div id="qrOverlay"><span id="qrOverlayText">QR</span></div>
+
+    </div>
 
     <div class="panel">
 
@@ -360,6 +411,7 @@ function update(){
                     var overlay = document.getElementById('countdownOverlay');
                     var num = document.getElementById('countdownNumber');
                     var status = document.getElementById('countdownStatus');
+                    var qrOverlay = document.getElementById('qrOverlay');
 
                     /* COUNTDOWN MODES */
                     if(d.mode === "countdown"){
@@ -368,11 +420,13 @@ function update(){
                         if(d.countdown_seconds === 3){ status.innerHTML = "CAPTURING FRAME"; }
                         else if(d.countdown_seconds === 2){ status.innerHTML = "PROCESSING GLITCH"; }
                         else if(d.countdown_seconds === 1){ status.innerHTML = "SPOOLING TO PRINTER"; }
+                        if(qrOverlay){ qrOverlay.style.display = "flex"; }
                     }
                     else if(d.mode === "processing"){
                         overlay.style.display = "block";
                         num.innerHTML = "::";
                         status.innerHTML = "FINALIZING PRINT";
+                        if(qrOverlay){ qrOverlay.style.display = "none"; }
                     }
                     else if(d.mode === "latest"){
                         window.location.href = "/latest?id=" + d.session_id;
@@ -380,6 +434,7 @@ function update(){
                     }
                     else{
                         overlay.style.display = "none";
+                        if(qrOverlay){ qrOverlay.style.display = "flex"; }
                     }
 
                     /* MJPEG STALL DETECTION */
