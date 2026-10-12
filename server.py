@@ -105,14 +105,15 @@ PRINT_ALPHA = float(os.getenv("PRINT_ALPHA", "1.5"))
 PRINT_BETA = int(os.getenv("PRINT_BETA", "11"))
 
 # Receipt QR composite configuration
-RECEIPT_QR_SIZE = int(os.getenv("RECEIPT_QR_SIZE", "150"))
-RECEIPT_QR_MARGIN = int(os.getenv("RECEIPT_QR_MARGIN", "1"))
+RECEIPT_QR_SIZE = int(os.getenv("RECEIPT_QR_SIZE", "120"))
+RECEIPT_QR_MARGIN = int(os.getenv("RECEIPT_QR_MARGIN", "0"))
 RECEIPT_QR_ROTATION = int(
     os.getenv("RECEIPT_QR_ROTATION", "90")
 )  # 90 degrees clockwise
 RECEIPT_QR_CORNER = os.getenv(
-    "RECEIPT_QR_CORNER", "top-right"
+    "RECEIPT_QR_CORNER", "top-left"
 )  # Options: "bottom-left", "bottom-right", "top-left", "top-right"
+# the qr corner options are for vertical placementon the thermal receipt! :)
 
 
 def get_ik_target_folder() -> str:
