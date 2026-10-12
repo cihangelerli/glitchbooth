@@ -1385,9 +1385,9 @@ def print_booth_receipt(ts):
             # MANUAL RECEIPT TEXT: Update header text below per event
             # -------------------------------------------------------------
             printer.text("@->>--     =========================     --<<-@\n")
-            printer.text("   --<<-@    GLITCHBOOTH HATIRA$I    @->>--    \n")
+            printer.text("   --<<-@    GLITCHBOOTH HATIRA$I    @->>--   \n")
             printer.text("                  powered by                   \n")
-            printer.text("                Dirtcake Studio                \n")
+            printer.text("    --<<-@      Dirtcake Studio     @->>--     \n")
             printer.text(
                 f"              {time.strftime('%Y-%m-%d %H:%M:%S')}              \n"
             )
@@ -1412,7 +1412,7 @@ def print_booth_receipt(ts):
                     )
                     dithered_img = resized_img.convert("1")
                     printer.image(dithered_img)
-                printer.text("\n")
+                # printer.text("\n")
 
                 if not using_composite:
                     # Explicit fallback notice printed directly on paper if composite failed
@@ -1436,9 +1436,10 @@ def print_booth_receipt(ts):
             else:
                 printer.text(" > Scan to save your digital copy!   \n")
                 printer.text(" > Follow us on socials: @dirtcakestudio   \n")
+                printer.text(" > Follow us on socials: @glitchbooth.online   \n")
 
             printer.text("@->>--     =========================     --<<-@\n")
-            printer.ln(3)
+            printer.ln(2)
             printer.cut()
             time.sleep(0.5)
             print("PRINTER: Hardware receipt complete.")
