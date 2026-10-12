@@ -1384,9 +1384,9 @@ def print_booth_receipt(ts):
             # MANUAL RECEIPT TEXT: Update header text below per event
             # -------------------------------------------------------------
             printer.text("@->>--     =========================     --<<-@\n")
-            printer.text("              SYNTHISTAN HATIRA$I              \n")
+            printer.text("   --<<-@    GLITCHBOOTH HATIRA$I    @->>--    \n")
             printer.text("                  powered by                   \n")
-            printer.text("        GLITCH BOOTH & Dirtcake Studio         \n")
+            printer.text("                Dirtcake Studio                \n")
             printer.text(
                 f"              {time.strftime('%Y-%m-%d %H:%M:%S')}              \n"
             )
