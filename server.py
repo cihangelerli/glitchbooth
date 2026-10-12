@@ -111,7 +111,7 @@ RECEIPT_QR_ROTATION = int(
     os.getenv("RECEIPT_QR_ROTATION", "90")
 )  # 90 degrees clockwise
 RECEIPT_QR_CORNER = os.getenv(
-    "RECEIPT_QR_CORNER", "top-left"
+    "RECEIPT_QR_CORNER", "bottom-left"
 )  # Options: "bottom-left", "bottom-right", "top-left", "top-right"
 # the qr corner options are for vertical placementon the thermal receipt! :)
 
