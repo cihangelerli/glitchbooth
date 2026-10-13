@@ -199,16 +199,16 @@ clock = pygame.time.Clock()
 print("[DISPLAY INIT] Cold compiling asset caches and memory gallery lookups...")
 
 # 1. Configurable Corner Placement (authoritative setting from server.py)
-COUNTDOWN_CORNER = getattr(server, "COUNTDOWN_CORNER", "top-right")
+COUNTDOWN_CORNER = getattr(server, "COUNTDOWN_CORNER", "bottom-center")
 COUNTDOWN_MARGIN_X = int(os.getenv("COUNTDOWN_MARGIN_X", "20"))
 COUNTDOWN_MARGIN_Y = int(os.getenv("COUNTDOWN_MARGIN_Y", "16"))
 
 CORNER_COUNTDOWN_SURFACES = {}
 CORNER_COUNTDOWN_RECTS = {}
 try:
-    corner_font = pygame.font.SysFont("Impact", 110)
+    corner_font = pygame.font.SysFont("Impact", 165)
 except Exception:
-    corner_font = pygame.font.Font(None, 110)
+    corner_font = pygame.font.Font(None, 165)
 
 for count in [3, 2, 1]:
     surf = corner_font.render(str(count), True, (0, 255, 0))
@@ -216,7 +216,12 @@ for count in [3, 2, 1]:
     rect = surf.get_rect()
 
     # Dynamic positioning based on COUNTDOWN_CORNER
-    if COUNTDOWN_CORNER == "top-left":
+    if COUNTDOWN_CORNER in ("bottom-center", "bottom-middle"):
+        rect.midbottom = (
+            VIDEO_RECT.centerx,
+            VIDEO_RECT.bottom - COUNTDOWN_MARGIN_Y,
+        )
+    elif COUNTDOWN_CORNER == "top-left":
         rect.topleft = (
             VIDEO_RECT.left + COUNTDOWN_MARGIN_X,
             VIDEO_RECT.top + COUNTDOWN_MARGIN_Y,
@@ -231,10 +236,15 @@ for count in [3, 2, 1]:
             VIDEO_RECT.left + COUNTDOWN_MARGIN_X,
             VIDEO_RECT.bottom - COUNTDOWN_MARGIN_Y,
         )
-    else:  # default "top-right"
+    elif COUNTDOWN_CORNER == "top-right":
         rect.topright = (
             VIDEO_RECT.right - COUNTDOWN_MARGIN_X,
             VIDEO_RECT.top + COUNTDOWN_MARGIN_Y,
+        )
+    else:  # default bottom-center
+        rect.midbottom = (
+            VIDEO_RECT.centerx,
+            VIDEO_RECT.bottom - COUNTDOWN_MARGIN_Y,
         )
 
     CORNER_COUNTDOWN_RECTS[count] = rect
@@ -463,6 +473,9 @@ try:
             current_mode = server.ACTIVE_SESSION["mode"]
             current_session_id = server.ACTIVE_SESSION["session_id"]
             countdown_val = server.ACTIVE_SESSION["countdown_remaining"]
+            countdown_start_time = server.ACTIVE_SESSION.get(
+                "countdown_start_time", 0
+            )
             upload_status = server.ACTIVE_SESSION.get("upload_status", "SUCCESS")
             current_knobs = server.ACTIVE_SESSION.get("knobs", [0] * 6)
 
@@ -558,9 +571,13 @@ try:
                     CORNER_COUNTDOWN_RECTS[countdown_val],
                 )
 
-            # Blit post-capture "PRINTING" overlay over frozen feed
+            # Blit post-capture: FLASH then "PRINTING" overlay over frozen feed
             elif current_mode == "countdown":
-                virtual_canvas.blit(PRINTING_SURF, PRINTING_RECT)
+                c_delta = time.monotonic() - countdown_start_time
+                if c_delta < getattr(server, "FLASH_DURATION", 0.3):
+                    virtual_canvas.fill((255, 255, 255), VIDEO_RECT)
+                else:
+                    virtual_canvas.blit(PRINTING_SURF, PRINTING_RECT)
 
             # Draw Header Title above the video stream
             header_surf = ui_font.render("> GLITCH BOOTH beta 03", True, (0, 255, 0))

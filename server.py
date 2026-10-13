@@ -115,10 +115,18 @@ RECEIPT_QR_CORNER = os.getenv(
 )  # Options: "bottom-left", "bottom-right", "top-left", "top-right"
 # the qr corner options are for vertical placementon the thermal receipt! :)
 
-# On-screen live countdown corner placement ("top-right", "top-left", "bottom-right", "bottom-left")
-_VALID_CORNERS = {"top-right", "top-left", "bottom-right", "bottom-left"}
-_raw_corner = os.getenv("COUNTDOWN_CORNER", "top-right").lower().strip()
-COUNTDOWN_CORNER = _raw_corner if _raw_corner in _VALID_CORNERS else "top-right"
+# On-screen live countdown placement ("bottom-center", "bottom-middle", "top-right", "top-left", "bottom-right", "bottom-left")
+_VALID_CORNERS = {
+    "bottom-center",
+    "bottom-middle",
+    "top-right",
+    "top-left",
+    "bottom-right",
+    "bottom-left",
+}
+_raw_corner = os.getenv("COUNTDOWN_CORNER", "bottom-center").lower().strip()
+COUNTDOWN_CORNER = _raw_corner if _raw_corner in _VALID_CORNERS else "bottom-center"
+FLASH_DURATION = float(os.getenv("FLASH_DURATION", "0.3"))
 
 
 
@@ -1767,9 +1775,12 @@ def background_loop():
             if loop_mode in ["countdown", "processing", "latest"]:
                 UI_DISPLAY_BUFFER[:] = FROZEN_DISPLAY_BUFFER[:]
                 if loop_mode == "countdown":
-                    cv2.convertScaleAbs(
-                        UI_DISPLAY_BUFFER, dst=UI_DISPLAY_BUFFER, alpha=0.4, beta=0
-                    )
+                    if (loop_monotonic - c_start) < FLASH_DURATION:
+                        UI_DISPLAY_BUFFER.fill(255)  # Pure white camera flash
+                    else:
+                        cv2.convertScaleAbs(
+                            UI_DISPLAY_BUFFER, dst=UI_DISPLAY_BUFFER, alpha=0.4, beta=0
+                        )
             else:
                 # Live preview used in "live" AND "pre-capture-countdown"
                 UI_DISPLAY_BUFFER[:] = MUTABLE_PROCESSING_BUFFER[:]
@@ -2382,6 +2393,12 @@ def state():
         current_mode = ACTIVE_SESSION["mode"]
         current_session_id = ACTIVE_SESSION["session_id"]
         countdown_secs = ACTIVE_SESSION["countdown_remaining"]
+        c_start = ACTIVE_SESSION["countdown_start_time"]
+
+    is_flash = (
+        current_mode == "countdown"
+        and (time.monotonic() - c_start) < FLASH_DURATION
+    )
 
     return jsonify(
         {
@@ -2395,6 +2412,7 @@ def state():
             "frame_id": FRAME_ID,
             "upload_status": upload_status_msg,
             "mode": current_mode,
+            "is_flash": is_flash,
             "countdown_seconds": countdown_secs,
             "countdown_corner": COUNTDOWN_CORNER,  # Injected for web UI positioning
             "session_id": current_session_id,
