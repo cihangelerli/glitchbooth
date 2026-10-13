@@ -115,6 +115,12 @@ RECEIPT_QR_CORNER = os.getenv(
 )  # Options: "bottom-left", "bottom-right", "top-left", "top-right"
 # the qr corner options are for vertical placementon the thermal receipt! :)
 
+# On-screen live countdown corner placement ("top-right", "top-left", "bottom-right", "bottom-left")
+_VALID_CORNERS = {"top-right", "top-left", "bottom-right", "bottom-left"}
+_raw_corner = os.getenv("COUNTDOWN_CORNER", "top-right").lower().strip()
+COUNTDOWN_CORNER = _raw_corner if _raw_corner in _VALID_CORNERS else "top-right"
+
+
 
 def get_ik_target_folder() -> str:
     """
@@ -1718,6 +1724,7 @@ def background_loop():
 
             packet = ControlPacket(GLOBAL_KNOBS, GLOBAL_BUTTON, loop_mode)
             loop_execution_time = time.time()
+            loop_monotonic = time.monotonic()
 
             button_pressed_edge = last_button_state == 1 and packet.button == 0
 
@@ -1764,6 +1771,7 @@ def background_loop():
                         UI_DISPLAY_BUFFER, dst=UI_DISPLAY_BUFFER, alpha=0.4, beta=0
                     )
             else:
+                # Live preview used in "live" AND "pre-capture-countdown"
                 UI_DISPLAY_BUFFER[:] = MUTABLE_PROCESSING_BUFFER[:]
 
             stream_jpeg_quality = max(35, min(65, int(65 - (effect_intensity * 30))))
@@ -1824,9 +1832,93 @@ def background_loop():
             # CENTRAL CONTROL MATRIX & TRANSITION MACHINE
             # ------------------------------------------------------------------
 
-            # STATE 1: LIVE VIEWER - Listens for physical button inputs to initiate a capture sequence
+            # Reusable Storage Worker (Scoped inside state_machine_loop)
+            def async_storage_worker(disk_id, color_mat, bw_mat, active_knobs):
+                color_ok = cv2.imwrite(
+                    os.path.join(CAPTURE_DIR, f"{disk_id}_color.jpg"), color_mat
+                )
+                bw_ok = cv2.imwrite(
+                    os.path.join(CAPTURE_DIR, f"{disk_id}_bw.jpg"), bw_mat
+                )
+
+                if not color_ok or not bw_ok:
+                    print(
+                        f"[STATE ENGINE CRITICAL] Disk IO failure writing session {disk_id}. Tripping fallback flag."
+                    )
+                    logger.error(
+                        "[STATE ENGINE] Disk IO failure writing session %s. color_ok=%s bw_ok=%s",
+                        disk_id,
+                        color_ok,
+                        bw_ok,
+                    )
+                    with mode_lock:
+                        ACTIVE_SESSION["upload_failed"] = True
+                    return
+
+                logger.info(
+                    "[CAPTURE] Session files written: %s color_ok=%s bw_ok=%s",
+                    disk_id,
+                    color_ok,
+                    bw_ok,
+                )
+
+                try:
+                    upload_queue.put(disk_id, block=False)
+                    logger.info(
+                        "[UPLOAD QUEUE] Session queued for upload: %s", disk_id
+                    )
+                    cleanup_sessions(limit=100)
+                except queue.Full:
+                    print(
+                        f"[STATE ENGINE WARNING] Queue full. Enqueuing {disk_id} directly to offline cache file."
+                    )
+                    try:
+                        with cache_file_lock:
+                            with open("pending_uploads.txt", "a") as cache_log:
+                                cache_log.write(f"{disk_id}\n")
+                    except Exception as cache_err:
+                        print(
+                            f"[STATE ENGINE CRITICAL] Failed to write queue fallback to cache: {cache_err}"
+                        )
+
+                    with mode_lock:
+                        ACTIVE_SESSION["upload_failed"] = True
+
+                try:
+                    print(
+                        f"[TELEMETRY ENGINE] Executing core capture ledger entry for session: {disk_id}"
+                    )
+                    telemetry.record_capture(
+                        session_id=disk_id,
+                        knobs=active_knobs,
+                    )
+                except Exception as telemetry_fault:
+                    print(
+                        f"[TELEMETRY HOOK ERROR] Non-fatal capture entry failure: {telemetry_fault}"
+                    )
+
+            # STATE 1: LIVE VIEWER - Initiates pre-capture countdown
             if loop_mode == "live":
                 if button_pressed_edge and loop_execution_time >= capture_lock_until:
+                    with mode_lock:
+                        ACTIVE_SESSION["mode"] = "pre-capture-countdown"
+                        ACTIVE_SESSION["countdown_start_time"] = loop_monotonic
+                        ACTIVE_SESSION["countdown_remaining"] = 3
+
+                    print(
+                        "[STATE ENGINE] Button pressed. Starting pre-capture countdown (3s pose window)."
+                    )
+
+            # STATE 1B: PRE-CAPTURE COUNTDOWN - Live pose timer (3.. 2.. 1..) then snapshot capture
+            elif loop_mode == "pre-capture-countdown":
+                time_delta = loop_monotonic - c_start
+
+                if time_delta < 3.0:
+                    remaining_steps = max(1, 3 - math.floor(time_delta))
+                    with mode_lock:
+                        ACTIVE_SESSION["countdown_remaining"] = remaining_steps
+                else:
+                    # EXACT 3.0s DEADLINE REACHED: EXECUTE CAPTURE IMMEDIATELY
                     high_res_id = f"{int(time.time_ns() // 1000000)}"
 
                     FROZEN_DISPLAY_BUFFER[:] = MUTABLE_PROCESSING_BUFFER[:]
@@ -1852,78 +1944,12 @@ def background_loop():
                         ACTIVE_SESSION["upload_failed"] = False
                         ACTIVE_SESSION["composite_ready"] = False
                         ACTIVE_SESSION["print_dispatched"] = False
-                        ACTIVE_SESSION["countdown_start_time"] = loop_execution_time
-                        ACTIVE_SESSION["countdown_remaining"] = 3
+                        ACTIVE_SESSION["countdown_start_time"] = loop_monotonic
+                        ACTIVE_SESSION["countdown_remaining"] = 0
 
                     print(
-                        f"[STATE ENGINE] State advanced to countdown for {high_res_id}. Offloading disk writes asynchronously."
+                        f"[STATE ENGINE] Pose countdown finished. Captured frame for {high_res_id}. Advanced to post-capture latency mask ('PRINTING')."
                     )
-
-                    def async_storage_worker(disk_id, color_mat, bw_mat, active_knobs):
-                        color_ok = cv2.imwrite(
-                            os.path.join(CAPTURE_DIR, f"{disk_id}_color.jpg"), color_mat
-                        )
-                        bw_ok = cv2.imwrite(
-                            os.path.join(CAPTURE_DIR, f"{disk_id}_bw.jpg"), bw_mat
-                        )
-
-                        if not color_ok or not bw_ok:
-                            print(
-                                f"[STATE ENGINE CRITICAL] Disk IO failure writing session {disk_id}. Tripping fallback flag."
-                            )
-                            logger.error(
-                                "[STATE ENGINE] Disk IO failure writing session %s. color_ok=%s bw_ok=%s",
-                                disk_id,
-                                color_ok,
-                                bw_ok,
-                            )
-                            with mode_lock:
-                                ACTIVE_SESSION["upload_failed"] = True
-                            return
-
-                        logger.info(
-                            "[CAPTURE] Session files written: %s color_ok=%s bw_ok=%s",
-                            disk_id,
-                            color_ok,
-                            bw_ok,
-                        )
-
-                        try:
-                            upload_queue.put(disk_id, block=False)
-                            logger.info(
-                                "[UPLOAD QUEUE] Session queued for upload: %s", disk_id
-                            )
-                            cleanup_sessions(limit=100)
-                        except queue.Full:
-                            print(
-                                f"[STATE ENGINE WARNING] Queue full. Enqueuing {disk_id} directly to offline cache file."
-                            )
-                            try:
-                                with cache_file_lock:
-                                    with open("pending_uploads.txt", "a") as cache_log:
-                                        cache_log.write(f"{disk_id}\n")
-                            except Exception as cache_err:
-                                print(
-                                    f"[STATE ENGINE CRITICAL] Failed to write queue fallback to cache: {cache_err}"
-                                )
-
-                            with mode_lock:
-                                ACTIVE_SESSION["upload_failed"] = True
-
-                        # --- SURGICAL INJECTION: Clean Point-of-Capture Telemetry Logging ---
-                        try:
-                            print(
-                                f"[TELEMETRY ENGINE] Executing core capture ledger entry for session: {disk_id}"
-                            )
-
-                            telemetry.record_capture(
-                                session_id=disk_id,
-                                knobs=active_knobs,
-                            )
-                        except Exception as telemetry_fault:
-                            print(
-                                f"[TELEMETRY HOOK ERROR] Non-fatal capture entry failure: {telemetry_fault}"
-                            )
 
                     captured_knobs = list(GLOBAL_KNOBS)
                     threading.Thread(
@@ -1937,20 +1963,16 @@ def background_loop():
                         daemon=True,
                     ).start()
 
-            # STATE 2: COUNTDOWN LATENCY MASK - Steps down values while handling background data uploads
+            # STATE 2: POST-CAPTURE LATENCY MASK - Displays "PRINTING" overlay while offloading disk/upload
             elif loop_mode == "countdown":
-                time_delta = loop_execution_time - c_start
-                remaining_steps = max(1, 3 - math.floor(time_delta))
-
-                with mode_lock:
-                    ACTIVE_SESSION["countdown_remaining"] = remaining_steps
+                time_delta = loop_monotonic - c_start
 
                 if time_delta >= 3.0:
                     with mode_lock:
                         ACTIVE_SESSION["mode"] = "processing"
 
                     logger.info(
-                        "[STATE ENGINE] Countdown complete. Session %s advanced to processing.",
+                        "[STATE ENGINE] Post-capture latency mask complete. Session %s advanced to processing.",
                         session_key,
                     )
 
@@ -2374,6 +2396,7 @@ def state():
             "upload_status": upload_status_msg,
             "mode": current_mode,
             "countdown_seconds": countdown_secs,
+            "countdown_corner": COUNTDOWN_CORNER,  # Injected for web UI positioning
             "session_id": current_session_id,
             "latest_id": current_session_id,
         }

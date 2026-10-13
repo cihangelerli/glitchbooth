@@ -198,19 +198,56 @@ clock = pygame.time.Clock()
 # ==============================================================================
 print("[DISPLAY INIT] Cold compiling asset caches and memory gallery lookups...")
 
-COUNTDOWN_SURFACES = {}
-COUNTDOWN_RECTS = {}
-try:
-    font_engine = pygame.font.SysFont("Impact", 180)
-except Exception:
-    font_engine = pygame.font.Font(None, 180)
+# 1. Configurable Corner Placement (authoritative setting from server.py)
+COUNTDOWN_CORNER = getattr(server, "COUNTDOWN_CORNER", "top-right")
+COUNTDOWN_MARGIN_X = int(os.getenv("COUNTDOWN_MARGIN_X", "20"))
+COUNTDOWN_MARGIN_Y = int(os.getenv("COUNTDOWN_MARGIN_Y", "16"))
 
-for count in [3, 2, 1, 0]:
-    surf = font_engine.render(str(count), True, (0, 255, 0))
-    COUNTDOWN_SURFACES[count] = surf.convert_alpha()
+CORNER_COUNTDOWN_SURFACES = {}
+CORNER_COUNTDOWN_RECTS = {}
+try:
+    corner_font = pygame.font.SysFont("Impact", 110)
+except Exception:
+    corner_font = pygame.font.Font(None, 110)
+
+for count in [3, 2, 1]:
+    surf = corner_font.render(str(count), True, (0, 255, 0))
+    CORNER_COUNTDOWN_SURFACES[count] = surf.convert_alpha()
     rect = surf.get_rect()
-    rect.center = VIDEO_RECT.center
-    COUNTDOWN_RECTS[count] = rect
+
+    # Dynamic positioning based on COUNTDOWN_CORNER
+    if COUNTDOWN_CORNER == "top-left":
+        rect.topleft = (
+            VIDEO_RECT.left + COUNTDOWN_MARGIN_X,
+            VIDEO_RECT.top + COUNTDOWN_MARGIN_Y,
+        )
+    elif COUNTDOWN_CORNER == "bottom-right":
+        rect.bottomright = (
+            VIDEO_RECT.right - COUNTDOWN_MARGIN_X,
+            VIDEO_RECT.bottom - COUNTDOWN_MARGIN_Y,
+        )
+    elif COUNTDOWN_CORNER == "bottom-left":
+        rect.bottomleft = (
+            VIDEO_RECT.left + COUNTDOWN_MARGIN_X,
+            VIDEO_RECT.bottom - COUNTDOWN_MARGIN_Y,
+        )
+    else:  # default "top-right"
+        rect.topright = (
+            VIDEO_RECT.right - COUNTDOWN_MARGIN_X,
+            VIDEO_RECT.top + COUNTDOWN_MARGIN_Y,
+        )
+
+    CORNER_COUNTDOWN_RECTS[count] = rect
+
+# 2. Pre-render centered "PRINTING" overlay for post-capture state
+try:
+    printing_font = pygame.font.SysFont("Impact", 84)
+except Exception:
+    printing_font = pygame.font.Font(None, 84)
+
+PRINTING_SURF = printing_font.render("PRINTING", True, (0, 255, 0)).convert_alpha()
+PRINTING_RECT = PRINTING_SURF.get_rect()
+PRINTING_RECT.center = VIDEO_RECT.center
 
 NOISE_CACHE = []
 for _ in range(15):
@@ -440,7 +477,7 @@ try:
         # ----------------------------------------------------------------------
         # PROFILE 1 & 2: LIVE PREVIEW & COUNTDOWN MODES
         # ----------------------------------------------------------------------
-        if current_mode in ("live", "countdown"):
+        if current_mode in ("live", "pre-capture-countdown", "countdown"):
             # Attempt non-blocking lock acquisition to secure presentation smoothness
             lock_acquired = server.frame_lock.acquire(blocking=False)
             if lock_acquired:
@@ -492,7 +529,7 @@ try:
             pygame.draw.rect(virtual_canvas, (0, 255, 0), VIDEO_RECT, 2)
 
             # Draw QR placement guide indicator (live & countdown only)
-            if QR_GUIDE_ENABLED:
+            if QR_GUIDE_ENABLED and current_mode != "countdown":
                 virtual_canvas.blit(qr_guide_surface, QR_GUIDE_POS)
 
             # Compute Ticker Tape Ribbon Physics
@@ -511,11 +548,19 @@ try:
                     x_offset += TICKER_STRIDE
                     idx += 1
 
-            # Blit countdown overlay if processing state calls for it
-            if current_mode == "countdown" and countdown_val in COUNTDOWN_SURFACES:
+            # Blit pre-capture countdown in configured corner over live feed
+            if (
+                current_mode == "pre-capture-countdown"
+                and countdown_val in CORNER_COUNTDOWN_SURFACES
+            ):
                 virtual_canvas.blit(
-                    COUNTDOWN_SURFACES[countdown_val], COUNTDOWN_RECTS[countdown_val]
+                    CORNER_COUNTDOWN_SURFACES[countdown_val],
+                    CORNER_COUNTDOWN_RECTS[countdown_val],
                 )
+
+            # Blit post-capture "PRINTING" overlay over frozen feed
+            elif current_mode == "countdown":
+                virtual_canvas.blit(PRINTING_SURF, PRINTING_RECT)
 
             # Draw Header Title above the video stream
             header_surf = ui_font.render("> GLITCH BOOTH beta 03", True, (0, 255, 0))

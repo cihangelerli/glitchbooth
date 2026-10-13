@@ -125,57 +125,77 @@ html, body, img, div{ -webkit-touch-callout:none; -webkit-user-select:none; user
     z-index: 9998; /* Sits directly beneath shutdown layer */
 }
 
-/* COUNTDOWN OVERLAY */
-#countdownOverlay{
-    display:none;
-
-    position:fixed;
-
-    top:0;
-    left:0;
-
-    width:100%;
-    height:100%;
-
-    background:#000;
-    opacity:0.6;
-
-    text-align:center;
-
-    z-index:9997;
+/* CORNER COUNTDOWN (PRE-CAPTURE LIVE POSE) */
+#cornerCountdown {
+    display: none;
+    position: absolute;
+    font-size: 64px;
+    font-weight: bold;
+    color: #00ff00;
+    text-shadow: 0 0 10px #00ff00, 2px 2px 4px #000;
+    background: rgba(0, 0, 0, 0.65);
+    border: 2px solid #00ff00;
+    border-radius: 6px;
+    width: 72px;
+    height: 72px;
+    line-height: 68px;
+    text-align: center;
+    z-index: 20;
+    pointer-events: none;
+    box-sizing: border-box;
 }
 
-#countdownNumber{
-    font-size:120px;
+/* Configurable corner anchor classes */
+#cornerCountdown.corner-top-right    { top: 14px;    right: 14px;  bottom: auto; left: auto;  }
+#cornerCountdown.corner-top-left     { top: 14px;    left: 14px;   bottom: auto; right: auto; }
+#cornerCountdown.corner-bottom-right { bottom: 14px; right: 14px;  top: auto;    left: auto;  }
+#cornerCountdown.corner-bottom-left  { bottom: 14px; left: 14px;   top: auto;    right: auto; }
 
-    margin-top:32vh;
-
-    color:#00ff00;
+/* POST-CAPTURE FEED-SCOPED OVERLAY (High Contrast) */
+#feedOverlay {
+    display: none;
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.72); /* Dims captured image; text stays 100% opaque */
+    text-align: center;
+    z-index: 15;
+    box-sizing: border-box;
+    padding-top: 26%;
 }
 
-#countdownStatus{
-    margin-top:20px;
-
-    font-size:22px;
-
-    color:#00ff00;
+#countdownNumber {
+    font-size: 56px;
+    letter-spacing: 4px;
+    color: #00ff00;
+    text-shadow: 0 0 14px #00ff00;
 }
 
-/* SMALLER DEVICES */
-@media screen and (max-width: 600px){
+#countdownStatus {
+    margin-top: 16px;
+    font-size: 18px;
+    color: #00ff00;
+    letter-spacing: 1px;
+}
 
-    #countdownNumber{
-        font-size:90px;
+@media screen and (max-width: 600px) {
+    #cornerCountdown {
+        font-size: 48px;
+        width: 56px;
+        height: 56px;
+        line-height: 52px;
     }
+    #cornerCountdown.corner-top-right    { top: 10px;    right: 10px; }
+    #cornerCountdown.corner-top-left     { top: 10px;    left: 10px;  }
+    #cornerCountdown.corner-bottom-right { bottom: 10px; right: 10px; }
+    #cornerCountdown.corner-bottom-left  { bottom: 10px; left: 10px;  }
 
-    #countdownStatus{
-        font-size:18px;
-    }
-
-    .header{
-        font-size:16px;
-    }
-
+    #feedOverlay    { padding-top: 22%; }
+    #countdownNumber { font-size: 38px; }
+    #countdownStatus { font-size: 14px; }
+    .header { font-size: 16px; }
 }
 
 /* ============================================================
@@ -245,6 +265,15 @@ html, body, img, div{ -webkit-touch-callout:none; -webkit-user-select:none; user
 
         <div id="qrOverlay"><span id="qrOverlayText">QR</span></div>
 
+        <!-- Pre-capture Corner Pose Countdown -->
+        <div id="cornerCountdown">3</div>
+
+        <!-- Post-capture Dimmed Overlay Scoped to Video Area -->
+        <div id="feedOverlay">
+            <div id="countdownNumber">PRINTING</div>
+            <div id="countdownStatus">SPOOLING TO PRINTER</div>
+        </div>
+
     </div>
 
     <div class="panel">
@@ -271,13 +300,7 @@ html, body, img, div{ -webkit-touch-callout:none; -webkit-user-select:none; user
 
 </div>
 
-<div id="countdownOverlay">
 
-    <div id="countdownNumber">3</div>
-
-    <div id="countdownStatus">GET READY</div>
-
-</div>
 
 <div id="recoveryOverlay">
     <div id="recoveryMessage">> CONNECTION LOST... ATTEMPTING RECOVERY</div>
@@ -408,33 +431,57 @@ function update(){
                         }
                     }
 
-                    var overlay = document.getElementById('countdownOverlay');
-                    var num = document.getElementById('countdownNumber');
-                    var status = document.getElementById('countdownStatus');
-                    var qrOverlay = document.getElementById('qrOverlay');
+                    var validCorners = ["top-right", "top-left", "bottom-right", "bottom-left"];
+                    var feedOverlay = document.getElementById('feedOverlay');
+                    var cornerCd   = document.getElementById('cornerCountdown');
+                    var num        = document.getElementById('countdownNumber');
+                    var status     = document.getElementById('countdownStatus');
+                    var qrOverlay  = document.getElementById('qrOverlay');
 
-                    /* COUNTDOWN MODES */
-                    if(d.mode === "countdown"){
-                        overlay.style.display = "block";
-                        num.innerHTML = d.countdown_seconds;
-                        if(d.countdown_seconds === 3){ status.innerHTML = "CAPTURING FRAME"; }
-                        else if(d.countdown_seconds === 2){ status.innerHTML = "PROCESSING GLITCH"; }
-                        else if(d.countdown_seconds === 1){ status.innerHTML = "SPOOLING TO PRINTER"; }
-                        if(qrOverlay){ qrOverlay.style.display = "flex"; }
+                    /* 1. PRE-CAPTURE POSE COUNTDOWN */
+                    if(d.mode === "pre-capture-countdown"){
+                        if(feedOverlay) feedOverlay.style.display = "none";
+                        if(qrOverlay)   qrOverlay.style.display   = "flex";  /* QR guide visible on live feed */
+                        if(cornerCd){
+                            var corner = validCorners.indexOf(d.countdown_corner) !== -1 ? d.countdown_corner : "top-right";
+                            cornerCd.className    = "corner-" + corner;
+                            cornerCd.style.display = "block";
+                            cornerCd.innerHTML    = d.countdown_seconds;
+                        }
                     }
+                    /* 2. POST-CAPTURE PRINTING OVERLAY */
+                    else if(d.mode === "countdown"){
+                        if(cornerCd)    cornerCd.style.display    = "none";
+                        if(qrOverlay)   qrOverlay.style.display   = "none";  /* QR guide hidden on frozen frame */
+                        if(feedOverlay){
+                            feedOverlay.style.display = "block";
+                            num.innerHTML    = "PRINTING";
+                            status.innerHTML = "SPOOLING TO PRINTER";
+                        }
+                    }
+                    /* 3. GLITCH NOISE PROCESSING */
                     else if(d.mode === "processing"){
-                        overlay.style.display = "block";
-                        num.innerHTML = "::";
-                        status.innerHTML = "FINALIZING PRINT";
-                        if(qrOverlay){ qrOverlay.style.display = "none"; }
+                        if(cornerCd)    cornerCd.style.display    = "none";
+                        if(qrOverlay)   qrOverlay.style.display   = "none";
+                        if(feedOverlay){
+                            feedOverlay.style.display = "block";
+                            num.innerHTML    = "::";
+                            status.innerHTML = "FINALIZING PRINT";
+                        }
                     }
+                    /* 4. REVIEW LATEST */
                     else if(d.mode === "latest"){
+                        if(cornerCd)    cornerCd.style.display    = "none";
+                        if(feedOverlay) feedOverlay.style.display = "none";
+                        if(qrOverlay)   qrOverlay.style.display   = "none";
                         window.location.href = "/latest?id=" + d.session_id;
                         return;
                     }
+                    /* 5. LIVE / IDLE FEED */
                     else{
-                        overlay.style.display = "none";
-                        if(qrOverlay){ qrOverlay.style.display = "flex"; }
+                        if(cornerCd)    cornerCd.style.display    = "none";
+                        if(feedOverlay) feedOverlay.style.display = "none";
+                        if(qrOverlay)   qrOverlay.style.display   = "flex";  /* QR guide visible on live feed */
                     }
 
                     /* MJPEG STALL DETECTION */
