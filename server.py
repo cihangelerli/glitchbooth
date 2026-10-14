@@ -227,6 +227,21 @@ MELT_SMEAR_W3 = 6  # [320x240: 3 ] [480x360: 4 ] [640x480: 6 ]
 MELT_JITTER_RANGE = 5
 MELT_JITTER_OFFSET = 2
 
+NEON_PALETTES = np.array(
+    [
+        [0, 255, 255],    # Yellow
+        [255, 0, 255],    # Magenta
+        [255, 255, 0],    # Cyan
+        [0, 255, 0],      # Neon Green
+        [255, 0, 128],    # Deep Purple / Pink
+        [0, 165, 255],    # Vivid Orange
+        [128, 0, 255],    # Vivid Pink-Purple
+        [0, 255, 250],    # Yellow-Green / Chartreuse
+    ],
+    dtype=np.uint8,
+    order="C",
+)
+
 CRT_SCANLINE_PERIOD = 8  # [320x240: 4 ] [480x360: 6 ] [640x480: 8 ]
 CRT_SCANLINE_THICKNESS = 4  # [320x240: 2 ] [480x360: 3 ] [640x480: 4 ]
 CRT_APERTURE_PERIOD = 6  # [320x240: 3 ] [480x360: 4 ] [640x480: 6 ]
@@ -1074,6 +1089,14 @@ def apply_glitch_pipeline(current_time, control_packet):
                     )
                     sample_y = min(h - 1, start_y + 1) if start_y < h - 1 else start_y
                     seed_color = MUTABLE_PROCESSING_BUFFER[sample_y, col]
+
+                    # Enrich seed color with NEON_PALETTES for vibrant cyber dripping trails
+                    palette_idx = (col ^ start_y ^ time_tick) % len(NEON_PALETTES)
+                    neon_color = NEON_PALETTES[palette_idx]
+                    enriched_color = (
+                        (neon_color.astype(np.uint16) * 166 + seed_color.astype(np.uint16) * 90) >> 8
+                    ).astype(np.uint8)
+
                     jitter_x = (
                         col
                         + int(
@@ -1087,11 +1110,11 @@ def apply_glitch_pipeline(current_time, control_packet):
                     if rand_multiplier > 0.5:
                         MUTABLE_PROCESSING_BUFFER[
                             start_y:end_y:2, jitter_x : jitter_x + smear_width
-                        ] = seed_color
+                        ] = enriched_color
                     else:
                         MUTABLE_PROCESSING_BUFFER[
                             start_y:end_y:3, jitter_x : jitter_x + smear_width
-                        ] = seed_color
+                        ] = enriched_color
 
     # HIGH-DENSITY ASCII LAYER ENGINE (KNOB 0)
     # =========================================================================
