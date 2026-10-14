@@ -241,6 +241,8 @@ NEON_PALETTES = np.array(
     dtype=np.uint8,
     order="C",
 )
+NEON_PALETTES_FLOAT = NEON_PALETTES.astype(np.float32)
+
 
 CRT_SCANLINE_PERIOD = 8  # [320x240: 4 ] [480x360: 6 ] [640x480: 8 ]
 CRT_SCANLINE_THICKNESS = 4  # [320x240: 2 ] [480x360: 3 ] [640x480: 4 ]
@@ -1040,14 +1042,15 @@ def apply_glitch_pipeline(current_time, control_packet):
 
     # MELT RENDER PASS (KNOB 4)
     # =========================================================================
-    melt_val = n(pkt_knobs[4]) * 0.7
-    if melt_val > 0.05:
-        max_melt_length = int(melt_val * (h * 0.5))
-        threshold = max(100, int(255 * (1.0 - melt_val * 0.55)))
+    melt_raw = n(pkt_knobs[4])
+    if melt_raw > 0.03:
+        # Scale drip length aggressively with knob: up to 88% of screen height at max
+        max_melt_length = int(20 + melt_raw * (h * 0.85))
+        threshold = max(75, int(255 * (1.0 - melt_raw * 0.65)))
         stride = (
             MELT_STRIDE_LOW
-            if melt_val < 0.4
-            else (MELT_STRIDE_MID if melt_val < 0.7 else MELT_STRIDE_HIGH)
+            if melt_raw < 0.35
+            else (MELT_STRIDE_MID if melt_raw < 0.7 else MELT_STRIDE_HIGH)
         )
 
         cv2.cvtColor(
@@ -1070,8 +1073,8 @@ def apply_glitch_pipeline(current_time, control_packet):
             unique_sliced_xs, split_indices = np.unique(sliced_xs, return_index=True)
             y_splits = np.split(ys, split_indices[1:])
 
-            seed_step = max(2, int((1.1 - melt_val) * 12))
-            max_seeds_per_column = 3 if melt_val < 0.7 else 6
+            seed_step = max(2, int((1.1 - melt_raw) * 10))
+            max_seeds_per_column = 3 if melt_raw < 0.65 else 6
             time_tick = int(current_time * 4) & 0xFF
 
             for s_x, y_indices in zip(unique_sliced_xs, y_splits):
@@ -1080,22 +1083,23 @@ def apply_glitch_pipeline(current_time, control_packet):
                 seeds = y_indices[::seed_step][:max_seeds_per_column]
                 for start_y in seeds:
                     rand_multiplier = ((col ^ start_y ^ time_tick) % 100) / 100.0
-                    melt_len = 10 + int(rand_multiplier * max_melt_length)
+                    base_len = int(max_melt_length * 0.45)
+                    rand_len = int(max_melt_length * 0.55 * rand_multiplier)
+                    melt_len = base_len + rand_len
                     end_y = min(h, start_y + melt_len)
+
+                    step_y = 2 if rand_multiplier > 0.5 else 3
+                    num_rows = len(range(start_y, end_y, step_y))
+                    if num_rows < 1:
+                        continue
+
                     smear_width = (
                         MELT_SMEAR_W1
                         if rand_multiplier < 0.4
                         else (MELT_SMEAR_W2 if rand_multiplier < 0.8 else MELT_SMEAR_W3)
                     )
                     sample_y = min(h - 1, start_y + 1) if start_y < h - 1 else start_y
-                    seed_color = MUTABLE_PROCESSING_BUFFER[sample_y, col]
-
-                    # Enrich seed color with NEON_PALETTES for vibrant cyber dripping trails
-                    palette_idx = (col ^ start_y ^ time_tick) % len(NEON_PALETTES)
-                    neon_color = NEON_PALETTES[palette_idx]
-                    enriched_color = (
-                        (neon_color.astype(np.uint16) * 166 + seed_color.astype(np.uint16) * 90) >> 8
-                    ).astype(np.uint8)
+                    seed_color = MUTABLE_PROCESSING_BUFFER[sample_y, col].astype(np.float32)
 
                     jitter_x = (
                         col
@@ -1107,14 +1111,27 @@ def apply_glitch_pipeline(current_time, control_packet):
                     )
                     jitter_x = max(0, min(w - smear_width, jitter_x))
 
-                    if rand_multiplier > 0.5:
+                    if num_rows == 1:
                         MUTABLE_PROCESSING_BUFFER[
-                            start_y:end_y:2, jitter_x : jitter_x + smear_width
-                        ] = enriched_color
+                            start_y:end_y:step_y, jitter_x : jitter_x + smear_width
+                        ] = seed_color.astype(np.uint8)
                     else:
+                        # Normalized vertical position down the drip: 0.0 (top) -> 1.0 (bottom)
+                        t = np.linspace(0.0, 1.0, num_rows, dtype=np.float32)[:, None]
+                        # First 25% strictly preserves the original base color (alpha = 0.0);
+                        # from 25% down to 100%, gradually transitions into neon palette colors
+                        alpha = np.clip((t - 0.25) / 0.75, 0.0, 1.0)
+
+                        # Dual-palette neon color progression along the drip length
+                        p1 = (col ^ start_y ^ time_tick) % len(NEON_PALETTES)
+                        p2 = (p1 + 3) % len(NEON_PALETTES)
+                        neon_gradient = (1.0 - t) * NEON_PALETTES_FLOAT[p1] + t * NEON_PALETTES_FLOAT[p2]
+
+                        streak_colors = ((1.0 - alpha) * seed_color + alpha * neon_gradient).astype(np.uint8)
                         MUTABLE_PROCESSING_BUFFER[
-                            start_y:end_y:3, jitter_x : jitter_x + smear_width
-                        ] = enriched_color
+                            start_y:end_y:step_y, jitter_x : jitter_x + smear_width
+                        ] = streak_colors[:, None, :]
+
 
     # HIGH-DENSITY ASCII LAYER ENGINE (KNOB 0)
     # =========================================================================
