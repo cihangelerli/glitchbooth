@@ -220,28 +220,24 @@ SLICE_MAX_SHIFT = 50  # [320x240: 15] [480x360: 23] [640x480: 30]
 MELT_STRIDE_LOW = 6
 MELT_STRIDE_MID = 4
 MELT_STRIDE_HIGH = 2
-MELT_SAFETY_MARGIN = 8  # [320x240: 4 ] [480x360: 6 ] [640x480: 8 ]
-MELT_SMEAR_W1 = 2  # [320x240: 1 ] [480x360: 1 ] [640x480: 2 ]
-MELT_SMEAR_W2 = 4  # [320x240: 2 ] [480x360: 2 ] [640x480: 4 ]
-MELT_SMEAR_W3 = 6  # [320x240: 3 ] [480x360: 4 ] [640x480: 6 ]
-MELT_JITTER_RANGE = 5
-MELT_JITTER_OFFSET = 2
+MAX_MELT_DRIPS = 120  # Tunable aesthetic ceiling: ensures rich density while guarding governor latency (10-15 FPS)
 
+# NEON_PALETTES defined in native OpenCV BGR format: [Blue, Green, Red]
 NEON_PALETTES = np.array(
     [
-        [0, 255, 255],    # Yellow
-        [255, 0, 255],    # Magenta
-        [255, 255, 0],    # Cyan
-        [0, 255, 0],      # Neon Green
-        [255, 0, 128],    # Deep Purple / Pink
-        [0, 165, 255],    # Vivid Orange
-        [128, 0, 255],    # Vivid Pink-Purple
-        [0, 255, 250],    # Yellow-Green / Chartreuse
+        [0, 255, 255],    # Neon Yellow      (B: 0,   G: 255, R: 255)
+        [255, 0, 255],    # Hot Magenta      (B: 255, G: 0,   R: 255)
+        [255, 255, 0],    # Electric Cyan    (B: 255, G: 255, R: 0)
+        [0, 255, 0],      # Acid Green       (B: 0,   G: 255, R: 0)
+        [255, 0, 128],    # Deep Violet      (B: 255, G: 0,   R: 128)
+        [0, 165, 255],    # Tangerine        (B: 0,   G: 165, R: 255)
+        [128, 0, 255],    # Neon Rose        (B: 128, G: 0,   R: 255)
+        [0, 255, 127],    # Chartreuse       (B: 0,   G: 255, R: 127)
     ],
     dtype=np.uint8,
     order="C",
 )
-NEON_PALETTES_FLOAT = NEON_PALETTES.astype(np.float32)
+NEON_PALETTES_FLOAT = np.ascontiguousarray(NEON_PALETTES.astype(np.float32))
 
 
 CRT_SCANLINE_PERIOD = 8  # [320x240: 4 ] [480x360: 6 ] [640x480: 8 ]
@@ -267,7 +263,15 @@ FROZEN_PRINT_BUFFER = np.empty((FRAME_W, FRAME_H), dtype=np.uint8, order="C")
 FROZEN_PRINT_BUFFER.fill(255)
 
 STATIC_NOISE_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
+# Shared luminance buffer: utilized sequentially during Melt pass and post-capture receipt contrast prep
 STATIC_MELT_GRAY_BUFFER = np.empty((FRAME_H, FRAME_W), dtype=np.uint8, order="C")
+
+# --- PHASE 1: MELT PERSISTENT GRAVITATIONAL DEFORMATION BUFFERS ---
+STATIC_MELT_SNAPSHOT = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
+MELT_DRIP_WORK_BUFFER = np.empty((FRAME_H, 4, 3), dtype=np.float32, order="C")
+
+assert STATIC_MELT_SNAPSHOT.flags["C_CONTIGUOUS"], "CRITICAL: STATIC_MELT_SNAPSHOT layout fault!"
+assert MELT_DRIP_WORK_BUFFER.flags["C_CONTIGUOUS"], "CRITICAL: MELT_DRIP_WORK_BUFFER layout fault!"
 
 COMPRESSION_STAGE_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
 
@@ -769,6 +773,145 @@ def apply_datamosh(effect_val, current_time):
     MUTABLE_PROCESSING_BUFFER[:] = DATAMOSH_WORK_BUFFER
 
 
+# =========================================================================
+# ISOLATED GRAVITATIONAL MELT ENGINE (STAGE 6)
+# =========================================================================
+
+
+def _collect_melt_drips(melt_raw: float, current_time: float, h: int = FRAME_H, w: int = FRAME_W):
+    """
+    Fast, memory-efficient drip collection across screen width.
+    Uses per-column flatnonzero to avoid multi-megabyte argwhere allocations,
+    and fractional seed-rank subsampling to guarantee perfect screen-wide spatial balance.
+    """
+    max_melt_length = int(20 + melt_raw * (h * 0.85))
+    threshold = max(75, int(255 * (1.0 - melt_raw * 0.65)))
+    stride = (
+        MELT_STRIDE_LOW
+        if melt_raw < 0.35
+        else (MELT_STRIDE_MID if melt_raw < 0.7 else MELT_STRIDE_HIGH)
+    )
+
+    seed_step = max(2, int((1.1 - melt_raw) * 8))
+    max_seeds_per_column = 3 if melt_raw < 0.65 else 6
+    time_tick = int(current_time * 4) & 0xFF
+
+    g = STATIC_MELT_GRAY_BUFFER
+    col_seeds = []
+    for x0 in range(1, w - 2, stride):
+        ys = np.flatnonzero(g[:, x0] > threshold)
+        if ys.size > 0:
+            seeds = [int(v) for v in ys[::seed_step][:max_seeds_per_column] if v < h - 4]
+            if seeds:
+                col_seeds.append((x0, seeds))
+
+    drips = []
+    for rank in range(max_seeds_per_column):
+        eligible = [(x0, seeds[rank]) for x0, seeds in col_seeds if rank < len(seeds)]
+        remaining = MAX_MELT_DRIPS - len(drips)
+
+        # Symmetrical fractional subsampling across the entire screen
+        if len(eligible) > remaining:
+            step = len(eligible) / float(remaining)
+            eligible = [eligible[int(i * step)] for i in range(remaining)]
+
+        for x0, start_y in eligible:
+            h1 = (x0 * 73856093) ^ (start_y * 19349663) ^ (time_tick * 83492791)
+            h2 = (x0 * 2654435761) ^ (start_y * 2246822519) ^ (time_tick * 3266489917)
+
+            rand_len_mult = (h1 % 1000) / 1000.0
+            rand_stretch_mult = ((h1 >> 10) % 1000) / 1000.0
+
+            p1 = (h2 >> 4) % len(NEON_PALETTES)
+            p2 = (p1 + 1 + ((h2 >> 12) % (len(NEON_PALETTES) - 1))) % len(NEON_PALETTES)
+
+            base_len = int(max_melt_length * 0.45)
+            rand_len = int(max_melt_length * 0.55 * rand_len_mult)
+            L = base_len + rand_len
+            if L <= 0:
+                continue
+
+            s = 1.0 + (rand_stretch_mult * 2.0)
+            reach = start_y + L
+            drips.append((reach, x0, start_y, L, s, p1, p2))
+
+        if len(drips) >= MAX_MELT_DRIPS:
+            break
+
+    return drips
+
+
+def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
+    """
+    Renders drips using vertical bilinear sampling and contiguous 4-column slice assignment.
+    Enforces internal ascending-extent sorting and horizontal bounds checking.
+    """
+    if not drips:
+        return
+
+    # Ascending extent sorting: deeper drips process last, cleanly overwriting shorter overlapping drips
+    sorted_drips = sorted(drips, key=lambda item: (item[0], item[1]))
+
+    for _, x0_raw, y0_raw, L_raw, s, p1, p2 in sorted_drips:
+        x0 = int(x0_raw)
+        y0 = int(y0_raw)
+        L = int(L_raw)
+
+        # Defensive bounds guards
+        if x0 < 1 or x0 > w - 3:
+            continue
+        if L <= 0 or y0 >= h - 1:
+            continue
+
+        end_y = min(h, y0 + L)
+        num_rows = end_y - y0
+        if num_rows <= 0:
+            continue
+
+        y_dest = np.arange(y0, end_y, dtype=np.int32)
+        y_rel = (y_dest - y0).astype(np.float32)
+
+        # Non-linear backward gravitational mapping
+        norm_dist = np.clip(y_rel / float(L), 0.0, 1.0)
+        denom = np.maximum(1.0, 1.0 + s * np.sqrt(norm_dist))
+        y_float = np.clip(y0 + (y_rel / denom), 0.0, float(h - 1))
+
+        # 1D Vertical Bilinear Sampling
+        y_floor = np.floor(y_float).astype(np.int32)
+        y_ceil = np.clip(y_floor + 1, 0, h - 1)
+        w_ceil = (y_float - y_floor).astype(np.float32)[:, None, None]
+        w_floor = 1.0 - w_ceil
+
+        # 4-column contiguous horizontal slice [x0-1 : x0+3]
+        cols_slice = slice(x0 - 1, x0 + 3)
+        src_floor = STATIC_MELT_SNAPSHOT[y_floor, cols_slice].astype(np.float32)
+        src_ceil = STATIC_MELT_SNAPSHOT[y_ceil, cols_slice].astype(np.float32)
+
+        work_view = MELT_DRIP_WORK_BUFFER[:num_rows]
+        work_view[:] = w_floor * src_floor + w_ceil * src_ceil
+
+        # Edge-restricted per-drip neon bleed on outer columns (indices 0 and 3)
+        neon_bgr = (0.5 * NEON_PALETTES_FLOAT[p1] + 0.5 * NEON_PALETTES_FLOAT[p2])[None, :]
+        work_view[:, 0] = 0.85 * work_view[:, 0] + 0.15 * neon_bgr
+        work_view[:, 3] = 0.85 * work_view[:, 3] + 0.15 * neon_bgr
+
+        # Single contiguous slice write into active processing buffer
+        MUTABLE_PROCESSING_BUFFER[y0:end_y, cols_slice] = np.clip(np.round(work_view), 0, 255).astype(np.uint8)
+
+
+def apply_melt_pass(melt_raw: float, current_time: float):
+    """Stage 6: Gravitational Melt Deformation Public Entry Point."""
+    if melt_raw <= 0.03:
+        return
+
+    STATIC_MELT_SNAPSHOT[:] = MUTABLE_PROCESSING_BUFFER[:]
+    cv2.cvtColor(STATIC_MELT_SNAPSHOT, cv2.COLOR_BGR2GRAY, dst=STATIC_MELT_GRAY_BUFFER)
+
+    drips = _collect_melt_drips(melt_raw, current_time)
+    if drips:
+        _render_melt_drips(drips)
+
+
 # RADICAL COMPUTATION UNROLLED ENGINE
 # ==================================================
 
@@ -1040,97 +1183,9 @@ def apply_glitch_pipeline(current_time, control_packet):
                     STATIC_ROW_BUFFER[-s:] = row[:s]
                     row[:] = STATIC_ROW_BUFFER
 
-    # MELT RENDER PASS (KNOB 4)
+    # STAGE 6: GRAVITATIONAL MELT DEFORMATION (KNOB 4)
     # =========================================================================
-    melt_raw = n(pkt_knobs[4])
-    if melt_raw > 0.03:
-        # Scale drip length aggressively with knob: up to 88% of screen height at max
-        max_melt_length = int(20 + melt_raw * (h * 0.85))
-        threshold = max(75, int(255 * (1.0 - melt_raw * 0.65)))
-        stride = (
-            MELT_STRIDE_LOW
-            if melt_raw < 0.35
-            else (MELT_STRIDE_MID if melt_raw < 0.7 else MELT_STRIDE_HIGH)
-        )
-
-        cv2.cvtColor(
-            MUTABLE_PROCESSING_BUFFER, cv2.COLOR_BGR2GRAY, dst=STATIC_MELT_GRAY_BUFFER
-        )
-
-        limit_w = w - MELT_SAFETY_MARGIN
-        sliced_view = STATIC_MELT_GRAY_BUFFER[:, 0:limit_w:stride]
-
-        coords = np.argwhere(sliced_view > threshold)
-
-        if len(coords) > 0:
-            ys = coords[:, 0]
-            sliced_xs = coords[:, 1]  # Column indices relative to the sliced view
-
-            order = np.argsort(sliced_xs)
-            ys = ys[order]
-            sliced_xs = sliced_xs[order]
-
-            unique_sliced_xs, split_indices = np.unique(sliced_xs, return_index=True)
-            y_splits = np.split(ys, split_indices[1:])
-
-            seed_step = max(2, int((1.1 - melt_raw) * 10))
-            max_seeds_per_column = 3 if melt_raw < 0.65 else 6
-            time_tick = int(current_time * 4) & 0xFF
-
-            for s_x, y_indices in zip(unique_sliced_xs, y_splits):
-                col = s_x * stride
-
-                seeds = y_indices[::seed_step][:max_seeds_per_column]
-                for start_y in seeds:
-                    rand_multiplier = ((col ^ start_y ^ time_tick) % 100) / 100.0
-                    base_len = int(max_melt_length * 0.45)
-                    rand_len = int(max_melt_length * 0.55 * rand_multiplier)
-                    melt_len = base_len + rand_len
-                    end_y = min(h, start_y + melt_len)
-
-                    step_y = 2 if rand_multiplier > 0.5 else 3
-                    num_rows = len(range(start_y, end_y, step_y))
-                    if num_rows < 1:
-                        continue
-
-                    smear_width = (
-                        MELT_SMEAR_W1
-                        if rand_multiplier < 0.4
-                        else (MELT_SMEAR_W2 if rand_multiplier < 0.8 else MELT_SMEAR_W3)
-                    )
-                    sample_y = min(h - 1, start_y + 1) if start_y < h - 1 else start_y
-                    seed_color = MUTABLE_PROCESSING_BUFFER[sample_y, col].astype(np.float32)
-
-                    jitter_x = (
-                        col
-                        + int(
-                            (rand_multiplier * MELT_JITTER_RANGE) - MELT_JITTER_OFFSET
-                        )
-                        if rand_multiplier > 0.7
-                        else col
-                    )
-                    jitter_x = max(0, min(w - smear_width, jitter_x))
-
-                    if num_rows == 1:
-                        MUTABLE_PROCESSING_BUFFER[
-                            start_y:end_y:step_y, jitter_x : jitter_x + smear_width
-                        ] = seed_color.astype(np.uint8)
-                    else:
-                        # Normalized vertical position down the drip: 0.0 (top) -> 1.0 (bottom)
-                        t = np.linspace(0.0, 1.0, num_rows, dtype=np.float32)[:, None]
-                        # First 25% strictly preserves the original base color (alpha = 0.0);
-                        # from 25% down to 100%, gradually transitions into neon palette colors
-                        alpha = np.clip((t - 0.25) / 0.75, 0.0, 1.0)
-
-                        # Dual-palette neon color progression along the drip length
-                        p1 = (col ^ start_y ^ time_tick) % len(NEON_PALETTES)
-                        p2 = (p1 + 3) % len(NEON_PALETTES)
-                        neon_gradient = (1.0 - t) * NEON_PALETTES_FLOAT[p1] + t * NEON_PALETTES_FLOAT[p2]
-
-                        streak_colors = ((1.0 - alpha) * seed_color + alpha * neon_gradient).astype(np.uint8)
-                        MUTABLE_PROCESSING_BUFFER[
-                            start_y:end_y:step_y, jitter_x : jitter_x + smear_width
-                        ] = streak_colors[:, None, :]
+    apply_melt_pass(n(pkt_knobs[4]), current_time)
 
 
     # HIGH-DENSITY ASCII LAYER ENGINE (KNOB 0)
