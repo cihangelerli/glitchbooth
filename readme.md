@@ -61,7 +61,7 @@ Right now development continues in two branches:
 
 > [!IMPORTANT]
 > **Adherence to Engineering & AI Implementation Rules:**
-> **NO PIPELINE OR SERVER CODE HAS BEEN MODIFIED YET.** This document is the ultimate, definitive implementation specification. It fully preserves all granular architecture, exact byte-level memory tables, pipeline flowcharts, 8-phase implementation mechanics, and verification governance from the baseline masterplan, while incorporating every verified audit correction:
+> **PHASE 1 IMPLEMENTED IN SERVER.PY (Awaiting Raspberry Pi 5 Hardware Testing).** This document is the ultimate, definitive implementation specification. It fully preserves all granular architecture, exact byte-level memory tables, pipeline flowcharts, 8-phase implementation mechanics, automated regression & benchmarking suites, and verification governance from the baseline masterplan, while incorporating every verified audit correction:
 >
 > - **Aesthetics First, Bounded Stability Always**: Visual richness, organic randomness, and tactile responsiveness are the primary goals. Performance constraints exist to prevent thread lock-ups or dropped frames on the Pi 5, not to make the visual effect sterile or rigid.
 > - **Spatially Balanced Dynamic Melt**: Non-linear backward vertical coordinate stretching sampling from an immutable pre-melt frame snapshot (`STATIC_MELT_SNAPSHOT`), with dynamic column strides, seed-rank grouping, and fractional subsampling to ensure perfectly uniform screen-wide coverage.
@@ -228,6 +228,12 @@ DEFAULT_KNOB_MAPPING = {
   6. **Edge-Restricted Per-Drip Neon Bleeding**:
      Outer columns ($x_0 - 1$ and $x_0 + 2$) receive an $85\%$ source + $15\%$ neon tint. Core columns ($x_0, x_0 + 1$) retain pure camera visual content.
 - **Acceptance Criteria**: Verified zero out-of-bounds indexing; smooth vertical coordinate elongation; uniform spatial balance (left/right ratio between $0.8$ and $1.25$).
+- **Implementation Status**: Code-complete in `server.py` on the `dev` branch. Pending on-device hardware verification and thermal/latency testing on the Raspberry Pi 5.
+- **Dedicated Phase 1 Test & Benchmark Suite**:
+  - `test_melt_phase1.py`: Formal invariant verification suite validating production sampling against pure-Python reference equations, defensive boundary guards ($1 \le x_0 < w-2$), overlap precedence, parameter guards ($L \le 0$), spatial symmetry balance, frame determinism, and temporary heap memory profiles (<150 KiB heap churn).
+  - `test_melt_benchmark_gemini.py`: Focused hardware latency benchmark measuring drip collection vs rendering across realistic and worst-case white-noise scenes against the $p95 \le 20.0$ ms target.
+  - `test_melt_benchmark.py`: Comprehensive v3 hardware benchmark reporting prep/collect/render/e2e breakdowns, per-drip profiling, Raspberry Pi hardware model detection, and dynamically suggested safe `MAX_MELT_DRIPS` headroom caps.
+  - `ab_regression.py`: Cross-commit side-by-side A/B regression test harness comparing `server.py` against baseline git refs (`pre-phase1`) across 84 dormant cases and active cases.
 
 #### PHASE 2: Registry & Configuration Foundation (`effects_config.py`)
 
@@ -303,18 +309,71 @@ DEFAULT_KNOB_MAPPING = {
 
 ### 6. Post-Phase Verification Governance & Smoke Test Protocol
 
-No phase is considered complete until it passes focused regression/unit checks, supplemented by full-stack live hardware smoke tests at major integration gates:
+No phase is considered complete until it passes focused regression/unit checks, automated cross-commit A/B regression guards, and hardware performance benchmarks, supplemented by full-stack live hardware smoke tests at major integration gates:
 
-1. **Focused Unit/Integration Tests (Every Phase)**:
-   - _Configuration_: Validate startup aborts on invalid keys, duplicate knob assignments, or missing handlers / sub-effect mappings.
-   - _Routing_: Verify reverse-lookup resolution for remapped effects and zero compute for unassigned stages.
-   - _State_: Verify Data Mosh first-frame history invalidation and clean deactivation reset.
-   - _Image Algorithms_: Verify Melt boundary clipping, $L \le 0$ guards, ascending-extent overlap precedence, Pixel Damage discrete tier transitions with explicit `dsize` OpenCV buffers, and Posterize edge extraction.
-   - _Telemetry_: Verify atomic snapshot schema logging in `capture_log_v2.jsonl`.
-2. **Full-Stack Live Hardware Smoke Tests (Integration Milestones & Release)**:
-   - **Video Stream Integrity (`/video_feed`)**
-   - **Hardware Knob Responsiveness**
-   - **Complete Capture Workflow (Countdown & Flash)**
-   - **Thermal Receipt Printing & QR Generation (`/dev/usb/lp0`)**
-   - **Cloud Synchronization & Local Fallback (`pending_uploads.txt`)**
-   - **State Recovery (`latest` $\to$ `live`)**
+#### 6.1 Automated Verification & Regression Toolset
+
+1. **A/B Cross-Commit Regression Guard (`ab_regression.py`)**:
+   - **Core Objective**: Mathematically guarantees that a phase changed *nothing outside its intended scope* ("Did this phase mutate anything it was NOT supposed to mutate?").
+   - **Side-by-Side In-Process Architecture**: Concurrently loads two versions of `server.py` inside a single Python process (identical CPU, NumPy, OpenCV, and C-runtime):
+     - `OLD`: Loaded dynamically from a baseline git ref (e.g. `pre-phase1` via `git show <ref>:server.py`) or `--old-file`.
+     - `NEW`: Imported directly from the working-tree `server.py`.
+   - **RNG State Synchronization**: Synchronizes module-level import-time randomness (`RANDOM_SIGN_POOL`, `RNG_PTR_SIGN`) so identical frame inputs receive byte-identical deterministic processing.
+   - **Test Matrix (88 Test Vectors)**:
+     - _Dormant Invariance (84 multi-frame checks)_: All unaffected knobs (Knobs 0, 1, 2, 3, 5 individually, combinations, random vectors, and boundary values `raw=0` and `raw=30`) are executed through the complete pipeline across diverse scenes (textured, portrait, dark, bright). Outputs must be **100% byte-identical** (`OLD == NEW`).
+     - _Exact Deadband Boundary_: Raw knob 30 ($30/1023 \approx 0.0293 \le 0.03$, dormant) must match bit-for-bit; raw knob 31 ($31/1023 \approx 0.0303 > 0.03$, active) must differ.
+     - _Active Negative Control_: When the revamped effect is active, `OLD` and `NEW` outputs must differ (`OLD != NEW`), proving the test harness has full discriminative power.
+     - _Vacuity Guard_: Asserts that output frames are not all-black and actually mutated from their input frames.
+   - **Standard Execution Command**:
+     ```bash
+     # Ensure baseline git tag exists prior to the phase:
+     git tag pre-phase1 <commit-hash-before-phase>
+     # Run regression verification:
+     python3 ab_regression.py --ref pre-phase1
+     ```
+
+2. **Lightweight Hardware Performance Benchmark (`test_melt_benchmark_gemini.py`)**:
+   - **Core Objective**: Rapid validation of Stage 6 latency on Raspberry Pi 5 hardware, verifying the strict $p95 \le 20.0$ ms target.
+   - **Phase-Decoupled Instrumentation**: Times `_collect_melt_drips` and `_render_melt_drips` separately across multiple knob intensity tiers (0.2, 0.5, 0.8, 1.0) on realistic captured portraits and worst-case high-contrast white noise scenes.
+   - **Output Metrics**: Emitted drip count, p50 total, p50 collect, p50 render, p95, and max latency.
+   - **Standard Execution Command**:
+     ```bash
+     python3 test_melt_benchmark_gemini.py
+     ```
+
+3. **Comprehensive Hardware Benchmark Suite (`test_melt_benchmark.py`)**:
+   - **Core Objective**: Full v3 performance profiling with automatic Pi hardware model detection, end-to-end (`e2e`) pipeline breakdown (prep snapshot copy, drip collection, bilinear rendering), and dynamic calculation of recommended `MAX_MELT_DRIPS` headroom cap (enforcing a 70% budget ceiling).
+   - **Standard Execution Command**:
+     ```bash
+     python3 test_melt_benchmark.py [--frame path/to/raw_camera_frame.png] [--budget-ms 20]
+     ```
+
+4. **Mathematical & Invariant Verification Suites (`test_melt_phase1.py`)**:
+   - **Core Objective**: Phase-specific algorithmic unit checks.
+   - **Phase 1 Invariant Suites**:
+     - _Test 1_: Sampling accuracy verified against pure-Python mathematical reference across multiple row coordinates and $(L, s)$ parameter pairs.
+     - _Test 2_: Boundary isolation verifying mutations are strictly confined to the 4-column profile ($[x_0-1 : x_0+3]$).
+     - _Test 3_: Ascending-reach overlap precedence verifying deeper drips overwrite shorter drips.
+     - _Test 4_: Defensive parameter guard validation ($L \le 0$, out-of-bounds origins $x_0 < 1$ or $x_0 > w-3$, $y_0 \ge h-1$).
+     - _Test 5_: Symmetrical spatial distribution across left/right halves (ratio within $[0.8, 1.25]$).
+     - _Test 6_: Seed-based determinism and dormancy invariants.
+     - _Test 7_: Heap allocation profiling asserting zero unbounded memory churn.
+   - **Standard Execution Command**:
+     ```bash
+     python3 test_melt_phase1.py
+     ```
+
+#### 6.2 Focused Unit/Integration Checks by Phase
+- _Configuration (Phase 2)_: Validate startup aborts on invalid keys, duplicate knob assignments, or missing handlers / sub-effect mappings.
+- _Routing (Phase 3)_: Verify reverse-lookup resolution for remapped effects and zero compute for unassigned stages.
+- _State (Phase 3)_: Verify Data Mosh first-frame history invalidation and clean deactivation reset.
+- _Image Algorithms (Phase 1, 4, 5)_: Verify Melt boundary clipping, $L \le 0$ guards, ascending-extent overlap precedence, Pixel Damage discrete tier transitions with explicit `dsize` OpenCV buffers, and Posterize edge extraction.
+- _Telemetry (Phase 6)_: Verify atomic snapshot schema logging in `capture_log_v2.jsonl`.
+
+#### 6.3 Full-Stack Live Hardware Smoke Tests (Integration Milestones & Release)
+- **Video Stream Integrity (`/video_feed`)**
+- **Hardware Knob Responsiveness**
+- **Complete Capture Workflow (Countdown & Flash)**
+- **Thermal Receipt Printing & QR Generation (`/dev/usb/lp0`)**
+- **Cloud Synchronization & Local Fallback (`pending_uploads.txt`)**
+- **State Recovery (`latest` $\to$ `live`)**

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-CAP_DIR="/home/glitchbooth/glitch-booth/captures"
+CAP_DIR="/home/glitchbooth/glitchbooth/captures"
 LIMIT=500
 
 cd "$CAP_DIR" || exit 0
