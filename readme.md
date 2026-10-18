@@ -27,6 +27,8 @@ Every physical receipt includes an embedded direct token link. Scanning it insta
 - **Glitch Booth Web:** [glitchbooth.online](https://glitchbooth.online)
 - **Glitch Booth Instagram:** [@glitchbooth.online](https://www.instagram.com/glitchbooth.online)
 
+- **Glitch Booth on X:** [@glitchboothx](https://www.x.com/glitchboothx)
+
 ---
 
 ## 🛠️ Behind the Installation
@@ -45,7 +47,31 @@ Every physical receipt includes an embedded direct token link. Scanning it insta
 
 ---
 
-# DEVELOPMENT INFO
+## OPERATION
+
+---
+
+### EVENT MODE CONFIGURATION
+
+- NAKED MODE: Set EVENT_SLUG = ""
+  Target: /booth_captures
+  URL:    https://glitchbooth.online/p/{timestamp}
+
+- EVENT MODE: Set EVENT_SLUG = "your-event-slug" (e.g., "synthistan2026")
+  Target: /booth_captures/your-event-slug
+  URL:    https://glitchbooth.online/your-event-slug/p/{timestamp}
+
+CRITICAL CHECKLIST WHEN CHANGING EVENT_SLUG:
+1. WEBSITE SLUG MATCH: 'EVENT_SLUG' MUST match 'SLUG' in 'event.config.ts' EXACTLY.
+2. IMAGEKIT FOLDER: Ensure '/booth_captures/<EVENT_SLUG>/' exists on ImageKit.
+3. THERMAL RECEIPT: Manually update event title, subtitle, and social handles inside 'print_booth_receipt()' below!
+4. PENDING UPLOADS: Ensure 'pending_uploads.txt' is empty or flushed before switching EVENT_SLUG to prevent previous event captures syncing to the new folder.
+   To quickly flush/empty in bash:
+   `rm -f pending_uploads.txt`
+
+---
+
+## DEVELOPMENT INFO
 
 Right now development continues in two branches:
 
@@ -53,9 +79,73 @@ Right now development continues in two branches:
 
 - "dev" is the actively developed, experimental branch where new ideas, features and effects are tested and hopefully implemented.
 
+
 ---
 
-# Current Development
+## ADDITIONAL INFO & CODE
+
+- ARDUINO CODE:
+
+"""
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(2, INPUT_PULLUP);
+}
+
+void loop() {
+
+  int k1 = analogRead(A0);
+  int k2 = analogRead(A1);
+  int k3 = analogRead(A2);
+  int k4 = analogRead(A3);
+  int k5 = analogRead(A4);
+  int k6 = analogRead(A5);
+
+  int button = digitalRead(7);
+
+  Serial.print(k1);
+  Serial.print(",");
+
+  Serial.print(k2);
+  Serial.print(",");
+
+  Serial.print(k3);
+  Serial.print(",");
+
+  Serial.print(k4);
+  Serial.print(",");
+
+  Serial.print(k5);
+  Serial.print(",");
+
+  Serial.print(k6);
+  Serial.print(",");
+
+  Serial.println(button);
+
+  delay(300);
+}
+
+"""
+
+- glitchbooth.service
+
+glitchbooth.service is used for running the glitchbooth in kiosk mode.
+
+- limit-captures.sh
+
+This now redundant file was used to keep the capture number and the size of the captures folder under control. Now the same functionality is implemented in server.py, but this script can still be used to limit the number of captures for size limited environments.
+
+- test files
+
+These files are used for hardware checks before setup and can be used for troubleshooting. Later, custom test files used during development will be added here for documentation and referencing.
+
+This folder is not critical for the app to run.
+
+---
+
+## Current Development
 
 ## GLITCHBOOTH Effects Revamp — Masterplan (v4.1 Final Production Specification)
 
@@ -377,3 +467,9 @@ No phase is considered complete until it passes focused regression/unit checks, 
 - **Thermal Receipt Printing & QR Generation (`/dev/usb/lp0`)**
 - **Cloud Synchronization & Local Fallback (`pending_uploads.txt`)**
 - **State Recovery (`latest` $\to$ `live`)**
+
+---
+
+## Past Development
+
+To Be Filled Out Later...
