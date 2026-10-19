@@ -147,326 +147,652 @@ This folder is not critical for the app to run.
 
 ## Current Development
 
-## GLITCHBOOTH Effects Revamp — Masterplan (v4.1 Final Production Specification)
+# GLITCHBOOTH Effects Overhaul: Definitive Plan (v6.2)
 
-> [!IMPORTANT]
-> **Adherence to Engineering & AI Implementation Rules:**
-> **PHASE 1 IMPLEMENTED IN SERVER.PY (Awaiting Raspberry Pi 5 Hardware Testing).** This document is the ultimate, definitive implementation specification. It fully preserves all granular architecture, exact byte-level memory tables, pipeline flowcharts, 8-phase implementation mechanics, automated regression & benchmarking suites, and verification governance from the baseline masterplan, while incorporating every verified audit correction:
->
-> - **Aesthetics First, Bounded Stability Always**: Visual richness, organic randomness, and tactile responsiveness are the primary goals. Performance constraints exist to prevent thread lock-ups or dropped frames on the Pi 5, not to make the visual effect sterile or rigid.
-> - **Spatially Balanced Dynamic Melt**: Non-linear backward vertical coordinate stretching sampling from an immutable pre-melt frame snapshot (`STATIC_MELT_SNAPSHOT`), with dynamic column strides, seed-rank grouping, and fractional subsampling to ensure perfectly uniform screen-wide coverage.
-> - **Dead Write-Mask Removed**: `STATIC_MELT_MASK` is deleted, saving 300 KiB (307,200 B) and eliminating dead per-frame write overhead.
-> - **Exact Bounded Scratch Memory Model**: Reconciled memory table accounting for `MELT_DRIP_WORK_BUFFER` (480x4x3 float32 = 23,040 B = ~0.022 MiB), compression tiers (240x320x3, 120x160x3, 60x80x3 uint8 = 302,400 B = ~0.288 MiB), dedicated Posterize buffers (1,536,000 B = ~1.465 MiB), snapshot buffer (921,600 B = ~0.879 MiB), totaling exactly **2,783,040 B (~2.654 MiB)** of new persistent buffers.
-> - **Encapsulated, Injectable Handlers**: Separation of drip collection (`_collect_melt_drips`) and rendering (`_render_melt_drips`) allowing direct test harness injection without test-production drift.
-> - **Governor & Remapping Synchronization**: Governor effect weights are derived dynamically from active mapped effects, ensuring frame pacing remains invariant under remapping.
-> - **Clean Telemetry v2 Epoch**: Capture-time immutable snapshot packaging (`capture_log_v2.jsonl`) avoiding per-frame heap churn.
-> - **Zero Git Pushes**: The AI assistant will **NEVER** run `git push`. All version control commits and pushes are executed exclusively by the user.
+**Status legend**
 
----
+| Mark | Meaning |
+| :-- | :-- |
+| ✅ | Decided by the owner. Safe to plan and (after approval of a change proposal, see R0) implement. |
+| 🔶 | Proposed default. Needs the owner's OK before implementation. |
+| ⬜ | Open question. Only the owner can answer. Do not guess. See §11. |
 
-### 1. Executive Summary & Production Objectives
+**What this document is.** It replaces the "Current Development" masterplan in `readme.md` once the owner approves it. v6 supersedes v5: it contains the owner's decisions, the owner's phase order, the event schedule, and facts from the files received since (`telemetry.py`, `index.html`, `glitchbooth.service`).
 
-The GLITCHBOOTH Effects Revamp modernizes the booth's visual processing engine while maintaining absolute stability on the Raspberry Pi 5 (1GB RAM). This update achieves five key engineering objectives:
+**Changes since v6.1 (owner's answers, the owner-tuned Melt, the console photo, the benchmark output):**
+- Owner answers recorded: interim knob wiring handled by stickers (Q1); `no_glitch` = every knob at or below 50 (Q3); the website shows a NO GLITCH bar plus only currently mapped effects (Q9); scratch experiments on the assistant's own computer are allowed, edits to the project through any editor or tool are not (Q6, rule R0); error output is console-only (Q8).
+- Melt is now the **owner-tuned version** (8-px drips, neon ramp to full at the tip, 100 drips): §6.1, Appendix A. The old Melt tests fail against it by design and need updating (proposal P1-01); the benchmark verdict is advisory (P1-02).
+- New facts about the display loop and the "Frame copy latency" warnings (§3.9) and a no-code experiment to find their cause (§10).
+- Idea from the owner: Data Mosh **after** Melt; planned as a live A/B/C test (§6.3, D23).
 
-1. **Gravitational Melt Deformation with Uniform Coverage & Strict Bounds**: Replace superficial pixel stamping with an explicit non-linear coordinate transformation operating against an immutable pre-melt frame snapshot (`STATIC_MELT_SNAPSHOT`), backed by a 4-column profile ($x_0-1, x_0, x_0+1, x_0+2$ where $1 \le x_0 < \text{WIDTH}-2$ and $L > 0$), deterministic ascending-extent overlap ordering, seed-rank fractional subsampling, and outer-edge neon bleeding.
-2. **Plug-and-Play Architectural Decoupling & Complete Default Mapping**: Establish `effects_config.py` as a purely declarative metadata registry containing the complete six-knob default mapping. Validation strictly restricts assignable effect IDs to top-level registered handlers, keeping internal sub-effects (`packet_corruption`, `pixelate`) encapsulated within the unified `pixel_damage` composite.
-3. **Reconciled Memory Inventory (2.654 MiB New Persistent Footprint)**: Document exact persistent byte footprints for all core new buffers (**2.632 MiB**) plus pre-allocated staging buffers (**0.022 MiB**), totaling **2.654 MiB**, with zero canvas reallocations inside the hot image-processing render loop.
-4. **Telemetry v2 Epoch Migration with Frame-Packet Metadata Binding**: Launch an isolated v2 telemetry ledger (`capture_log_v2.jsonl`) capturing an atomic runtime mapping snapshot bound directly as an immutable metadata packet alongside the memory-copied captured frame at State 1B.
-5. **Strict Post-Phase Governance & Hardware Testing**: Enforce focused unit/regression sanity checks after every phase, paired with full-stack live hardware smoke tests on the Raspberry Pi 5 (`dev` branch) at major integration milestones and release gates.
+**Earlier (v6 to v6.1):** corruption content settled (squares always noise; bands 90/6/4); website dashboard analyzed (§3.8, no website change needed if the §7 constraints hold); `index.html` is a backup only; no recorded footage of people.
 
----
+**Inputs verified:** `server.py` (Phase 1 under development), `pygame_display.py`, `readme.md`, `telemetry.py`, `index.html`, `glitchbooth.service`, `StatsDashboard.tsx` (the website's stats component).
 
-### 2. Primary Constraints & Architectural Guardrails
+**Who reads what**
 
-- **Zero Git Pushes**: The AI assistant will **NEVER** run `git push`. All version control commits and pushes are executed exclusively by the user.
-- **Aesthetics First, Bounded Stability Always**: Visual richness, organic randomness, and tactile responsiveness are paramount. Guardrails exist to protect Pi 5 thread stability, not to make the visual effect sterile or rigid.
-- **Strict Memory Contiguity (`order='C'`)**: All image arrays and scratch buffers must remain contiguous C-order NumPy arrays (`dtype=np.uint8`, `order='C'`), minimizing per-frame Python object churn inside the render loop.
-- **Scoped Allocation Guarantee**: Zero per-frame frame-canvas reallocations are strictly enforced inside the core render loop. Scratch buffers and tier buffers are pre-allocated at module scope.
-- **Locked Pipeline Order & Plug-and-Play Flexibility**: The deterministic sequential execution order in `server.py` guarantees visual consistency. Stage execution is decoupled from active knob mapping. Unassigned stages receive an intensity of `0.0` and execute zero image-processing compute (early return).
-- **Configuration-Driven Remapping Model**: Reassignment is configuration-driven via application restart (editing `effects_config.py` defaults or reloading the configuration object at startup). This eliminates asynchronous runtime race conditions, ensuring UI labels, pipeline execution, and capture telemetry always share a uniform configuration snapshot.
-- **CRT Overlay Isolation**: CRT scanlines, aperture masks, and phosphor green glow are applied strictly outside the effect registry at the conclusion of frame processing (`if CRT_ENABLED: cv2.multiply(MUTABLE_PROCESSING_BUFFER, CRT_MASK, scale=1.0/255.0)`).
-- **Continuous Hardware Operation**: Camera capture, thermal receipt printing (`/dev/usb/lp0` via disk-backed images), countdowns, audio, QR rendering, and ImageKit sync remain uninterrupted.
+- **Owner:** §1, §4, §5.9 (what each knob does at each stage), §8.0 (event schedule), §10, §11.
+- **AI assistant:** Entire Document, especially §2 and §3 in full, then §6 (effect specs) and the one phase you were assigned in §8. Do not start any other phase except the one you are currently working on specified by the owner.
 
 ---
 
-### 3. Reconciled Buffer Inventory & Memory Budget (Pi 5 1GB)
+## 1. Owner intent
 
-All persistent memory is pre-allocated at startup. Total binary footprint of newly added persistent buffers is exactly **2.654 MiB** (2,783,040 bytes):
+| # | Intent | Handled in |
+| :-- | :-- | :-- |
+| G1 | Modular **effects pool**: any effect on any of the six knobs; **never the same effect on two knobs**, and **no similar effects together** (one of `pixel_damage`, `packet_corruption`, `pixelation`; the same rule for future similar effects). | §5.3, Phase 4 |
+| G2 | Processing order belongs to the effect, not the knob. The current order is approved; one idea (Data Mosh after Melt) will be tested live (§6.3). | §5.2 |
+| G3 | Phased; after every phase the booth works without problems. | §8, §9 |
+| G4 | **Melt**: add neon colors, possibly improve; tune after seeing it on the machine. | §6.1, Phase 1 |
+| G5 | **Decouple Data Mosh** from packet corruption and improve it: **frame-hold + color-plane bleed** if viable. | §6.3, Phase 2 |
+| G6 | **Fuse pixelation and packet corruption** into the new Pixel Damage. Knob 0–512: corruption only (squares always noise; bands about 90% noise, 6% black, 4% white ✅). 512–1023: corruption keeps getting stronger and gradual pixelation is added, **5 levels**. Standalone pixelation stays as it is. | §6.4, §6.5, Phase 3 |
+| G7 | **Posterize** with the Melt neon palette (blacks untouched, other colors neon, 2–3 px noisy glitchy outlines, glitchy not pop art). **Visual decisions come after the event.** | §6.6, Phase 6 |
+| G8 | **Telemetry** updated for the modular system. Total capture count continues; effect-usage stats may restart; an effect counts as used above raw 50; keep `no_glitch` (every knob at or below 50). | §7, Phase 5 |
+| G9 | **Strong visuals with high performance** for all effects. Aesthetics first; improve the strength-vs-quality balancer. | §2 R2, §5.6 |
+| G10 | **Never change code before the owner approves.** | §2 R0 |
+| G11 | Next event in **5 days**, with a **1-day freeze** before it. Finish Melt, Data Mosh and the fusion before then. | §8.0 |
+| G12 | The plan guides weaker AI assistants and the owner when the assistants cannot help. Ask when unsure. | §2, §10 |
 
-| Buffer Name                 | Status   | Shape            | Dtype     | Item Size | Exact Size (Bytes / MiB) | Owner / Lifecycle Strategy                                                 |
-| :-------------------------- | :------- | :--------------- | :-------- | :-------- | :----------------------- | :------------------------------------------------------------------------- |
-| `MUTABLE_PROCESSING_BUFFER` | Existing | `(480, 640, 3)`  | `uint8`   | 1 byte    | 921,600 B (~0.879 MiB)   | Active live camera processing canvas                                       |
-| `SHARED_GRAY_BUFFER`        | Existing | `(480, 640)`     | `uint8`   | 1 byte    | 307,200 B (~0.293 MiB)   | Shared scratch for luminance conversions (mutually exclusive)              |
-| `STATIC_MELT_GRAY_BUFFER`   | Existing | `(480, 640)`     | `uint8`   | 1 byte    | 307,200 B (~0.293 MiB)   | Sequential scratch: used by Melt during loop, reused by capture print prep |
-| `STATIC_NOISE_BUFFER`       | Existing | `(480, 640, 3)`  | `uint8`   | 1 byte    | 921,600 B (~0.879 MiB)   | Global static noise scratch buffer                                         |
-| `COMPRESSION_STAGE_BUFFER`  | Existing | `(480, 640, 3)`  | `uint8`   | 1 byte    | 921,600 B (~0.879 MiB)   | Legacy compression scratch (retired upon Phase 5 tier adoption)            |
-| `UI_DISPLAY_BUFFER`         | Existing | `(480, 640, 3)`  | `uint8`   | 1 byte    | 921,600 B (~0.879 MiB)   | Memory-mapped display buffer ingested by Pygame kiosk                      |
-| `LATEST_CAMERA_FRAME`       | Existing | `(480, 640, 3)`  | `uint8`   | 1 byte    | 921,600 B (~0.879 MiB)   | Camera worker double buffer under `cam_raw_lock`                           |
-| `FROZEN_DISPLAY_BUFFER`     | Existing | `(480, 640, 3)`  | `uint8`   | 1 byte    | 921,600 B (~0.879 MiB)   | Post-capture display freeze buffer                                         |
-| `FROZEN_PRINT_BUFFER`       | Existing | `(640, 480)`     | `uint8`   | 1 byte    | 307,200 B (~0.293 MiB)   | Rotated monochrome thermal print bitmap buffer                             |
-| `STATIC_ROW_BUFFER`         | Existing | `(640, 3)`       | `uint8`   | 1 byte    | 1,920 B (~0.002 MiB)     | Row scratch used for Signal Drift horizontal rolls                         |
-| `GHOST_GREEN_BUFFER`        | Existing | `(480, 640)`     | `uint8`   | 1 byte    | 307,200 B (~0.293 MiB)   | Legacy scratch canvas                                                      |
-| `COMPRESSION_TIER_1`        | **New**  | `(240, 320, 3)`  | `uint8`   | 1 byte    | 230,400 B (~0.220 MiB)   | Pre-allocated tier 1 downscale scratch ($320\times240$) for Pixel Damage   |
-| `COMPRESSION_TIER_2`        | **New**  | `(120, 160, 3)`  | `uint8`   | 1 byte    | 57,600 B (~0.055 MiB)    | Pre-allocated tier 2 downscale scratch ($160\times120$) for Pixel Damage   |
-| `COMPRESSION_TIER_3`        | **New**  | `(60, 80, 3)`    | `uint8`   | 1 byte    | 14,400 B (~0.014 MiB)    | Pre-allocated tier 3 downscale scratch ($80\times60$) for Pixel Damage     |
-| `POSTER_WORK_BUFFER`        | **New**  | `(480, 640, 3)`  | `uint8`   | 1 byte    | 921,600 B (~0.879 MiB)   | Dedicated Posterize color mapping canvas                                   |
-| `POSTER_EDGES`              | **New**  | `(480, 640)`     | `uint8`   | 1 byte    | 307,200 B (~0.293 MiB)   | Dedicated Canny edge extraction canvas                                     |
-| `POSTER_GRAY_BUFFER`        | **New**  | `(480, 640)`     | `uint8`   | 1 byte    | 307,200 B (~0.293 MiB)   | Dedicated Posterize grayscale buffer                                       |
-| `STATIC_MELT_SNAPSHOT`      | **New**  | `(480, 640, 3)`  | `uint8`   | 1 byte    | 921,600 B (~0.879 MiB)   | Immutable pre-melt source snapshot for bilinear sampling                   |
-| `MELT_DRIP_WORK_BUFFER`     | **New**  | `(480, 4, 3)`    | `float32` | 4 bytes   | 23,040 B (~0.022 MiB)    | Staging scratch for 4-column profile bilinear sampling and neon bleed      |
-| `STATIC_BLOCK_BUFFER`       | Existing | `(32, 24, 3)`    | `uint8`   | 1 byte    | 2,304 B (~0.002 MiB)     | Reused by Packet Corruption                                                |
-| `GLOBAL_NOISE_BUFFER`       | Existing | `(32, 24, 3)`    | `uint8`   | 1 byte    | 2,304 B (~0.002 MiB)     | Reused by Packet Corruption                                                |
-| `CORRUPTION_ENERGY`         | Existing | `(15, 26)`       | `float32` | 4 bytes   | 1,560 B (~0.001 MiB)     | Packet corruption decay grid                                               |
-| `CORRUPTION_MODE`           | Existing | `(15, 26)`       | `uint8`   | 1 byte    | 390 B (~0.0003 MiB)      | Packet corruption mode grid                                                |
-| `DATAMOSH_VX`               | Existing | `(15, 26)`       | `int8`    | 1 byte    | 390 B (~0.0003 MiB)      | Datamosh motion vector grid                                                |
-| `DATAMOSH_WORK_BUFFER`      | Existing | `(480, 640, 3)`  | `uint8`   | 1 byte    | 921,600 B (~0.879 MiB)   | Datamosh block displacement canvas                                         |
-| `DATAMOSH_PREV_FRAME`       | Existing | `(480, 640, 3)`  | `uint8`   | 1 byte    | 921,600 B (~0.879 MiB)   | Datamosh history reference frame                                           |
-| `DATAMOSH_DIFF_BUFFER`      | Existing | `(480, 640, 3)`  | `uint8`   | 1 byte    | 921,600 B (~0.879 MiB)   | Datamosh absdiff scratch buffer                                            |
-| `DATAMOSH_GRAY_DIFF`        | Existing | `(480, 640)`     | `uint8`   | 1 byte    | 307,200 B (~0.293 MiB)   | Datamosh grayscale difference                                              |
-| `CHANNEL_SHIFT_BUFFER`      | Existing | `(480, 640)`     | `uint8`   | 1 byte    | 307,200 B (~0.293 MiB)   | Chroma Shift channel scratch                                               |
-| `SLICE_SHIFT_BUFFER`        | Existing | `(480, 640, 3)`  | `uint8`   | 1 byte    | 921,600 B (~0.879 MiB)   | Allocated slice displacement scratching array                              |
-| `GHOST_FRAME_BUFFER`        | Existing | `(480, 640, 3)`  | `uint8`   | 1 byte    | 921,600 B (~0.879 MiB)   | Chroma Shift ghost blend buffer                                            |
-| `ASCII_LOWRES_GRAY`         | Existing | `(60, 80)`       | `uint8`   | 1 byte    | 4,800 B (~0.004 MiB)     | ASCII downscale luminance canvas                                           |
-| `ASCII_UPRES_GRAY`          | Existing | `(480, 640)`     | `uint8`   | 1 byte    | 307,200 B (~0.293 MiB)   | ASCII structured glyph canvas                                              |
-| `ASCII_BLOCK_BUFFER`        | Existing | `(60, 80, 8, 8)` | `uint8`   | 1 byte    | 307,200 B (~0.293 MiB)   | ASCII 4D tile indexing canvas                                              |
-| `ASCII_TILES`               | Existing | `(16, 8, 8)`     | `uint8`   | 1 byte    | 1,024 B (~0.001 MiB)     | Pre-rendered ASCII font glyphs                                             |
-| `ASCII_GREEN_BUFFER`        | Existing | `(480, 640, 3)`  | `uint8`   | 1 byte    | 921,600 B (~0.879 MiB)   | ASCII phosphor color buffer                                                |
-| `CRT_MASK`                  | Existing | `(480, 640, 3)`  | `uint8`   | 1 byte    | 921,600 B (~0.879 MiB)   | CRT scanline/aperture multiplier                                           |
+**Final default mapping (✅):** knob 0 ASCII Matrix, 1 Signal Drift, 2 Posterize, 3 Pixel Damage (new fusion), 4 Melt, 5 Chroma Shift. Data Mosh stays in the pool, unassigned by default. **Remapping happens by restart only (✅).**
 
 ---
 
-### 4. Locked Pipeline Architecture & Default Mapping Contract
+## 2. Rules for AI assistants (non-negotiable)
 
-```mermaid
-graph TD
-    RawFrame[Raw Camera Frame in MUTABLE_PROCESSING_BUFFER] --> Stage1[Stage 1: Pixel Damage Composite Effect]
-    Stage1 --> Stage2[Stage 2: Posterize]
-    Stage2 --> Stage3[Stage 3: Chroma Shift]
-    Stage3 --> Stage4[Stage 4: Data Mosh Uncoupled]
-    Stage4 --> Stage5[Stage 5: Signal Drift]
-    Stage5 --> Stage6[Stage 6: Melt Gravitational Stretch + Snapshot]
-    Stage6 --> Stage7[Stage 7: ASCII Matrix]
-    Stage7 --> Stage8[Stage 8: CRT Scanline Overlay External]
-    Stage8 --> OutputFrame[Final Processed Output Frame]
-```
+**R0. No code change without the owner's approval.** Procedure:
+1. The assistant posts a **Change Proposal** (template in §9.5): code or files, exact scope, visible behavior change, risks, tests, rollback.
+2. The owner answers `APPROVED <proposal id>` if present or approves the changes (or edits the proposal). **Silence is not approval.**
+3. Only then and if allowed specifically are files changed, and only the files and scope in the approved proposal. Anything new found along the way becomes a new proposal.
+4. **Allowed without approval (✅ owner):** reading, analysis, reports, and experiments the AI runs **on its own computer** (for example scripts that render preview images or measure something), clearly labeled and never deployed. **Not allowed without approval:** any change to any file in the project through **any editor or tool** (VS Code, Antigravity, Codex, nano, micro, shell commands, scripts, and so on).
 
-#### Complete Default Six-Knob Mapping & Unified Control Contract
+**R1. Ask, do not assume.** If intent or the desired look is unclear, or a fact cannot be verified from the files given, stop and ask. List any unavoidable assumption in the report.
 
-The declarative default mapping in `effects_config.py` defines the initial physical control binding:
+**R2. Aesthetics first.** Do not reduce visual richness (detail, randomness, neon intensity, effect range, drip counts, color count) to gain speed without written owner approval. **Optimization ladder:** (1) remove waste that does not change the picture (allocations, redundant copies, Python loops that can be vectorized); (2) cheaper but equivalent operations (lookup tables, in-place ops, integer math); (3) lower internal resolution, only with approval after viewing the result; (4) reduce caps or quality, only with approval.
 
-```python
-DEFAULT_KNOB_MAPPING = {
-    0: "signal_drift",      # Stage 5
-    1: "chroma_shift",      # Stage 3
-    2: "posterize",         # Stage 2
-    3: "pixel_damage",      # Stage 1 composite (internally manages packet corruption + tiered pixelation)
-    4: "melt",              # Stage 6
-    5: "ascii_matrix"       # Stage 7
-}
-# Registered top-level effects unassigned by default: "datamosh" (Stage 4)
-# Sub-effects ("packet_corruption", "pixelate") are strictly internal and rejected by validation if mapped as top-level knob effects.
-```
+**R3. No silent behavior change.** Change only what the approved proposal lists. A visible change outside scope means stop and report.
 
-- **Startup Reverse-Lookup Construction**: Precomputed **once** at application startup (never inside the per-frame loop):
+**R4. Evidence over claims.** "Done", "verified", "implemented" need pasted command output. Never write them into `readme.md` without it. State what was **not** run (especially anything that needs the Raspberry Pi).
 
-  ```python
-  EFFECT_TO_KNOB = {eff_id: k_idx for k_idx, eff_id in active_mapping.items()}
+**R5. One source of truth.** No copies such as `_v2`, `_1`, `_final`. Edit the real file; git is the history. One test file per purpose.
 
-  def resolve_intensity(effect_id: str, control_packet) -> float:
-      k_idx = EFFECT_TO_KNOB.get(effect_id)
-      if k_idx is not None and k_idx < len(control_packet.knobs):
-          return control_packet.knobs[k_idx] / 1023.0
-      return 0.0
-  ```
+**R6. Version control belongs to the owner.** The AI never runs `git push` and never creates commits or tags. It writes the exact commands; the owner runs them.
 
-- **Dormancy Enforcement**: Unassigned or dormant effects receive `0.0` intensity and trigger an immediate early return with zero image processing.
+**R7. Tunables live in one block.** Every number that shapes a look is a named, commented constant with its allowed range, in one tunables block (in `server.py` until Phase 4, then `effects_config.py`). No magic numbers inside effect code.
+
+**R8. Hot-path discipline.** Inside the frame loop: if possible, no allocation of frame-sized arrays, C-contiguous `uint8` buffers, preallocated scratch. Never overrides R2.
+
+**R9. Determinism for tests.** Seed `np.random`, `random` **and** `cv2.setRNGSeed` (OpenCV's `cv2.randu` has its own generator). Synchronize import-time random state (for example `RANDOM_SIGN_POOL`) when two copies of the module are compared.
+
+**R10. Thread and hardware rules.** All pixel work runs in the `background_loop` thread. Effects never block and never do I/O. Telemetry writes are asynchronous. Printing, upload, countdown, audio, QR and the capture state machine are not touched by the overhaul.
+
+**R11. Shared buffers.** A scratch buffer may be shared only if all users run sequentially on the same thread, none relies on its contents across stages or frames, and every user is listed in the buffer inventory.
+
+**R12. Phase protocol.** One phase at a time. The owner tags `pre-phaseN` first. After finishing: tests, A/B guard, aesthetic gate (visual phases), booth smoke test, report (§9.4). Do not start the next phase until the owner writes "accepted".
+
+**R13. Forward compatibility (pre-registry phases).** Until the registry exists (Phase 4), new effect code is still written as **self-contained functions with the handler contract of §5.4** (own state, `reset()`, tunables at the top, no calls to other effects), called from the existing pipeline at the existing stage position. Phase 4 then only wires them.
+
+**R14. Fail safe.** An invalid configuration must never leave the booth dead. The service restarts on failure every 2 seconds (`Restart=on-failure`), so a crash loop is the worst outcome; see §5.3.
+
+**R15. Missing information.** If a needed file was not given, ask. Do not reconstruct it from memory.
+
+**R16. No new dependencies** (pip or system packages) without approval.
 
 ---
 
-### 5. Comprehensive 8-Phase Implementation Specification
+## 3. Ground truth: how the booth works today (verified in the files)
 
-#### PHASE 0: Baseline Performance & Golden Frames (Hardware Safety Anchor)
+### 3.1 Pipeline order and knob wiring today
 
-- **Goal**: Establish empirical performance benchmarks and reference visual captures on the existing codebase before any modifications.
-- **Technical Design**:
-  - Run benchmark loop measuring frame times across governor tiers (Low: 15 FPS, Mid: 12 FPS, High: 10 FPS).
-  - Dump one uncompressed raw camera frame for standardized benchmark inputs across phases.
-  - Generate and save seeded synthetic golden frames for all current effects to detect unintended visual regression during modularization.
-- **Acceptance Criteria**: Baseline latency log and golden hashes recorded on Pi 5.
+`apply_glitch_pipeline()` runs these stages every frame, in this order:
 
-#### PHASE 1: Gravitational Melt Deformation Redesign (Math & Spec)
+| Order | Stage | Knob | Notes |
+| :-- | :-- | :-- | :-- |
+| 1 | **Packet corruption** (noise blocks, noise/black/white vertical bands on a 15×26 grid) | **2** | Energized by Data Mosh (3.2) |
+| 2 | **Pixelation** ("Pixel Damage") | **3** | Continuous block size |
+| 3 | **Chroma Shift** (red shift, ghost blend, slice shifts) | **5** | |
+| 4 | **Data Mosh** (block displacement from motion) | **2** (strength = knob²) | Same knob as corruption |
+| 5 | **Signal Drift** | **1** | |
+| 6 | **Melt** (Phase 1 version) | **4** | |
+| 7 | **ASCII Matrix** | **0** | |
+| 8 | **CRT overlay** | none (switch) | Last; not an effect |
 
-- **Goal**: Replace pixel-stamping with continuous non-linear vertical coordinate stretching, true 1D vertical bilinear interpolation, dynamic organic column density, ascending-extent overlap precedence, and outer-border neon bleeding.
-- **Technical Design**:
-  1. **Snapshot Initialization**: At Stage 6 entry, verify shape/dtype equality against `MUTABLE_PROCESSING_BUFFER`. Copy active frame into `STATIC_MELT_SNAPSHOT` (read-only for Melt pass).
-  2. **Bounded Gravitational Coordinate Equation & Boundary Guards**:
-     Drip origin columns $x_0$ are strictly generated and clipped such that $1 \le x_0 < \text{FRAME\_W} - 2$. For each drip, evaluate length guard: `if L <= 0: continue`. For 4-column profile ($x_0-1, x_0, x_0+1, x_0+2$), starting at origin row $y_0$ with length $L$ and stretch coefficient $s \in [1.0, 3.0)$, destination rows $y$ map back to source rows via:
-     $$y_s = y_0 + \frac{y - y_0}{\max\left(1.0, 1.0 + s \cdot \sqrt{\frac{y - y_0}{L}}\right)}$$
-     Clamped strictly to domain $[y_0, h - 1]$. Horizontal source coordinates remain unchanged ($x_s = x$).
-  3. **1D Vertical Bilinear Sampling**:
-     ```python
-     y_floor = np.floor(y_float).astype(np.int32)
-     y_ceil = np.clip(y_floor + 1, 0, h - 1)
-     w_ceil = (y_float - y_floor).astype(np.float32)[:, None, None]
-     w_floor = 1.0 - w_ceil
-     ```
-     Floor and ceil rows are sampled and blended into `MELT_DRIP_WORK_BUFFER`, rounded explicitly (`np.round`), clipped to $[0, 255]$, and written as a contiguous 4-column slice into `MUTABLE_PROCESSING_BUFFER`.
-  4. **Dynamic Column Traversal & Seed-Rank Subsampling**:
-     Candidate columns are scanned in horizontal order via per-column `flatnonzero` or sliced arrays, scaling stride with knob intensity ($6 \to 4 \to 2$). Drips are emitted by seed rank across columns, with fractional subsampling applied when `MAX_MELT_DRIPS = 120` is reached to guarantee completely symmetrical screen-wide distribution.
-  5. **Deterministic Ascending-Extent Overlap Precedence**:
-     Drips are rendered in ascending order of downward reach ($y_0 + L$), with tie-breaks resolved by ascending origin column ($x_0$). Greater-extent drips process last, cleanly overwriting lesser-extent overlapping pixel assignments.
-  6. **Edge-Restricted Per-Drip Neon Bleeding**:
-     Outer columns ($x_0 - 1$ and $x_0 + 2$) receive an $85\%$ source + $15\%$ neon tint. Core columns ($x_0, x_0 + 1$) retain pure camera visual content.
-- **Acceptance Criteria**: Verified zero out-of-bounds indexing; smooth vertical coordinate elongation; uniform spatial balance (left/right ratio between $0.8$ and $1.25$).
-- **Implementation Status**: Code-complete in `server.py` on the `dev` branch. Pending on-device hardware verification and thermal/latency testing on the Raspberry Pi 5.
-- **Dedicated Phase 1 Test & Benchmark Suite**:
-  - `test_melt_phase1.py`: Formal invariant verification suite validating production sampling against pure-Python reference equations, defensive boundary guards ($1 \le x_0 < w-2$), overlap precedence, parameter guards ($L \le 0$), spatial symmetry balance, frame determinism, and temporary heap memory profiles (<150 KiB heap churn).
-  - `test_melt_benchmark_gemini.py`: Focused hardware latency benchmark measuring drip collection vs rendering across realistic and worst-case white-noise scenes against the $p95 \le 20.0$ ms target.
-  - `test_melt_benchmark.py`: Comprehensive v3 hardware benchmark reporting prep/collect/render/e2e breakdowns, per-drip profiling, Raspberry Pi hardware model detection, and dynamically suggested safe `MAX_MELT_DRIPS` headroom caps.
-  - `ab_regression.py`: Cross-commit side-by-side A/B regression test harness comparing `server.py` against baseline git refs (`pre-phase1`) across 84 dormant cases and active cases.
+There is **no Posterize** in the code today.
 
-#### PHASE 2: Registry & Configuration Foundation (`effects_config.py`)
+### 3.2 Behavior details the plan depends on
 
-- **Goal**: Centralize declarative metadata and implement rigorous startup validation rejecting sub-effect top-level mappings.
-- **Technical Design**:
-  - Create `effects_config.py` with `EFFECT_POOL`, `DEFAULT_KNOB_MAPPING`, and `NEON_PALETTES`.
-  - Implement `validate_effects_config()` to check unique knob assignments `{0..5}`, valid top-level effect IDs (explicitly rejecting internal sub-effects like `packet_corruption` or `pixelate` from direct knob binding), and integer palette channel ranges (`0–255`).
-  - Precompute `EFFECT_TO_KNOB` at startup.
-- **Acceptance Criteria**: Startup validation aborts cleanly on malformed configurations, duplicate knob assignments, or invalid sub-effect bindings.
+- **Packet corruption.** Grid 15 rows × 26 columns (cells 32 px tall × 24 px wide; the right-most 16 px of the frame are never touched). Each frame, if the knob is above 0.02, a spawn happens with probability `knob × 0.33`. A spawn is 80% a square of 1–3 cells (always **noise**) or 20% a vertical band 1–2 cells wide (60% noise, 30% black, 10% white). Energy decays ×0.9 per frame; blocks blend with the picture by energy. Below 0.01 the state is cleared.
+- **The coupling.** `CORRUPTION_ENERGY[DATAMOSH_VX != 0] += 0.1`: every cell where Data Mosh has a motion vector also feeds corruption energy. This is the "fusion" on knob 2.
+- **Data Mosh.** Motion is sampled at each cell's center (difference to the previous frame). A moving cell gets a random horizontal shift of ±4 px that decays; its content is replaced by history content (eroded edges 0–2 px); history is blended about 63% new / 37% old. Vectors update every second call. **Only horizontal vectors exist.**
+- **Pixelation.** Block size `int(12 + knob × 9)`: **12 to 21 px, continuous**, nearest-neighbor, through the scratch buffer `COMPRESSION_STAGE_BUFFER`.
+- **ASCII** uses the knob value as strength and as the blend factor with the camera image.
+- **Dormancy thresholds today** (keep until changed on purpose): corruption > 0.02 (clears below 0.01); pixelation > 0; Chroma Shift > 0.05; Data Mosh when knob² > 0.02 (knob above about 0.14); Signal Drift > 0; Melt > 0.03; ASCII > 0.02.
 
-#### PHASE 3: Effect-State & Input Routing Separation
+### 3.3 The strength-vs-quality balancer (the "governor")
 
-- **Goal**: Untangle Knob 2 and establish state-reset contracts for stateful effects (Data Mosh).
-- **Technical Design**:
-  - Assign Data Mosh strictly to its dedicated mapping entry.
-  - Implement an immediate state-flush routine (`DATAMOSH_VX` cleared, history reset) when intensity transitions to zero.
-  - On the first active frame after reset, mark history invalid, copy the current Stage 4 input into `DATAMOSH_PREV_FRAME`, and bypass temporal displacement until a valid history frame is established.
-- **Acceptance Criteria**: Disabling Data Mosh leaves zero residual motion artifacts.
+`effect_intensity` is a weighted sum **by knob index**: knob0 0.10 (ASCII), knob1 0.07 (drift), knob2 0.42 (corruption + datamosh), knob3 0.07 (pixelation), knob4 0.27 (melt), knob5 0.07 (chroma). It drives:
+1. the **loop frame rate**: ≥ 0.75 → 10 FPS, ≥ 0.55 → 12 FPS, otherwise 15 FPS;
+2. the **stream JPEG quality**: `65 − 30 × intensity`, clamped to 35–65;
+3. the **stream preview width** (downscaled at ≥ 0.55).
 
-#### PHASE 4: Buffer Modularization & Buffer Allocation Audit
+Observations (to verify, not yet measured): the Pygame kiosk copies `UI_DISPLAY_BUFFER` directly, so items 2 and 3 appear to affect only the web stream; the balancer is **predicted** from knob positions, not **measured**, so it can lower the frame rate even when the Pi has headroom; its weights belong to today's effects; and the camera is requested at 10 FPS (`CAP_PROP_FPS`), so a 12–15 FPS loop may process the same camera frame more than once, which matters for motion-based effects like Data Mosh. The improvement program is in §5.6. Note: Melt alone (weight 0.27) never leaves the 15 FPS tier, so its whole cost has to fit inside a 66.7 ms frame together with whatever else is active.
 
-- **Goal**: Pre-allocate dedicated scratch buffers and extract inline logic.
-- **Technical Design**:
-  - Instantiate `POSTER_WORK_BUFFER`, `POSTER_EDGES`, `POSTER_GRAY_BUFFER`, `STATIC_MELT_SNAPSHOT`, `MELT_DRIP_WORK_BUFFER`, and compression tiers (`COMPRESSION_TIER_1` to `COMPRESSION_TIER_3`) at module level with explicit shape/dtype/contiguity checks (`order='C'`).
-  - Extract modular stage handlers (`apply_pixel_damage`, `apply_posterize`, `apply_chroma_shift`, `apply_datamosh`, `apply_signal_drift`, `apply_melt_pass`, `apply_ascii_matrix`).
-- **Acceptance Criteria**: Unchanged effects maintain 100% visual equivalence against Phase 0 golden frames.
+### 3.4 Input hardware
 
-#### PHASE 5: Visual Implementations (Pixel Damage & Posterize with Explicit OpenCV Tiering)
+The Arduino (installed sketch = the one in `readme.md`, ✅) sends six 10-bit knob values and a button every **300 ms** at 9600 baud. The server reads **one line per frame**, with no smoothing. This is accepted for now (re-flash only if very necessary, ✅). The readme sketch sets `pinMode(2, INPUT_PULLUP)` but reads `digitalRead(7)`; it works today, so it is left alone. **Never change only one side** (sketch or reader) if the update rate is ever changed: a faster Arduino needs a reader that drains the buffer.
 
-- **Goal**: Implement Split-Range Pixel Damage via verified in-place tiered OpenCV downsampling with explicit `dsize` parameters, and independent Posterize.
-- **Technical Design**:
-  1. **Split-Range Pixel Damage (Composite Effect)**:
-     - Knob raw boundaries:
-       - `0`: Bypass and reset state.
-       - `1–511`: Packet corruption scales linearly from min to max response: $\text{corr\_intensity} = \frac{\text{raw} - 1}{510.0}$. Pixelation intensity = $0.0$.
-       - `512–530`: Identity deadband. Packet corruption held at maximum ($1.0$). Pixelation held at $0.0$ to eliminate block-jump artifact at the transition boundary.
-       - `531–1023`: Packet corruption held at maximum ($1.0$). Pixelation intensity $p = \frac{\text{raw} - 531}{492.0}$ scales smoothly from $0.0$ to $1.0$.
-     - Tiered Downscaling with Explicit `dsize`:
-       - $p \in [0.0, 0.33)$: Target `COMPRESSION_TIER_1` ($320\times240$), `dsize=(320, 240)`.
-       - $p \in [0.33, 0.66)$: Target `COMPRESSION_TIER_2` ($160\times120$), `dsize=(160, 120)`.
-       - $p \in [0.66, 1.0]$: Target `COMPRESSION_TIER_3` ($80\times60$), `dsize=(80, 60)`.
-     - Upscale back to `(640, 480)` into `MUTABLE_PROCESSING_BUFFER` using `cv2.INTER_NEAREST`. Retire legacy `COMPRESSION_STAGE_BUFFER`.
-  2. **Independent Posterize & Aesthetic Gate**:
-     - Uses dedicated `POSTER_GRAY_BUFFER` and `POSTER_EDGES`.
-     - Executes vectorized OpenCV Canny edge extraction (`45, 130`) and tone quantization preserving deep blacks ($<20$ brightness).
-- **Acceptance Criteria**: Discrete tier transitions without block-jumps; Posterize executes independently with bold contours.
+### 3.5 Where knob labels live
 
-#### PHASE 6: Telemetry v2 Migration & Capture Packaging (`capture_log_v2.jsonl`)
+- `pygame_display.py` (`KNOB_ROWS`): ASCII Matrix, Signal Drift, Pixel Damage, Melt, Data Corruption, Chroma Shift.
+- `index.html` (served at `/`; label rows hard-coded): "EMPTY" for knob 0 (a mishap ✅), then Signal Drift, Pixel Damage, Melt, Data Corruption, Chroma Shift. It is **not in active use**: it is a **backup** for when the dedicated screen breaks, so it must still be correct if that happens. Its labels are updated together with the kiosk labels (as an approved change) and "EMPTY" becomes "ASCII Matrix". The physical knobs carry **stickers** (✅), which are easy to change.
+- `telemetry.py`: `ALL_EFFECTS` is indexed by knob number (see 3.6).
 
-- **Goal**: Launch v2 telemetry ledger capturing atomic runtime mapping snapshots bound directly to saved captures.
-- **Technical Design**:
-  - Define `CAPTURE_LOG_V2_PATH`.
-  - At the capture deadline (State 1B in `background_loop`), package the frozen display buffer, print buffer, active mapping dictionary, and captured raw knobs into an immutable capture record.
-  - Asynchronous telemetry writer records `capture_log_v2.jsonl` with config hash, timestamp, and active knob mappings without per-frame render loop churn.
-- **Acceptance Criteria**: `capture_log_v2.jsonl` correctly logs active mapping snapshots matching the exact saved frame.
+### 3.6 Telemetry today (`telemetry.py`, "v2.7")
 
-#### PHASE 7: Configuration Mapping Integration
+- `record_capture(session_id, knobs, *args, **kwargs)` is called at capture; it updates in-memory stats and queues a record `{ts, session_id, knobs}` for an append-only ledger `telemetry/capture_log.jsonl`. It accepts extra arguments, so it can be extended without breaking the caller.
+- **Effect identity comes from the knob index**: `ALL_EFFECTS = [ascii_matrix, signal_drift, data_corruption, pixel_damage, melt, chroma_shift, no_glitch]`. An effect counts as "used" when its knob is **≥ 10** (`KNOB_ACTIVATION_THRESHOLD`); if **no** knob is ≥ 10 the capture counts as `no_glitch`. This is why remapping breaks the stats.
+- **Startup replays the entire ledger** and recomputes all counters from the knob values, using the *current* index names. Old records therefore get reinterpreted whenever the mapping changes.
+- `compile_summary_stats()` writes `stats.json` every 120 s (keys: `total_captures`, `uptime_hours`, `first_capture_iso`, `last_capture_iso`, `effects_popularity` with `<name>_usage_pct` entries, `most_popular_combo`). The write is **not atomic** (a power cut mid-write can leave a broken file) and is done **outside** the lock that the uploader uses (the uploader can read a half-written file). The sync worker uploads it to ImageKit `/telemetry/stats.json` (overwritten each time), where `glitchbooth.online` reads it (§3.8).
+- The popularity percentages divide by the total number of effect "uses" (a capture with three effects counts three times), not by the number of captures.
+- `/stats` and `/api/stats` in `server.py` read `stats.json`; `/api/stats` uses `total_captures`.
 
-- **Goal**: Wire runtime registry fully into pipeline execution and kiosk display under the restart-driven configuration model.
-- **Technical Design**:
-  - Resolve raw knob values via active configuration at startup/restart.
-  - Dynamically derive dynamic governor intensity weights from mapped effects rather than static knob indices:
-    `effect_intensity = sum(resolve_intensity(eff) * EFFECT_WEIGHTS[eff] for eff in active_mapping.values())`.
-  - Dynamically populate kiosk telemetry labels in `pygame_display.py` from `effects_config.py`.
-- **Acceptance Criteria**: Configuration changes in `effects_config.py` take effect cleanly upon application restart across pipeline execution and kiosk display; governor frame pacing remains invariant under remapping.
+### 3.7 Runtime facts (`glitchbooth.service`)
 
-#### PHASE 8: Hardware Verification & Release
+- Runs `/home/glitchbooth/glitchbooth/.venv/bin/python pygame_display.py` as user `glitchbooth` with `WorkingDirectory=/home/glitchbooth/glitchbooth`. The Flask/Waitress backend runs **inside** that process.
+- `Restart=on-failure`, `RestartSec=2`: a crash at startup becomes a crash loop.
+- `StandardOutput=tty` on `/dev/tty1`: **program output goes to the booth's console only**. Confirmed on the Pi: `journalctl -u glitchbooth.service` returns "-- No entries --" and there are no log files. Nothing is kept after the console scrolls away (proposal in §11.3).
+- `Conflicts=getty@tty1.service`; SDL uses `kmsdrm` (no desktop).
 
-- **Goal**: Execute exhaustive hardware stress testing against Pi 5 performance metrics.
-- **Technical Design**: Validate stable frame pacing at negotiated camera rate (~10–15 FPS), flat current resident memory usage, thermal stability, and receipt printing.
+### 3.8 The website dashboard (`StatsDashboard.tsx`, owner-provided)
+
+- It downloads `https://ik.imagekit.io/w6lsfsw8j/telemetry/stats.json` (the file `telemetry.py` uploads) every 2 minutes, bypassing caches.
+- It reads `total_captures`, `uptime_hours`, `first_capture_iso`, `last_capture_iso` and **every entry of `effects_popularity`**. It draws **one bar per entry**, so new or renamed effects appear automatically. The label is the key with `_usage_pct` removed, underscores turned into spaces, in capitals (`pixel_damage_usage_pct` shows as "PIXEL DAMAGE"). The "dominant algorithm" box shows the entry with the highest percentage (ties alphabetical).
+- Values must be **plain numbers**: the bar width is `percentage%` and the sort subtracts the values. A nested object or a text value would break the display.
+- `no_glitch` is one of the entries, so it appears as a bar called "NO GLITCH" and can become the "dominant algorithm" when it is the largest.
+- `most_popular_combo` is declared but not displayed by this component (other pages may use it; unknown).
+- Declared but never produced by `telemetry.py`: `successful_uploads`, `failed_uploads`, `prints_completed`. Their displays are commented out, so nothing breaks.
+- A hard-coded note says the analytics have been collected "since July 1st, 2026". After the effect-stats reset that is true for captures and uptime but not for the effect percentages.
+- If the stats file is ever uploaded half-written (possible today, see 3.6), the page shows its "TELEMETRY_MATRIX_OFFLINE" panel until the next refresh.
+- Not verified: whether other pages of the site read `stats.json` too.
+
+### 3.9 Display loop and frame hand-off (`pygame_display.py`, `server.py`)
+
+- The display targets **60 FPS**; the pipeline runs at 10–15 FPS. On every display tick (4 to 6 per pipeline frame) the display copies the 640×480 frame from `UI_DISPLAY_BUFFER`, wraps it as a surface, mirrors it, scales it (640×480 to 640×480) and blits it, **even if no new pipeline frame has arrived**.
+- The message `[PERF WARNING] Frame copy latency spike` is printed by the display thread whenever that copy takes more than **2 ms**. In my test on a PC the same copy takes about 0.12 ms, so the 2.2–3.9 ms seen in the console photo are most likely **waiting** (competition for the CPU or for Python's global interpreter lock with the pipeline thread), not the copy itself. **Not proven on the Pi**; the experiment in §10 will show whether Melt or another effect is responsible.
+- A warning is printed for **every** such tick (the photo shows dozens in a row), which buries real messages on the console.
+- The server writes `UI_DISPLAY_BUFFER` without holding `frame_lock` (the lock is only taken for the JPEG hand-off), so the display can occasionally copy a half-updated frame (one torn display frame). Not observed; low severity.
+- `FRAME_ID` increases only when a JPEG is encoded, so it cannot tell the display that a new frame is ready.
 
 ---
 
-### 6. Post-Phase Verification Governance & Smoke Test Protocol
+## 4. Corrections to the previous masterplan (v4.1)
 
-No phase is considered complete until it passes focused regression/unit checks, automated cross-commit A/B regression guards, and hardware performance benchmarks, supplemented by full-stack live hardware smoke tests at major integration gates:
+| # | Old plan | Problem | This plan |
+| :-- | :-- | :-- | :-- |
+| C1 | Default mapping 0 Drift, 1 Chroma, 2 Posterize, 3 Pixel Damage, 4 Melt, 5 ASCII | Would silently rewire the knobs the booth has today | Interim wiring is explicit (§5.9); final default is the owner's (§1) |
+| C2 | `packet_corruption` and `pixelate` "internal sub-effects" rejected as knob targets | Contradicts the owner's pool | Both are pool effects; similar effects are kept apart by **families** (§5.3) |
+| C3 | Pixelation tiers of 2, 4, 8 px | Today's blocks are 12–21 px | Levels relative to today's look; existing scratch buffer kept (§6.5) |
+| C4 | Corruption held at maximum in the second half | Owner wants it to keep growing | §6.5 |
+| C5 | Posterize = Canny + quantization | Almost no definition; Canny finds photo edges ("simple neon edge detection") | §6.6, outlines follow color-block boundaries |
+| C6 | "Visually improved Data Mosh" | Undefined | Owner chose frame-hold + color-plane bleed (§6.3) |
+| C7 | Phase 1 "code-complete" with only timing/invariant criteria | No visual acceptance; neon is only 15% on two outer columns of each drip | Phase 1 is **implemented, not accepted** until the owner has seen it on the machine |
+| C8 | Telemetry = new `capture_log_v2.jsonl` and image buffers | Ignores the real module: knob-index naming, ledger replay, non-atomic `stats.json`, uploaded stats; images are already saved elsewhere | §7 |
+| C9 | Governor weights "derived from mapped effects" | Undefined, and the weights belong to today's effects | §5.6 |
+| C10 | Performance targets with no visual gate | Wrong priority | Aesthetic gate in every visual phase (§9.2) |
+| C11 | Registry first | The owner's priority is the event | Owner's order (§8), with R13 so nothing is rewritten later |
+| C12 | Journal-based troubleshooting (in plan v5) | Service logs to the tty, not the journal | §3.7, §10 |
 
-#### 6.1 Automated Verification & Regression Toolset
+---
 
-1. **A/B Cross-Commit Regression Guard (`ab_regression.py`)**:
-   - **Core Objective**: Mathematically guarantees that a phase changed *nothing outside its intended scope* ("Did this phase mutate anything it was NOT supposed to mutate?").
-   - **Side-by-Side In-Process Architecture**: Concurrently loads two versions of `server.py` inside a single Python process (identical CPU, NumPy, OpenCV, and C-runtime):
-     - `OLD`: Loaded dynamically from a baseline git ref (e.g. `pre-phase1` via `git show <ref>:server.py`) or `--old-file`.
-     - `NEW`: Imported directly from the working-tree `server.py`.
-   - **RNG State Synchronization**: Synchronizes module-level import-time randomness (`RANDOM_SIGN_POOL`, `RNG_PTR_SIGN`) so identical frame inputs receive byte-identical deterministic processing.
-   - **Test Matrix (88 Test Vectors)**:
-     - _Dormant Invariance (84 multi-frame checks)_: All unaffected knobs (Knobs 0, 1, 2, 3, 5 individually, combinations, random vectors, and boundary values `raw=0` and `raw=30`) are executed through the complete pipeline across diverse scenes (textured, portrait, dark, bright). Outputs must be **100% byte-identical** (`OLD == NEW`).
-     - _Exact Deadband Boundary_: Raw knob 30 ($30/1023 \approx 0.0293 \le 0.03$, dormant) must match bit-for-bit; raw knob 31 ($31/1023 \approx 0.0303 > 0.03$, active) must differ.
-     - _Active Negative Control_: When the revamped effect is active, `OLD` and `NEW` outputs must differ (`OLD != NEW`), proving the test harness has full discriminative power.
-     - _Vacuity Guard_: Asserts that output frames are not all-black and actually mutated from their input frames.
-   - **Standard Execution Command**:
-     ```bash
-     # Ensure baseline git tag exists prior to the phase:
-     git tag pre-phase1 <commit-hash-before-phase>
-     # Run regression verification:
-     python3 ab_regression.py --ref pre-phase1
-     ```
+## 5. Target architecture
 
-2. **Lightweight Hardware Performance Benchmark (`test_melt_benchmark_gemini.py`)**:
-   - **Core Objective**: Rapid validation of Stage 6 latency on Raspberry Pi 5 hardware, verifying the strict $p95 \le 20.0$ ms target.
-   - **Phase-Decoupled Instrumentation**: Times `_collect_melt_drips` and `_render_melt_drips` separately across multiple knob intensity tiers (0.2, 0.5, 0.8, 1.0) on realistic captured portraits and worst-case high-contrast white noise scenes.
-   - **Output Metrics**: Emitted drip count, p50 total, p50 collect, p50 render, p95, and max latency.
-   - **Standard Execution Command**:
-     ```bash
-     python3 test_melt_benchmark_gemini.py
-     ```
+### 5.1 The effects pool ✅
 
-3. **Comprehensive Hardware Benchmark Suite (`test_melt_benchmark.py`)**:
-   - **Core Objective**: Full v3 performance profiling with automatic Pi hardware model detection, end-to-end (`e2e`) pipeline breakdown (prep snapshot copy, drip collection, bilinear rendering), and dynamic calculation of recommended `MAX_MELT_DRIPS` headroom cap (enforcing a 70% budget ceiling).
-   - **Standard Execution Command**:
-     ```bash
-     python3 test_melt_benchmark.py [--frame path/to/raw_camera_frame.png] [--budget-ms 20]
-     ```
+| ID | Display name | Notes |
+| :-- | :-- | :-- |
+| `packet_corruption` | Packet Corruption | Standalone; no Data Mosh coupling (family `pixel_damage`) |
+| `pixelation` | Pixelation | Standalone; today's continuous 12–21 px (family `pixel_damage`) |
+| `pixel_damage` | Pixel Damage | **New fusion** of corruption + pixelation (family `pixel_damage`) |
+| `posterize` | Posterize | New (Phase 6) |
+| `chroma_shift` | Chroma Shift | Unchanged |
+| `datamosh` | Data Mosh | Decoupled and improved (Phase 2) |
+| `signal_drift` | Signal Drift | Unchanged |
+| `melt` | Melt | Phase 1 version |
+| `ascii_matrix` | ASCII Matrix | Unchanged |
 
-4. **Mathematical & Invariant Verification Suites (`test_melt_phase1.py`)**:
-   - **Core Objective**: Phase-specific algorithmic unit checks.
-   - **Phase 1 Invariant Suites**:
-     - _Test 1_: Sampling accuracy verified against pure-Python mathematical reference across multiple row coordinates and $(L, s)$ parameter pairs.
-     - _Test 2_: Boundary isolation verifying mutations are strictly confined to the 4-column profile ($[x_0-1 : x_0+3]$).
-     - _Test 3_: Ascending-reach overlap precedence verifying deeper drips overwrite shorter drips.
-     - _Test 4_: Defensive parameter guard validation ($L \le 0$, out-of-bounds origins $x_0 < 1$ or $x_0 > w-3$, $y_0 \ge h-1$).
-     - _Test 5_: Symmetrical spatial distribution across left/right halves (ratio within $[0.8, 1.25]$).
-     - _Test 6_: Seed-based determinism and dormancy invariants.
-     - _Test 7_: Heap allocation profiling asserting zero unbounded memory churn.
-   - **Standard Execution Command**:
-     ```bash
-     python3 test_melt_phase1.py
-     ```
+The CRT overlay is not in the pool. The old fused corruption+datamosh effect is **git history only** (✅); it is not kept working.
 
-#### 6.2 Focused Unit/Integration Checks by Phase
-- _Configuration (Phase 2)_: Validate startup aborts on invalid keys, duplicate knob assignments, or missing handlers / sub-effect mappings.
-- _Routing (Phase 3)_: Verify reverse-lookup resolution for remapped effects and zero compute for unassigned stages.
-- _State (Phase 3)_: Verify Data Mosh first-frame history invalidation and clean deactivation reset.
-- _Image Algorithms (Phase 1, 4, 5)_: Verify Melt boundary clipping, $L \le 0$ guards, ascending-extent overlap precedence, Pixel Damage discrete tier transitions with explicit `dsize` OpenCV buffers, and Posterize edge extraction.
-- _Telemetry (Phase 6)_: Verify atomic snapshot schema logging in `capture_log_v2.jsonl`.
+### 5.2 Fixed processing order ✅ (🔶 position of Posterize is the owner's: after pixel effects, before Chroma Shift ✅)
 
-#### 6.3 Full-Stack Live Hardware Smoke Tests (Integration Milestones & Release)
-- **Video Stream Integrity (`/video_feed`)**
-- **Hardware Knob Responsiveness**
-- **Complete Capture Workflow (Countdown & Flash)**
-- **Thermal Receipt Printing & QR Generation (`/dev/usb/lp0`)**
-- **Cloud Synchronization & Local Fallback (`pending_uploads.txt`)**
-- **State Recovery (`latest` $\to$ `live`)**
+`STAGE_ORDER`: `pixel_damage`, `packet_corruption`, `pixelation`, `posterize`, `chroma_shift`, `datamosh`, `signal_drift`, `melt`, `ascii_matrix`, then CRT.
+The three family members occupy the same slot (only one of them can be active). Which knob an effect is on never changes the order. **Open idea (D23):** Data Mosh may look better **after Melt**; it will be decided by a live test (§6.3).
+
+### 5.3 Mapping, validation and families
+
+- **Mapping:** knob index (0–5) → effect ID or none. **Restart-only remapping ✅**: edit the mapping in `effects_config.py`, restart the service. Named profiles are allowed.
+- **Rules checked at startup** (and by `python3 effects_config.py --check`, no hardware needed): every knob present; every ID exists in the pool **and has a handler**; **no effect on two knobs**; **no two effects of the same family** (✅: "no similar effects together", also for future effects: each new effect must declare its family when it is added to the pool); palette values valid; response curves valid.
+- **Fail safe 🔶:** on a validation error the booth logs the error and starts with the built-in known-good default mapping instead of exiting. Reason: the service restarts every 2 s on failure, so an exit becomes a crash loop at an event.
+- Handlers register in `server.py` (`EFFECT_HANDLERS`); `effects_config.py` stays declarative (no execution code, no hardware libraries).
+
+### 5.4 Handler contract ✅
+
+- **Input:** raw knob value (integer 0–1023) and frame time. The handler converts raw to strength with its own response curve. Existing effects keep their original formulas until the owner asks otherwise.
+- **Output:** modifies `MUTABLE_PROCESSING_BUFFER` in place.
+- **State:** effects that remember something (corruption grid, Data Mosh history) provide `reset()`; it is called when the effect becomes dormant, at startup, and at the end of warm-up.
+- **Dormancy:** at or below its threshold an effect does nothing and costs nothing. Today's exact comparisons are preserved until deliberately changed.
+- **No handler calls another handler.** Shared logic lives in plain helper functions; the fusion calls the same helpers as the standalone effects.
+- **Duplicate camera frames:** motion-based effects must behave sensibly when the camera frame did not change since the last loop (see 3.3).
+- Each effect documents which buffers it owns, what randomness it uses, and what `reset()` clears.
+
+### 5.5 Intensity resolution ✅
+
+`EFFECT_TO_KNOB` is built once at startup (Phase 4). Unmapped effects get raw 0 and are skipped. Add hysteresis near dormant thresholds only if the Phase 4 knob-noise probe shows flicker.
+
+### 5.6 Balancer improvement program 🔶 (proposals only; each needs approval; measure first)
+
+Goal (G9): the strongest visuals the Pi can sustain.
+1. **Measure** (Phase 0-lite and Phase 4): full-pipeline frame time at all-knobs-high; unique camera frames per second; cost of each effect alone.
+2. **Measured, not predicted:** choose the frame-rate tier from the recent measured frame time (for example the 90th percentile of the last 30 frames, with headroom), keeping today's predicted tiers as a safety floor, so heavy-but-affordable combinations keep 15 FPS.
+3. **Per-effect quality ladders** that degrade **invisibly first** (R2 ladder steps 1–2) and visibly only with approval (for example the Melt drip cap).
+4. **Stream-only degradation:** keep JPEG quality and preview downscale for the web stream only, and verify the kiosk is not affected.
+5. **Weights keyed by effect**, not by knob, so frame pacing no longer depends on which knob an effect sits on (Phase 4). Initial weights come from today's table; the old 0.42 for knob 2 is split between the Data Mosh and corruption costs measured in Phase 2/3.
+
+### 5.7 Code layout ✅ (reversible)
+
+`effects_config.py` declarative; handlers stay in `server.py`; `pygame_display.py` and `index.html` take labels from a read-only `/api/mapping` endpoint (Phase 4). Moving handlers into a package is possible later and is not prevented by anything here.
+
+### 5.8 Memory ✅
+
+Memory is ample; the inventory exists to avoid reallocation churn, not to limit looks. The old plan's pixelation tier buffers are not needed. Keep a buffer table (name, shape, owner effect, sharing, lifetime), updated in each phase that adds or removes a buffer.
+
+### 5.9 What each knob does at each stage ✅
+
+| Stage of the project | k0 | k1 | k2 | k3 | k4 | k5 |
+| :-- | :-- | :-- | :-- | :-- | :-- | :-- |
+| Today (main) | ASCII | Drift | Data Corruption (corruption+mosh) | Pixel Damage (pixelation) | Melt (old) | Chroma |
+| After Phase 1 | ASCII | Drift | Data Corruption | Pixel Damage | **Melt (new)** | Chroma |
+| After Phase 2 | ASCII | Drift | **Data Mosh (new)** | Pixel Damage (pixelation) | Melt | Chroma |
+| After Phase 3 (**event build**) | ASCII | Drift | Data Mosh | **Pixel Damage (new fusion)** | Melt | Chroma |
+| After Phase 4 (config-driven) | same as Phase 3, now defined in `effects_config.py` | | | | | |
+| After Phase 6 (**final default**) | ASCII | Drift | **Posterize** | Pixel Damage (fusion) | Melt | Chroma |
+
+Note for Phases 2–3: after Phase 2, **corruption has no knob** until the fusion exists (Phase 3). The booth still works. The knobs carry **stickers** (✅), so relabeling for the event is cheap; the kiosk and `index.html` labels are updated in the same approved change. The owner accepted this interim wiring (D22) and relabels the stickers by hand.
+
+---
+
+## 6. Effect specifications
+
+Numbers are **starting values** unless marked ✅; they are tunable and judged by eye (§9.2), not by tests.
+
+### 6.1 Melt (Phase 1: work still on-going; acceptance pending)
+
+**Today (the current version of server.py).** Bright points in sampled columns become drip origins (column stride 6 / 3 / 2 by strength). Each drip is **8 columns wide** (`MELT_DRIP_WIDTH`), sampled from a pre-melt snapshot and stretched along its length; capped at `MAX_MELT_DRIPS = 100`; longer drips are drawn last. **Neon:** none for the first 75% of a drip's length, rising linearly to full neon at 90%, across the whole width (the neon color is one palette color, per drip).
+**Measured on the Pi 5** (synthetic scenes, kiosk stopped, 40 runs): 10–20 ms per frame; p95 20.2 ms at strength 1.0 with 100 drips; about 105–168 µs per drip; temperature 50–55 °C, no throttling. **Owner's verdict on the machine:** nearly happy, feels usable. A/B check against the original pre-Phase-1 code (84 knob and frame combinations with Melt dormant): identical, so nothing outside Melt changed.
+
+Changes have been made to melt to have an adaptive-resolution vectorized version of melt after testing multiple versions with different techniques. These tested versions of the melt code is commented out but still can be found in the server.py. The reason is that the numpy version of the code was causing frequent frame copy latency spikes and after extensive testing owner was able to identify that the render is taking up the time and causing the latency. Owner has also tested with the non-vectorized version and still found the same result, the culprit is the render.
+
+Also initial findings suggest that when the melt knob is 0 there is no latency.
+
+For the non-vectorized versions, one particular and important discovery is that even when the config is 
+
+MELT_STRIDE_LOW = 6
+MELT_STRIDE_MID = 3
+MELT_STRIDE_HIGH = 2 
+MAX_MELT_DRIPS = 20
+MELT_DRIP_WIDTH = 20 
+
+there is still latency so owner's understanding is that the moment melt_raw > 0.03 triggers, even with just 20 drips:
+1. It instantly forces a full-frame buffer copy: STATIC_MELT_SNAPSHOT[:] = MUTABLE_PROCESSING_BUFFER[:].
+2. It runs a full-frame color conversion: cv2.cvtColor(...).
+3. It loops through hundreds of columns to scan for pixel thresholds using np.flatnonzero().
+
+The vectorized version behaves much better. read current server.py to understand the situation better.
+
+So the current melt implementation offers the best results that the owner has found with the given constraints. So now the adaptive-resolution version is introduced and currently under testing and also the owner is looking into improving the frame's visuals because when downscaled the frame does not look very good, it is a little bit too blurry and kind of muddy by employing post-process sharpening or other solutions or improving the melt code performance to not have to do the downscaling. 
+
+**This section (6.1) should be updated after phase 1 is completed before moved into the past development section.**
+
+**Remaining steps (R0 applies):**
+1. The owner finishes tuning on the machine. The tunables are the constants at the top of the Melt code (`MELT_DRIP_WIDTH`, strides, `MAX_MELT_DRIPS`, the neon ramp).
+2. No need to update the melt test since the owner is already testing versions and recording results on the hardware (the benchmark result is only meant to be advisory anyway since the only way to really tell if it is good is to see it working on the hardware and with the kiosk and the owner has already accepted the current version).
+3. Acceptance: owner approval on the booth screen. Further tuning is allowed after the event.
+
+**Observations (no action required):** each drip has one gradient neon color, so the old gradient between the two colors along the drip is gone (cheap to restore if wanted). With width 8 and strides 2–4 neighboring drips overlap a lot, so pixels are drawn several times (cost, little visible change). If this is important for the performance, then it should be looked into making the overlap smaller or non-existent by more careful calculation. Drips cannot start in the outer 4 columns on either side. On solid bright areas all drips still start on one row, and lengths still change together four times a second.
+
+### 6.2 Packet corruption (standalone helper, built in Phase 3)
+
+Starts from today's behavior (§3.2). Changes: **Data Mosh coupling removed**; own state with `reset()`. **Content mix ✅:** squares are always **noise** (never black or white, as today); vertical bands are about **90% noise, 6% black, 4% white** (today 60/30/10). Shape mix stays as today (80% squares of 1–3 cells, 20% bands 1–2 cells wide). All numbers are tunables, to be retuned after the fusion is seen working.
+
+### 6.3 Data Mosh (Phase 2): frame-hold + color-plane bleed ✅ (if viable)
+
+**Goal.** Decoupled from corruption, with the two improvements the owner chose, strong visuals at high performance.
+
+**Behavior definition**
+- **B. Frame-hold.** When a cell shows motion, its previous content is **held** (frozen) for a hold time while the rest of the picture continues, and the held content is **dragged** along the cell's motion vector. Held cells release gradually (eroded edges as today). Cells that keep moving re-trigger the hold. Starting values: hold 4–12 frames (rising with strength), vectors as today (±4 px, horizontal), motion threshold as today (18 to 58 by strength).
+- **D. Color-plane bleed.** In held or dragged cells, brightness comes from the held content and color from the live frame (or the reverse), so color smears away from the shape. Strength sets the mix, starting 0 to 0.8. Done in a luma/chroma color space only where cells are active.
+- **Strength curve:** today's knob² until the owner wants to change it.
+- **Same grid** as today (15×26) for now.
+
+**Viability notes (to be checked, not assumed).** B is a natural extension of the current mechanism (history substitution plus vectors). D needs color-space conversion of the live and held content, which costs time; options to keep it cheap, in R2 order: convert only the region covering active cells; keep chroma at half resolution (usually hard to see); and as a last resort, ask the owner before reducing anything else. Replacing the per-cell Python loop with a single displacement-map operation is a **lossless** optimization (R2 step 1) to be done **after** the look is approved.
+
+**Requirements**
+- Independent state; `reset()` when dormant (no leftover smear), a warm-up rule so the first active frame shows no garbage, no dependency on corruption.
+- Must handle duplicate camera frames (§5.4).
+- **Position test (D23).** The new Data Mosh is built so its place in the order is one named setting. During Phase 2 the owner compares live: **A** before Signal Drift (today); **B** after Melt, detecting motion on the picture it displaces (Melt's own animation also triggers it, including a 4 Hz rhythm from the drip-length changes); **C** after Melt, but detecting motion from the picture **before** Melt (only the 15×26 sample points are needed, which is cheap), so it reacts to real movement and smears the melted result. Expected looks: B and C cut the vertical drips into rectangular blocks and can freeze neon tips; A keeps the drips intact on top of a datamoshed picture. Nothing is decided until the owner has seen them.
+- **No recorded footage of people is used** (Q7 answered no). The owner judges and tunes the look **live on the booth**; algorithm checks use synthetic moving test patterns. The cost of old versus new Data Mosh is measured on the Pi and reported; the owner decides on any trade-off.
+
+### 6.4 Pixelation (standalone) ✅
+
+Unchanged from today: block size `int(12 + strength × 9)`, 12–21 px, continuous, same scratch buffer. Must stay byte-identical to today's output at equal knob values (A/B guard).
+
+### 6.5 New Pixel Damage = fusion (Phase 3) ✅
+
+| Raw | Packet corruption | Pixelation |
+| :-- | :-- | :-- |
+| 0 | off | off |
+| 1–511 | strength rises from 0 to about **0.6** | none |
+| 512–540 | about 0.6 (short **dead band**, no jump at the midpoint) | none |
+| 541–1023 | continues rising from 0.6 to **1.0** (✅ accepted, tunable) | **5 levels** (✅), appearing one after another |
+
+- **Pixelation levels:** evenly spread over raw 541–1023, with hysteresis about ±8 raw so a resting knob does not flicker. Starting block sizes 🔶: 12, 15, 18, 22, 26 px (today's range is 12–21 px; tune on the machine).
+- Pixelation is applied **after** corruption (today's order), so corrupted blocks get pixelated too.
+- Uses the **same helper functions** as the standalone corruption and pixelation effects.
+- **Family rule:** the fusion, standalone corruption and standalone pixelation are never used together (§5.3). Before Phase 4 this is automatic because only the fusion is wired.
+
+### 6.6 Posterize (Phase 6, after the event)
+
+**All visual decisions are deferred until after the event (✅).** This section is the working definition to be refined with the owner then.
+
+**Purpose.** Restructure the picture's tones into hard-edged neon regions with glitchy edges. It changes colors, it does not move pixels, so it stays distinct from Chroma Shift, Data Mosh, Melt, Drift and Corruption.
+
+**Look (owner's words).**
+- Blacks untouched. All other colors become neon from the Melt palette (neon yellow, hot magenta, electric cyan, acid green, deep violet, tangerine, neon rose, chartreuse).
+- Every color block has a **2–3 px noisy, glitchy outline**: broken sections, jitter, flicker; not a clean vector line.
+- **Glitchy, not pop art:** no flat cartoon fills, no uniform rainbow washes, no decorative shapes unrelated to the subject, no plain edge detection on the photo.
+
+**Algorithm (starting point).**
+1. Luminance map, lightly smoothed.
+2. **Black preservation:** pixels below a black threshold (start 24, soft ramp to about 34) keep the original pixel exactly. Outlines never paint on black.
+3. **Tonal bands:** quantize the rest into N bands with a lookup table (8 at low strength down to 3 at full).
+4. **Neon assignment:** each band maps to a palette color, darker bands to the deeper hues; color is modulated by the original brightness (detail retention, 35% at low to 15% at full) so faces stay recognizable. Optional slow rotation of the assignment.
+5. **Blend with the original** at low strength (neon mix 0.5 rising to 1.0 by mid strength).
+6. **Outlines at band boundaries** (morphological gradient of the band map, not Canny on the photo): 1 px at low, 2 px at medium, 3 px at high; then glitchy: section dropout (10% to 35%), row jitter 1–3 px, color flicker (brighter or white-hot), sparks.
+7. **Fragmentation at high strength:** fine detail breaks apart, structure stays.
+8. **Stability:** if region flicker from camera noise looks accidental, add hysteresis on band assignment (needs one buffer).
+
+**Knob response (starting curve):** off near raw 12; clearly strong by 150; medium around 400; progressively extreme to 1023 (piecewise table, tunable).
+**Placement ✅:** after the pixel effects, before Chroma Shift.
+**Build order:** prototype on stills and the raw clip outside the booth, iterate with the owner on contact sheets (§9.2), integrate, then optimize with the R2 ladder.
+
+### 6.7 Unchanged effects ✅
+
+Chroma Shift, Signal Drift and ASCII Matrix keep their behavior and formulas until Phase 4 wraps them as handlers with no visible change.
+
+---
+
+## 7. Telemetry v2 (Phase 5), designed around the real `telemetry.py`
+
+**Owner decisions ✅:** the total capture count continues; effect-usage stats may restart; an effect counts as **used when its knob value is above 50, even if the effect is not visible there**; **`no_glitch` = every knob at or below 50**, so every capture counts exactly one way (no_glitch, or using at least one effect); the lifetime `no_glitch` count carries forward and is **recounted from the whole ledger with this rule** (my assumption; say so if you would rather keep the old number); the website shows a **"NO GLITCH" bar plus bars only for the currently mapped effects**. The owner wants effect popularity to be easy to see (idea for Phase 5, to be proposed: a read-only console command that prints the current popularity).
+
+**Principles**
+- **Keep what works:** the ledger file, the replay at startup, the queue and workers, `stats.json`, the ImageKit upload, the `/stats` and `/api/stats` endpoints and their existing keys (the website reads them, §3.8).
+- **Effect identity is stored in each record**, not inferred from the knob index at replay time.
+- **Counts:** `total_captures` and `no_glitch` are computed from **all** records (they depend only on the raw knobs, not on the mapping, so they survive every remapping). Per-effect counts, popularity percentages and combos are computed only from records of the **current epoch**.
+
+**Ledger record (additive; old fields kept):** `ts`, `session_id`, `knobs` (unchanged) plus `v` (schema version 2), `epoch`, `mapping` (six effect IDs), `active` (effect IDs whose knob is above 50), optional `cfg` (config hash), optional `fps_tier`.
+
+**Epoch.** A number in `effects_config.py` that is increased by hand whenever effects or mapping change in a way that makes old effect stats meaningless. The first v2 epoch starts the fresh effect stats the owner accepted. Old records (no `v`) count only toward total captures and `no_glitch`.
+
+**Stats file.** Existing keys stay. Added keys (ignored by anything that does not know them): `schema_version`, `epoch`, `epoch_started_iso`, `no_glitch_count`. `effects_popularity` keys follow the **effect IDs mapped in the current epoch**, plus `no_glitch` (allowed by §3.8).
+
+**Fixes to existing weaknesses (each needs a Change Proposal):** write `stats.json` atomically (temp file then replace) and under the same lock the uploader uses; skip the upload when nothing changed; note that percentages are per "use", not per capture (keep, for website compatibility, unless the owner wants otherwise); never rotate or delete the ledger (the continuing total depends on it).
+
+**Website constraints (§3.8) that telemetry v2 must respect:** keep the file name and upload path; keep the existing top-level keys and the ISO time format; keep `effects_popularity` a flat map of name → number (0–100) with the `_usage_pct` suffix; put any new information in **new top-level keys**. With these, **no website change is needed**: new effect names appear as new bars automatically. Decided ✅: list in `effects_popularity` only the effects mapped in the current epoch plus `no_glitch`, so unmapped pool effects do not show as permanent 0% bars. Optional later website change: the hard-coded "since July 1st, 2026" note.
+
+**Tests:** replay of a mixed legacy+v2 ledger gives the right total, `no_glitch`, and per-epoch effect counts; remapping changes effect stats but not totals; a kill during a write leaves a valid `stats.json`; `/stats` and `/api/stats` still return the old keys; the queue-full path stays non-fatal.
+
+**Until Phase 5** telemetry is unchanged (✅ owner's call). During the event build, knob 2 is still recorded under the name `data_corruption` although it controls Data Mosh. That is expected and harmless, because those records fall into the legacy part.
+
+---
+
+## 8. Phased roadmap (the owner's order)
+
+**Every phase:** the owner tags `pre-phaseN` first; Change Proposals are approved (R0); tests and A/B guard pass; visual phases pass the aesthetic gate (§9.2); the booth smoke test (§9.3) passes; the report (§9.4) is delivered; the owner writes "accepted" and tags `phaseN-accepted`. A phase that is not accepted is rolled back (§10).
+
+### 8.0 Event schedule and go/no-go ✅
+
+Today is **D-5**. The freeze is **D-1** (no code changes; smoke test only). The event is **D0**.
+
+| Day | Work |
+| :-- | :-- |
+| D-5 | Phase 0-lite. Phase 1: test Melt on the machine, report, tuning proposals. |
+| D-4 | Phase 1 accepted. Phase 2: Data Mosh design proposal approved by the owner, then implementation; the look is judged live on the booth. |
+| D-3 | Phase 2 implemented and tested on the Pi; accepted or rejected. Phase 3 starts. |
+| D-2 | Phase 3 implemented, tested, accepted or rejected. Soak test of the combined build. Owner merges accepted work to `main` and tags `event-ready`. |
+| D-1 | **Freeze.** Smoke test of `event-ready`; nothing else. |
+| D0 | Event. |
+
+**Go/no-go rule.** Each of Melt, Data Mosh and the fusion ships only if accepted by the end of D-2. Anything not accepted does **not** ship; the booth runs the last accepted tag (worst case today's `main`). The plan is tight (three visual phases in four working days), so owner-side delays are the main risk; if time slips, **drop the last phase first (the fusion), not the testing.**
+
+### Phase 0-lite (before Phase 1, no visible change)
+1. Owner tags `baseline-pre-overhaul` on the code now running.
+2. **Test inputs without people** (Q7 answered no): synthetic moving test patterns for algorithm checks and, if wanted, one raw still of a scene without people (objects or a poster) for benchmarks. Looks are judged live on the booth.
+3. **Baseline benchmark** of the full pipeline with all knobs high, plus **unique camera frames per second** (§3.3).
+4. **Latency diagnosis, no code change:** the five 60-second runs in §10 (count the `PERF WARNING` lines with each effect on its own). They show whether Melt is responsible for the console warnings.
+**Postponed until after the event:** per-effect cost table, knob-noise probe, contact-sheet tool beyond what Phases 1–3 need.
+
+### Phase 1: Finish Melt (see §6.1)
+**Status:** implemented and owner-tuned; tests need updating (P1-01, P1-02). **Exit:** owner accepts on the booth screen.
+
+### Phase 2: Decouple and improve Data Mosh (§6.3)
+**Steps:** (1) design proposal for the look and its parameters; the owner approves it (optional scratch previews on synthetic motion if the owner wants them); (2) Change Proposal for the code (new Data Mosh function per R13, coupling removed, knob 2 wired to it, labels in `pygame_display.py` and `index.html` updated, "EMPTY" fixed; corruption left unwired); (3) approved changes applied; (4) tests and Pi measurements; (5) the owner judges and tunes the look live on the booth, including the Data Mosh position test A/B/C (§6.3).
+**Tests:** corruption off leaves Data Mosh unchanged and vice versa (code-level independence); `reset()` leaves no residue; A/B guard against `pre-phase2` with knob 2 at 0: everything else byte-identical; duplicate-frame behavior; cost old vs new on the Pi.
+**Exit:** owner accepts the look and performance on the booth.
+
+### Phase 3: Fuse pixelation and packet corruption (§6.5)
+**Steps:** Change Proposal; build the corruption helper (without Data Mosh coupling) and a pixelation helper identical to today; the fusion function; wire to knob 3; update labels.
+**Tests:** helper-level: standalone pixelation byte-identical to today at equal values; no jump at the midpoint; 5 levels with hysteresis; corruption curve points (0.6 at 512, 1.0 at 1023); A/B guard against `pre-phase3` with knob 3 at 0: everything else identical; contact sheets across the knob range.
+**Exit:** owner accepts. **Then the `event-ready` build** (D-2).
+
+### Event and freeze (D-1, D0).
+
+### Phase 4: Registry, mapping, routing, labels, governor (after the event)
+`effects_config.py` (pool, families, `STAGE_ORDER`, default mapping, profiles, dormant thresholds, tunables, weights, epoch), validation and `--check`, `EFFECT_HANDLERS`, `EFFECT_TO_KNOB`, the stage loop, fail-safe fallback, handlers wrapping the unchanged effects, `/api/mapping`, labels from the config in the kiosk and the web page, per-effect governor weights, the knob-noise probe, the per-effect cost table, and the balancer improvements the owner approves (§5.6).
+**Tests:** A/B guard against `event-ready` (must be **byte-identical** at the event mapping); **permutation test** (any valid remapping with correspondingly permuted knob values equals the default); validation tests (bad ID, duplicate, same family, missing handler); governor test (same effects on different knobs give the same pacing); labels agree on kiosk, web page and `/api/mapping`.
+**Exit:** owner remaps by editing the config, restarts, and sees correct labels and behavior.
+
+### Phase 5: Telemetry v2 (§7)
+**Exit:** replay and recovery tests pass; a real capture shows correct effect IDs; `/stats` and the uploaded stats still work.
+
+### Phase 6: Posterize (§6.6)
+Visual decisions with the owner first (reference images recommended), prototype, integrate, optimize. Default mapping switches knob 2 to Posterize here.
+**Tests:** blacks byte-identical to input where the black rule applies; outlines never on black; curve points; deterministic with seeds; combination sheets with every other effect; live check for flicker.
+**Exit:** owner accepts on laptop sheets and on the booth.
+
+### Phase 7: Release hardening
+Soak test (2+ hours, mixed mapping), thermal and memory flatness, print, QR, upload, `/stats`, state recovery, rollback rehearsal; **logging proposal PX-02** (§11.3; confirmed today that output exists only on the console); update `readme.md`: move this plan to Past Development, replace it with a short "how the effects system works" section.
+
+---
+
+## 9. Verification, gates and templates
+
+### 9.1 Tools
+- `ab_regression.py`: old and new `server.py` side by side on the same machine, same inputs and seeds, with a self-test; must be updated per phase to say which effects may differ. It proves "unchanged", not "good". It must also be given a knob-2/knob-3 aware matrix from Phase 2 on.
+- `test_melt_phase1.py`, `test_melt_benchmark.py`: Melt invariants and timings (Pi, kiosk stopped). **Status:** `test_melt_phase1.py` assumes the original 4-column, edge-neon design and fails against the owner's Melt by design (P1-01); the benchmark's pass/fail verdict is advisory (P1-02); `ab_regression.py` passes against the owner's Melt (84 of 84 dormant cases identical, 4 of 4 active cases differ).
+- Later: contact-sheet tool, knob-noise probe, per-effect cost benchmark, permutation test, `effects_config.py --check`.
+- Never benchmark or A/B-test while the kiosk is running.
+
+### 9.2 Aesthetic review gate (every visual phase)
+1. Contact sheets from **synthetic or people-free test scenes** (no recorded footage of people): each effect at raw 0, 100, 150, 300, 512, 700, 900, 1023, plus relevant combinations. Temporal effects (Data Mosh, corruption) are judged **live on the booth**.
+2. The owner marks each **Keep / Adjust (with notes) / Reject**.
+3. At most **three** laptop rounds. If still not right, the owner supplies reference images.
+4. Final approval on the **booth's own screen** (colors differ from the laptop).
+5. Performance work follows approval, using the R2 ladder.
+
+### 9.3 Booth smoke test (after every phase, about 10 minutes)
+1. Start via the service; live video appears.
+2. Each knob responds and its label (kiosk and web page) matches.
+3. Capture: countdown, flash, frozen image, receipt, QR scans.
+4. Upload succeeds (or falls back to `pending_uploads.txt`); gallery link opens.
+5. `/stats` loads; capture count increased.
+6. Steady frame rate for 10 minutes; `vcgencmd measure_temp` normal; `vcgencmd get_throttled` shows no flags.
+
+### 9.4 Report template (end of each phase)
+Phase and tag; approved proposals and files changed; visible changes; commands run **with pasted output** and the machine used; aesthetic evidence (paths); **not verified**; assumptions; questions.
+
+### 9.5 Change Proposal template (before any code change)
+**ID** (e.g. `P2-01`); **purpose**; **files and exact scope**; **visible behavior change** (yes/no, what); **risk**; **tests that will be run**; **rollback**; **needs from the owner**. The owner replies `APPROVED P2-01`.
+
+---
+
+## 10. Owner's guide (when the AI assistants cannot help)
+
+**Paths and service (from `glitchbooth.service`).** Project folder `/home/glitchbooth/glitchbooth`, virtualenv `.venv`, service `glitchbooth.service`, runs `pygame_display.py`.
+
+**Rollback to the known-good state:**
+1. `sudo systemctl stop glitchbooth.service`
+2. `cd /home/glitchbooth/glitchbooth && git checkout main` (or `git checkout <tag>`, for example `event-ready`)
+3. `sudo systemctl start glitchbooth.service`
+
+**Seeing errors (confirmed on the Pi).** `journalctl -u glitchbooth.service` returns "-- No entries --" and there are no log files: program output exists only on the booth's console. To keep a record during a test, stop the service and run the program by hand with the output sent to a file:
+1. `sudo systemctl stop glitchbooth.service`
+2. `cd ~/glitchbooth && source .venv/bin/activate`
+3. `python pygame_display.py > ~/run_A.log 2>&1` (the Escape key exits)
+4. `grep -c "PERF WARNING" ~/run_A.log` counts the warnings; `grep -v "PERF WARNING" ~/run_A.log | tail -50` shows everything else.
+5. `sudo systemctl start glitchbooth.service` when finished.
+Never run the service and a manual copy at the same time: they would fight over the camera, serial port and printer.
+
+**Latency experiment (no code change, about 10 minutes).** Do runs 1 to 5 as above, 60 seconds each, camera looking at the same static scene, all other knobs at 0, and write down the number of `PERF WARNING` lines:
+
+| Run | Knobs | Warnings in 60 s |
+| :-- | :-- | :-- |
+| 1 | all at 0 | |
+| 2 | Melt only at maximum | |
+| 3 | ASCII only at maximum | |
+| 4 | Chroma Shift only at maximum | |
+| 5 | Data Corruption only at maximum | |
+
+Reading the result: about as many warnings in run 1 as in run 2 means Melt is not the cause (the display loop itself is). Many more in run 2 means Melt's many small Python operations are starving the display thread. Also run `vcgencmd get_throttled` afterwards.
+
+**Health:** `vcgencmd measure_temp`, `vcgencmd get_throttled`.
+
+**Event freeze.** One day before the event nothing changes. After the freeze begins only smoke tests (§9.3) are allowed.
+
+**Quick diagnosis**
+
+| Symptom | Likely cause | First check |
+| :-- | :-- | :-- |
+| Booth restarts every few seconds | Program error at start (crash loop, `RestartSec=2`) | Roll back (above) |
+| Knob does nothing | Wiring in the pipeline, or serial link | Does the label on the kiosk match? Console message about the serial port |
+| Wrong effect on a knob after Phase 4 | Mapping or labels out of sync | `/api/mapping` vs kiosk label |
+| Choppy video | Heavy effect stack, throttling, another program using the CPU | `get_throttled`, `top` |
+| Looks different from laptop previews | Screen differences, different test image | Compare the same raw frame on the booth |
+| Stats look wrong | Epoch change or ledger replay | Check `schema_version` and `epoch` in `stats.json` |
+| Tests fail on the laptop only | Hardware libraries missing there | Run on the Pi with the kiosk stopped |
+
+**What to give a new AI session:** this plan, `server.py`, `pygame_display.py`, `telemetry.py`, `index.html`, `glitchbooth.service`, `effects_config.py` (once it exists), the latest test outputs, and:
+
+> "You are continuing Phase N of the GLITCHBOOTH effects overhaul. Read §2 and §3 of the plan fully, then §6 for the effects involved and the Phase N entry in §8. Do not change any code until the owner has replied APPROVED to your Change Proposal (rule R0). Before proposing anything, restate the phase goal, list the files you expect to touch, and list your questions. Do not start another phase. Finish with the report in §9.4."
+
+**Reference images win.** For any dispute about a look, one or two reference images beat any text description.
+
+---
+
+## 11. Decisions
+
+### 11.1 Answered ✅
+
+| ID | Decision |
+| :-- | :-- |
+| D1 | Final default mapping: 0 ASCII, 1 Drift, 2 Posterize, 3 new Pixel Damage, 4 Melt, 5 Chroma (§1). |
+| D2 | No similar effects together: one of `pixel_damage`, `packet_corruption`, `pixelation`; same for future similar effects (families, §5.3). |
+| D3 | Restart-only remapping. |
+| D4 | Telemetry: total captures continue, effect stats may restart; an effect is "used" above raw 50; `no_glitch` = every knob at or below 50; the lifetime `no_glitch` count carries forward (recounted with this rule). |
+| D5 | Data Mosh: frame-hold + color-plane bleed, if viable. |
+| D7 | Standalone pixelation unchanged; 5 levels in the fusion. |
+| D8 | Fusion corruption curve: about 0.6 at raw 512 up to 1.0 at 1023; tunable. |
+| D9 | Posterize after the pixel effects, before Chroma Shift; visual decisions after the event. |
+| D10 | Melt neon: decide after seeing it on the machine. |
+| D11 | Arduino re-flash only if very necessary; installed sketch = the readme's. |
+| D12 | Event in 5 days; freeze 1 day. |
+| D14 | Old fused corruption+datamosh is git history only. |
+| D15 | Phase order and the "no code before approval" rule (§1, §2). |
+| D16 | Captures are public on ImageKit and the website; users know. |
+| D17 | Corruption content: squares never black or white; bands about 90% noise, 6% black, 4% white. |
+| D18 | `index.html` and its server are a backup only; "EMPTY" for knob 0 was a mishap. |
+| D19 | Knobs are labeled with replaceable stickers. |
+| D20 | No recorded footage of people (raw test clip: no). Looks are judged live on the booth. |
+| D21 | Website file analyzed (§3.8); no website change needed if the §7 constraints hold. |
+| D22 | Interim knob wiring for the event accepted; the owner relabels the stickers by hand. |
+| D24 | Website shows a NO GLITCH bar and only currently mapped effects. |
+| D25 | Experiments on the AI's own computer are allowed; edits to the project through any editor or tool need approval (R0). |
+| D26 | Error output is console-only today; no journal entries and no log files (confirmed). |
+
+### 11.2 Open ⬜
+
+**Open questions (and Pending Proposals) will stay open until phase 1 is finished unless the answer is absolutely needed.**
+
+| ID | Question | Why it matters |
+| :-- | :-- | :-- |
+| D23 | Should Data Mosh sit **after Melt**? Nothing to answer now: it is decided by the live A/B/C test in Phase 2 (§6.3). | Order of effects |
+| Q11 | Is the current Melt (8-px drips, 100 drips, neon ramp to full at the tip) **your accepted look**, so the tests and benchmark can be updated to it, or do you plan more changes first? | P1-01 and P1-02 depend on it |
+
+### 11.3 Pending proposals (reply `APPROVED <id>` to start; nothing has been changed)
+
+| ID | What | Files | Visible change | When |
+| :-- | :-- | :-- | :-- | :-- |
+| P1-01 | Update `test_melt_phase1.py` to the owner's Melt (8-column slices, neon ramp, edge bounds 4 to 636) | test file only | none | now |
+| P1-02 | Benchmark: verdict advisory with a small tolerance; add a whole-pipeline mode so Melt is judged against the full frame time; print per-drip cost; default budget tied to the 15 FPS frame interval | `test_melt_benchmark.py` only | none | now |
+| PX-01 | Display efficiency (outline): the server publishes a new-frame counter; the display copies, mirrors and scales only when it changes and otherwise re-blits the cached picture; the server takes `frame_lock` while updating the shared buffer; `PERF WARNING` becomes a summary every 10 s. Lossless (same picture). Measure before and after. | `server.py`, `pygame_display.py` | none intended | after the event |
+| PX-02 | Logging (outline): either send service output to the journal (`StandardOutput=journal`; requires the warning flood to be rate-limited first) or write a rotating log file; plus a periodic performance summary | service file or `server.py` | none | after the event |
+| PX-03 | Melt render speed (only if wanted): fewer, larger operations; a candidate is OpenCV's remap, which has a tiny sub-pixel rounding difference and would need your visual approval | `server.py` | possibly tiny | after the event, only if needed |
+
+---
+
+## 12. Glossary
+
+- **Knob / raw value:** 0–1023 reading from the Arduino. **Strength:** what an effect derives from raw through its response curve.
+- **Pool:** all effects that can be plugged into a knob. **Mapping:** which effect is on which knob. **Profile:** a named mapping.
+- **Family:** a group of similar effects of which at most one may be mapped.
+- **Dormant:** at or below its threshold an effect does nothing.
+- **Fusion:** an effect that contains two others on one knob (Pixel Damage).
+- **A/B guard:** compares old and new code on identical inputs to prove nothing else changed.
+- **Contact sheet:** an image grid of one effect at many knob positions.
+- **Epoch:** counter in telemetry that changes when effects or mapping change in a way that invalidates old effect stats.
+- **Balancer / governor:** logic that lowers frame rate and stream quality when many heavy effects are active.
+- **Change Proposal:** the written request for approval before any code change (§9.5).
+
+---
+
+## Appendix A: Tunables (starting values)
+
+| Group | Name | Starting value |
+| :-- | :-- | :-- |
+| Melt | `MAX_MELT_DRIPS` | 100 (owner) |
+| Melt | `MELT_DRIP_WIDTH` | 8 columns (owner) |
+| Melt | neon ramp | 0% until 25% of the drip length, 100% at the tip (owner) |
+| Melt | `MELT_STRIDE_LOW/MID/HIGH` | 4 / 3 / 2 (owner) |
+| Data Mosh | motion threshold range | 18 to 58 (today) |
+| Data Mosh | `MOSH_VECTOR_PX` | 4 (today) |
+| Data Mosh | `MOSH_HOLD_FRAMES` | 4 to 12, rising with strength |
+| Data Mosh | `MOSH_CHROMA_BLEED` | 0 to 0.8 |
+| Data Mosh | strength curve | knob² (today) |
+| Corruption | `CORR_SPAWN_RATE_MAX` / `CORR_DECAY` | 0.33 / 0.90 (today) |
+| Corruption | `CORR_P_BLOCK` / `CORR_P_BAND` | 0.80 / 0.20 (today) |
+| Corruption | squares / bands | squares 100% noise; bands 90% noise, 6% black, 4% white |
+| Pixelation | `PIX_TILE_BASE` / `PIX_TILE_SCALE` | 12 / 9 (today) |
+| Fusion | `FUSION_SPLIT_RAW` / `FUSION_DEADBAND_END` | 512 / 540 |
+| Fusion | `FUSION_CORR_AT_SPLIT` | 0.6 |
+| Fusion | `FUSION_LEVELS` / `FUSION_TILES` / `FUSION_HYST` | 5 / (12, 15, 18, 22, 26) / ±8 raw |
+| Posterize | black threshold / ramp | 24 / 34 |
+| Posterize | bands low / high | 8 / 3 |
+| Posterize | outline px, dropout, jitter | 1–3 px, 10–35%, 1–3 px |
+| Posterize | curve | (0,0) (12,0) (150,0.40) (400,0.65) (700,0.85) (1023,1.0) |
+| Telemetry | used threshold / `no_glitch` rule | used above 50; `no_glitch` when every knob is at or below 50 ✅ (10 today) |
+| Balancer | FPS tiers / thresholds | 15, 12, 10 FPS at 0.55 and 0.75 (today) |
+
+## Appendix B: Buffer inventory rule
+
+A table of every module-level buffer (name, shape, owner effect, who may share it, lifetime), updated in each phase that adds or removes a buffer. Known sharing: `STATIC_MELT_GRAY_BUFFER` is used by Melt during the frame loop and by capture print preparation, sequentially on the same thread. Pixelation keeps `COMPRESSION_STAGE_BUFFER`. Data Mosh and Posterize need their own working buffers (decided during prototyping).
 
 ---
 
