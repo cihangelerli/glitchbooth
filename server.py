@@ -219,6 +219,21 @@ SLICE_MAX_SHIFT = 50  # [320x240: 15] [480x360: 23] [640x480: 30]
 # MELT DRIP ENGINE CONSTANTS
 # ==============================================================================
 
+# PREALLOCATED ARITHMETIC SCRATCH BUFFERS
+_RANGE_BUFFER = np.arange(FRAME_H, dtype=np.float32)
+_SCRATCH_NORM = np.empty(FRAME_H, dtype=np.float32)
+_SCRATCH_DENOM = np.empty(FRAME_H, dtype=np.float32)
+_SCRATCH_YFLOAT = np.empty(FRAME_H, dtype=np.float32)
+_SCRATCH_FLOOR_FLOAT = np.empty(FRAME_H, dtype=np.float32)
+_SCRATCH_YFLOOR = np.empty(FRAME_H, dtype=np.int32)
+_SCRATCH_YCEIL = np.empty(FRAME_H, dtype=np.int32)
+_SCRATCH_W_CEIL = np.empty((FRAME_H, 1, 1), dtype=np.float32)
+_SCRATCH_W_FLOOR = np.empty((FRAME_H, 1, 1), dtype=np.float32)
+_SCRATCH_NW_1D = np.empty(FRAME_H, dtype=np.float32)
+_SCRATCH_NEON_WEIGHT = np.empty((FRAME_H, 1, 1), dtype=np.float32)
+
+## ABOVE ARE ADDED FOR THE LATEST VERSION OF MELT FOR TESTING
+
 MELT_STRIDE_LOW = 4
 MELT_STRIDE_MID = 3
 MELT_STRIDE_HIGH = 2  # Safe min stride for maintaining high FPS on Pi 5
@@ -274,6 +289,7 @@ STATIC_MELT_GRAY_BUFFER = np.empty((FRAME_H, FRAME_W), dtype=np.uint8, order="C"
 
 # --- PHASE 1: MELT PERSISTENT GRAVITATIONAL DEFORMATION BUFFERS ---
 STATIC_MELT_SNAPSHOT = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
+
 # MELT_DRIP_WORK_BUFFER = np.empty((FRAME_H, 4, 3), dtype=np.float32, order="C")
 MELT_DRIP_WORK_BUFFER = np.zeros((FRAME_H, MELT_DRIP_WIDTH, 3), dtype=np.float32)
 
@@ -788,7 +804,7 @@ def apply_datamosh(effect_val, current_time):
 # ISOLATED GRAVITATIONAL MELT ENGINE (STAGE 6)
 # =========================================================================
 
-
+'''
 def _collect_melt_drips(
     melt_raw: float, current_time: float, h: int = FRAME_H, w: int = FRAME_W
 ):
@@ -886,6 +902,158 @@ def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
 
         work_view = MELT_DRIP_WORK_BUFFER[:num_rows, :MELT_DRIP_WIDTH]
         work_view[:] = (1.0 - neon_weight) * src_warped + neon_weight * neon_color
+
+        MUTABLE_PROCESSING_BUFFER[y0:end_y, cols_slice] = np.clip(
+            np.round(work_view), 0, 255
+        ).astype(np.uint8)
+
+
+def apply_melt_pass(melt_raw: float, current_time: float):
+    """Stage 6: Gravitational Melt Deformation Public Entry Point."""
+    if melt_raw <= 0.03:
+        return
+    STATIC_MELT_SNAPSHOT[:] = MUTABLE_PROCESSING_BUFFER[:]
+    cv2.cvtColor(STATIC_MELT_SNAPSHOT, cv2.COLOR_BGR2GRAY, dst=STATIC_MELT_GRAY_BUFFER)
+    drips = _collect_melt_drips(melt_raw, current_time)
+    if drips:
+        _render_melt_drips(drips)
+
+'''
+
+
+def _collect_melt_drips(
+    melt_raw: float, current_time: float, h: int = FRAME_H, w: int = FRAME_W
+):
+    max_melt_length = int(20 + melt_raw * (h * 0.85))
+    threshold = max(75, int(255 * (1.0 - melt_raw * 0.65)))
+    stride = (
+        MELT_STRIDE_LOW
+        if melt_raw < 0.35
+        else (MELT_STRIDE_MID if melt_raw < 0.7 else MELT_STRIDE_HIGH)
+    )
+    seed_step = max(2, int((1.1 - melt_raw) * 8))
+    max_seeds_per_column = 3 if melt_raw < 0.65 else 6
+    time_tick = int(current_time * 4) & 0xFF
+    g = STATIC_MELT_GRAY_BUFFER
+    col_seeds = []
+    for x0 in range(1, w - 2, stride):
+        ys = np.flatnonzero(g[:, x0] > threshold)
+        if ys.size > 0:
+            seeds = [
+                int(v) for v in ys[::seed_step][:max_seeds_per_column] if v < h - 4
+            ]
+            if seeds:
+                col_seeds.append((x0, seeds))
+    drips = []
+    for rank in range(max_seeds_per_column):
+        eligible = [(x0, seeds[rank]) for x0, seeds in col_seeds if rank < len(seeds)]
+        remaining = MAX_MELT_DRIPS - len(drips)
+
+        # DEFENSIVE GUARD: Prevent division by zero if cap is met or exceeded
+        if remaining <= 0:
+            break
+
+        if len(eligible) > remaining:
+            step = len(eligible) / float(remaining)
+            eligible = [eligible[int(i * step)] for i in range(remaining)]
+
+        for x0, start_y in eligible:
+            h1 = (x0 * 73856093) ^ (start_y * 19349663) ^ (time_tick * 83492791)
+            h2 = (x0 * 2654435761) ^ (start_y * 2246822519) ^ (time_tick * 3266489917)
+            rand_len_mult = (h1 % 1000) / 1000.0
+            rand_stretch_mult = ((h1 >> 10) % 1000) / 1000.0
+            p1 = (h2 >> 4) % len(NEON_PALETTES)
+            p2 = (p1 + 1 + ((h2 >> 12) % (len(NEON_PALETTES) - 1))) % len(NEON_PALETTES)
+            base_len = int(max_melt_length * 0.45)
+            rand_len = int(max_melt_length * 0.55 * rand_len_mult)
+            L = base_len + rand_len
+            if L <= 0:
+                continue
+            s = 1.0 + (rand_stretch_mult * 2.0)
+            reach = start_y + L
+            drips.append((reach, x0, start_y, L, s, p1, p2))
+        if len(drips) >= MAX_MELT_DRIPS:
+            break
+    return drips
+
+
+def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
+    if not drips:
+        return
+    sorted_drips = sorted(drips, key=lambda item: (item[0], item[1]))
+
+    left_offset = MELT_DRIP_WIDTH // 2
+    right_offset = MELT_DRIP_WIDTH - left_offset
+
+    for _, x0_raw, y0_raw, L_raw, s, p1, p2 in sorted_drips:
+        x0 = int(x0_raw)
+        y0 = int(y0_raw)
+        L = int(L_raw)
+
+        if x0 - left_offset < 0 or x0 + right_offset > w:
+            continue
+        if L <= 0 or y0 >= h - 1:
+            continue
+
+        end_y = min(h, y0 + L)
+        num_rows = end_y - y0
+        if num_rows <= 0:
+            continue
+
+        # Gravitational mapping
+        y_rel = _RANGE_BUFFER[:num_rows]
+        norm_dist = _SCRATCH_NORM[:num_rows]
+        np.clip(y_rel / float(L), 0.0, 1.0, out=norm_dist)
+
+        denom = _SCRATCH_DENOM[:num_rows]
+        np.sqrt(norm_dist, out=denom)
+        denom *= s
+        denom += 1.0
+        np.maximum(1.0, denom, out=denom)
+
+        y_float = _SCRATCH_YFLOAT[:num_rows]
+        np.divide(y_rel, denom, out=y_float)
+        y_float += y0
+        np.clip(y_float, 0.0, float(h - 1), out=y_float)
+
+        # Floor extraction using separate scratch buffer to preserve y_float fractions
+        y_floor_float = _SCRATCH_FLOOR_FLOAT[:num_rows]
+        np.floor(y_float, out=y_floor_float)
+
+        y_floor = _SCRATCH_YFLOOR[:num_rows]
+        y_floor[:] = y_floor_float
+
+        y_ceil = _SCRATCH_YCEIL[:num_rows]
+        np.clip(y_floor + 1, 0, h - 1, out=y_ceil)
+
+        # Bilinear interpolation weights
+        w_ceil = _SCRATCH_W_CEIL[:num_rows]
+        np.subtract(y_float, y_floor_float, out=w_ceil[:, 0, 0])
+
+        w_floor = _SCRATCH_W_FLOOR[:num_rows]
+        np.subtract(1.0, w_ceil[:, 0, 0], out=w_floor[:, 0, 0])
+
+        cols_slice = slice(x0 - left_offset, x0 + right_offset)
+        src_floor = STATIC_MELT_SNAPSHOT[y_floor, cols_slice].astype(np.float32)
+        src_ceil = STATIC_MELT_SNAPSHOT[y_ceil, cols_slice].astype(np.float32)
+
+        work_view = MELT_DRIP_WORK_BUFFER[:num_rows, :MELT_DRIP_WIDTH]
+        np.multiply(w_floor, src_floor, out=work_view)
+        work_view += w_ceil * src_ceil
+
+        # Gradient neon blend (0% at top 25%, ramping linearly to 100% at tip)
+        nw_1d = _SCRATCH_NW_1D[:num_rows]
+        np.subtract(norm_dist, 0.25, out=nw_1d)
+        nw_1d /= 0.75
+        np.clip(nw_1d, 0.0, 1.0, out=nw_1d)
+
+        nw_view = _SCRATCH_NEON_WEIGHT[:num_rows]
+        nw_view[:, 0, 0] = nw_1d
+
+        neon_color = 0.5 * NEON_PALETTES_FLOAT[p1] + 0.5 * NEON_PALETTES_FLOAT[p2]
+
+        work_view *= 1.0 - nw_view
+        work_view += nw_view * neon_color
 
         MUTABLE_PROCESSING_BUFFER[y0:end_y, cols_slice] = np.clip(
             np.round(work_view), 0, 255
