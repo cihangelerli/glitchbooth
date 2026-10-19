@@ -129,7 +129,6 @@ COUNTDOWN_CORNER = _raw_corner if _raw_corner in _VALID_CORNERS else "bottom-cen
 FLASH_DURATION = float(os.getenv("FLASH_DURATION", "0.3"))
 
 
-
 def get_ik_target_folder() -> str:
     """
     Computes the ImageKit folder path dynamically at call-time.
@@ -220,19 +219,19 @@ SLICE_MAX_SHIFT = 50  # [320x240: 15] [480x360: 23] [640x480: 30]
 MELT_STRIDE_LOW = 6
 MELT_STRIDE_MID = 4
 MELT_STRIDE_HIGH = 2
-MAX_MELT_DRIPS = 120  # Tunable aesthetic ceiling: ensures rich density while guarding governor latency (10-15 FPS)
+MAX_MELT_DRIPS = 90  # Tunable aesthetic ceiling: ensures rich density while guarding governor latency (10-15 FPS)
 
 # NEON_PALETTES defined in native OpenCV BGR format: [Blue, Green, Red]
 NEON_PALETTES = np.array(
     [
-        [0, 255, 255],    # Neon Yellow      (B: 0,   G: 255, R: 255)
-        [255, 0, 255],    # Hot Magenta      (B: 255, G: 0,   R: 255)
-        [255, 255, 0],    # Electric Cyan    (B: 255, G: 255, R: 0)
-        [0, 255, 0],      # Acid Green       (B: 0,   G: 255, R: 0)
-        [255, 0, 128],    # Deep Violet      (B: 255, G: 0,   R: 128)
-        [0, 165, 255],    # Tangerine        (B: 0,   G: 165, R: 255)
-        [128, 0, 255],    # Neon Rose        (B: 128, G: 0,   R: 255)
-        [0, 255, 127],    # Chartreuse       (B: 0,   G: 255, R: 127)
+        [0, 255, 255],  # Neon Yellow      (B: 0,   G: 255, R: 255)
+        [255, 0, 255],  # Hot Magenta      (B: 255, G: 0,   R: 255)
+        [255, 255, 0],  # Electric Cyan    (B: 255, G: 255, R: 0)
+        [0, 255, 0],  # Acid Green       (B: 0,   G: 255, R: 0)
+        [255, 0, 128],  # Deep Violet      (B: 255, G: 0,   R: 128)
+        [0, 165, 255],  # Tangerine        (B: 0,   G: 165, R: 255)
+        [128, 0, 255],  # Neon Rose        (B: 128, G: 0,   R: 255)
+        [0, 255, 127],  # Chartreuse       (B: 0,   G: 255, R: 127)
     ],
     dtype=np.uint8,
     order="C",
@@ -270,8 +269,12 @@ STATIC_MELT_GRAY_BUFFER = np.empty((FRAME_H, FRAME_W), dtype=np.uint8, order="C"
 STATIC_MELT_SNAPSHOT = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
 MELT_DRIP_WORK_BUFFER = np.empty((FRAME_H, 4, 3), dtype=np.float32, order="C")
 
-assert STATIC_MELT_SNAPSHOT.flags["C_CONTIGUOUS"], "CRITICAL: STATIC_MELT_SNAPSHOT layout fault!"
-assert MELT_DRIP_WORK_BUFFER.flags["C_CONTIGUOUS"], "CRITICAL: MELT_DRIP_WORK_BUFFER layout fault!"
+assert STATIC_MELT_SNAPSHOT.flags["C_CONTIGUOUS"], (
+    "CRITICAL: STATIC_MELT_SNAPSHOT layout fault!"
+)
+assert MELT_DRIP_WORK_BUFFER.flags["C_CONTIGUOUS"], (
+    "CRITICAL: MELT_DRIP_WORK_BUFFER layout fault!"
+)
 
 COMPRESSION_STAGE_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
 
@@ -778,7 +781,9 @@ def apply_datamosh(effect_val, current_time):
 # =========================================================================
 
 
-def _collect_melt_drips(melt_raw: float, current_time: float, h: int = FRAME_H, w: int = FRAME_W):
+def _collect_melt_drips(
+    melt_raw: float, current_time: float, h: int = FRAME_H, w: int = FRAME_W
+):
     """
     Fast, memory-efficient drip collection across screen width.
     Uses per-column flatnonzero to avoid multi-megabyte argwhere allocations,
@@ -801,7 +806,9 @@ def _collect_melt_drips(melt_raw: float, current_time: float, h: int = FRAME_H, 
     for x0 in range(1, w - 2, stride):
         ys = np.flatnonzero(g[:, x0] > threshold)
         if ys.size > 0:
-            seeds = [int(v) for v in ys[::seed_step][:max_seeds_per_column] if v < h - 4]
+            seeds = [
+                int(v) for v in ys[::seed_step][:max_seeds_per_column] if v < h - 4
+            ]
             if seeds:
                 col_seeds.append((x0, seeds))
 
@@ -891,12 +898,16 @@ def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
         work_view[:] = w_floor * src_floor + w_ceil * src_ceil
 
         # Edge-restricted per-drip neon bleed on outer columns (indices 0 and 3)
-        neon_bgr = (0.5 * NEON_PALETTES_FLOAT[p1] + 0.5 * NEON_PALETTES_FLOAT[p2])[None, :]
+        neon_bgr = (0.5 * NEON_PALETTES_FLOAT[p1] + 0.5 * NEON_PALETTES_FLOAT[p2])[
+            None, :
+        ]
         work_view[:, 0] = 0.85 * work_view[:, 0] + 0.15 * neon_bgr
         work_view[:, 3] = 0.85 * work_view[:, 3] + 0.15 * neon_bgr
 
         # Single contiguous slice write into active processing buffer
-        MUTABLE_PROCESSING_BUFFER[y0:end_y, cols_slice] = np.clip(np.round(work_view), 0, 255).astype(np.uint8)
+        MUTABLE_PROCESSING_BUFFER[y0:end_y, cols_slice] = np.clip(
+            np.round(work_view), 0, 255
+        ).astype(np.uint8)
 
 
 def apply_melt_pass(melt_raw: float, current_time: float):
@@ -1186,7 +1197,6 @@ def apply_glitch_pipeline(current_time, control_packet):
     # STAGE 6: GRAVITATIONAL MELT DEFORMATION (KNOB 4)
     # =========================================================================
     apply_melt_pass(n(pkt_knobs[4]), current_time)
-
 
     # HIGH-DENSITY ASCII LAYER ENGINE (KNOB 0)
     # =========================================================================
@@ -1970,9 +1980,7 @@ def background_loop():
 
                 try:
                     upload_queue.put(disk_id, block=False)
-                    logger.info(
-                        "[UPLOAD QUEUE] Session queued for upload: %s", disk_id
-                    )
+                    logger.info("[UPLOAD QUEUE] Session queued for upload: %s", disk_id)
                     cleanup_sessions(limit=100)
                 except queue.Full:
                     print(
@@ -2491,8 +2499,7 @@ def state():
         c_start = ACTIVE_SESSION["countdown_start_time"]
 
     is_flash = (
-        current_mode == "countdown"
-        and (time.monotonic() - c_start) < FLASH_DURATION
+        current_mode == "countdown" and (time.monotonic() - c_start) < FLASH_DURATION
     )
 
     return jsonify(
