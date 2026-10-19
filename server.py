@@ -266,7 +266,7 @@ MELT_STRIDE_LOW = 6
 MELT_STRIDE_MID = 3
 MELT_STRIDE_HIGH = 2  # Safe min stride for maintaining high FPS on Pi 5
 MAX_MELT_DRIPS = 75  # Balanced aesthetic ceiling 100
-MELT_DRIP_WIDTH = 10  # Thick, substantial drips
+MELT_DRIP_WIDTH = 10  # Thick, substantial drips when the number is bigger. 75 drips and 10 width, 100 drips and 8 width are good combos
 MELT_NEON_START_PCT = 0.75  # Where neon begins: 0.0 = top of drip, 0.5 = halfway down
 MELT_NEON_RAMP_SPAN = (
     0.20  # Length of the transition ramp to full neon (Start + Span should equal 1.0)
@@ -1236,6 +1236,7 @@ def _render_melt_drips(drips, h=FRAME_H, w=FRAME_W):
     )
 
 
+'''
 def apply_melt_pass(melt_raw: float, current_time: float):
     """Stage 6: Gravitational Melt Deformation Public Entry Point."""
     if melt_raw <= 0.03:
@@ -1245,6 +1246,41 @@ def apply_melt_pass(melt_raw: float, current_time: float):
     drips = _collect_melt_drips(melt_raw, current_time)
     if drips:
         _render_melt_drips(drips)
+'''
+
+
+def apply_melt_pass(melt_raw: float, current_time: float):
+    """Stage 6: Gravitational Melt Deformation Public Entry Point with Profiling."""
+    if melt_raw <= 0.03:
+        return
+
+    # Phase 1: Snapshot and Grayscale conversion
+    t0 = time.perf_counter()
+    STATIC_MELT_SNAPSHOT[:] = MUTABLE_PROCESSING_BUFFER[:]
+    cv2.cvtColor(STATIC_MELT_SNAPSHOT, cv2.COLOR_BGR2GRAY, dst=STATIC_MELT_GRAY_BUFFER)
+    t1 = time.perf_counter()
+
+    # Phase 2: Drip Collection (column scanning & filtering)
+    drips = _collect_melt_drips(melt_raw, current_time)
+    t2 = time.perf_counter()
+
+    # Phase 3: Rendering (Remap / pixel warping & neon blending)
+    if drips:
+        _render_melt_drips(drips)
+    t3 = time.perf_counter()
+
+    # Print granular timings (converting seconds to milliseconds)
+    snapshot_ms = (t1 - t0) * 1000.0
+    collect_ms = (t2 - t1) * 1000.0
+    render_ms = (t3 - t2) * 1000.0
+    total_ms = (t3 - t0) * 1000.0
+
+    print(
+        f"[MELT PROFILE] Total: {total_ms:.2f}ms | "
+        f"Snap: {snapshot_ms:.2f}ms | "
+        f"Collect ({len(drips)} drips): {collect_ms:.2f}ms | "
+        f"Render: {render_ms:.2f}ms"
+    )
 
 
 # RADICAL COMPUTATION UNROLLED ENGINE
