@@ -219,9 +219,12 @@ SLICE_MAX_SHIFT = 50  # [320x240: 15] [480x360: 23] [640x480: 30]
 
 MELT_STRIDE_LOW = 5
 MELT_STRIDE_MID = 3
-MELT_STRIDE_HIGH = 2  # Safe stride: avoids the CPU-melting overhead of stride 1
-MAX_MELT_DRIPS = 90  # Stable ceiling for Pi 5 frame rates
-MELT_DRIP_WIDTH = 6  # Keeps drips wide and substantial
+MELT_STRIDE_HIGH = 2  # Safe stride: maintains high FPS on Pi 5
+MAX_MELT_DRIPS = 120  # Balanced aesthetic ceiling
+MELT_DRIP_WIDTH = 6  # Thick, substantial drips
+
+# NOTE: Ensure your global buffer allocation matches MELT_DRIP_WIDTH!
+# e.g., MELT_DRIP_WORK_BUFFER = np.zeros((max_possible_height, MELT_DRIP_WIDTH, 3), dtype=np.float32)
 
 # NEON_PALETTES defined in native OpenCV BGR format: [Blue, Green, Red]
 NEON_PALETTES = np.array(
@@ -269,7 +272,8 @@ STATIC_MELT_GRAY_BUFFER = np.empty((FRAME_H, FRAME_W), dtype=np.uint8, order="C"
 
 # --- PHASE 1: MELT PERSISTENT GRAVITATIONAL DEFORMATION BUFFERS ---
 STATIC_MELT_SNAPSHOT = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
-MELT_DRIP_WORK_BUFFER = np.empty((FRAME_H, 4, 3), dtype=np.float32, order="C")
+# MELT_DRIP_WORK_BUFFER = np.empty((FRAME_H, 4, 3), dtype=np.float32, order="C")
+MELT_DRIP_WORK_BUFFER = np.zeros((FRAME_H, MELT_DRIP_WIDTH, 3), dtype=np.float32)
 
 assert STATIC_MELT_SNAPSHOT.flags["C_CONTIGUOUS"], (
     "CRITICAL: STATIC_MELT_SNAPSHOT layout fault!"
@@ -786,11 +790,6 @@ def apply_datamosh(effect_val, current_time):
 def _collect_melt_drips(
     melt_raw: float, current_time: float, h: int = FRAME_H, w: int = FRAME_W
 ):
-    """
-    Fast, memory-efficient drip collection across screen width.
-    Uses per-column flatnonzero to avoid multi-megabyte argwhere allocations,
-    and fractional seed-rank subsampling to guarantee perfect screen-wide spatial balance.
-    """
     max_melt_length = int(20 + melt_raw * (h * 0.85))
     threshold = max(75, int(255 * (1.0 - melt_raw * 0.65)))
     stride = (
@@ -815,7 +814,6 @@ def _collect_melt_drips(
     for rank in range(max_seeds_per_column):
         eligible = [(x0, seeds[rank]) for x0, seeds in col_seeds if rank < len(seeds)]
         remaining = MAX_MELT_DRIPS - len(drips)
-        # Symmetrical fractional subsampling across the entire screen
         if len(eligible) > remaining:
             step = len(eligible) / float(remaining)
             eligible = [eligible[int(i * step)] for i in range(remaining)]
@@ -840,13 +838,8 @@ def _collect_melt_drips(
 
 
 def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
-    """
-    Renders drips using vertical bilinear sampling and contiguous slice assignment.
-    Enforces internal ascending-extent sorting and horizontal bounds checking.
-    """
     if not drips:
         return
-    # Ascending extent sorting: deeper drips process last, cleanly overwriting shorter overlapping drips
     sorted_drips = sorted(drips, key=lambda item: (item[0], item[1]))
 
     left_offset = MELT_DRIP_WIDTH // 2
@@ -857,7 +850,6 @@ def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
         y0 = int(y0_raw)
         L = int(L_raw)
 
-        # Defensive bounds guards based on tunable drip width
         if x0 - left_offset < 0 or x0 + right_offset > w:
             continue
         if L <= 0 or y0 >= h - 1:
@@ -870,18 +862,15 @@ def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
 
         y_dest = np.arange(y0, end_y, dtype=np.int32)
         y_rel = (y_dest - y0).astype(np.float32)
-        # Non-linear backward gravitational mapping
         norm_dist = np.clip(y_rel / float(L), 0.0, 1.0)
         denom = np.maximum(1.0, 1.0 + s * np.sqrt(norm_dist))
         y_float = np.clip(y0 + (y_rel / denom), 0.0, float(h - 1))
 
-        # 1D Vertical Bilinear Sampling
         y_floor = np.floor(y_float).astype(np.int32)
         y_ceil = np.clip(y_floor + 1, 0, h - 1)
         w_ceil = (y_float - y_floor).astype(np.float32)[:, None, None]
         w_floor = 1.0 - w_ceil
 
-        # Configurable contiguous horizontal slice spanning MELT_DRIP_WIDTH columns
         cols_slice = slice(x0 - left_offset, x0 + right_offset)
         src_floor = STATIC_MELT_SNAPSHOT[y_floor, cols_slice].astype(np.float32)
         src_ceil = STATIC_MELT_SNAPSHOT[y_ceil, cols_slice].astype(np.float32)
@@ -889,12 +878,11 @@ def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
         work_view = MELT_DRIP_WORK_BUFFER[:num_rows, :MELT_DRIP_WIDTH]
         work_view[:] = w_floor * src_floor + w_ceil * src_ceil
 
-        # OPTIMIZED IN-PLACE FULL-WIDTH NEON BLEED: avoids temporary array allocations
+        # In-place full-width neon bleed
         neon_color = 0.5 * NEON_PALETTES_FLOAT[p1] + 0.5 * NEON_PALETTES_FLOAT[p2]
         work_view *= 0.65
         work_view += 0.35 * neon_color
 
-        # Single contiguous slice write into active processing buffer
         MUTABLE_PROCESSING_BUFFER[y0:end_y, cols_slice] = np.clip(
             np.round(work_view), 0, 255
         ).astype(np.uint8)
