@@ -232,6 +232,34 @@ _SCRATCH_W_FLOOR = np.empty((FRAME_H, 1, 1), dtype=np.float32)
 _SCRATCH_NW_1D = np.empty(FRAME_H, dtype=np.float32)
 _SCRATCH_NEON_WEIGHT = np.empty((FRAME_H, 1, 1), dtype=np.float32)
 
+# Vectorized Melt renderer: persistent OpenCV remap buffers.
+# Allocated once; reused on every frame.
+
+MELT_MAP_X = np.empty((FRAME_H, FRAME_W), dtype=np.float32)
+MELT_MAP_Y = np.empty((FRAME_H, FRAME_W), dtype=np.float32)
+
+MELT_REMAP_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8)
+
+MELT_ALPHA_MAP = np.zeros((FRAME_H, FRAME_W), dtype=np.float32)
+
+MELT_COLOR_MAP = np.zeros((FRAME_H, FRAME_W, 3), dtype=np.float32)
+
+MELT_REMAP_FLOAT = np.empty((FRAME_H, FRAME_W, 3), dtype=np.float32)
+
+MELT_BLEND_TEMP = np.empty((FRAME_H, FRAME_W, 3), dtype=np.float32)
+
+MELT_BLEND_ALPHA = np.empty((FRAME_H, FRAME_W, 3), dtype=np.float32)
+
+_MELT_IDENTITY_X = np.broadcast_to(
+    np.arange(FRAME_W, dtype=np.float32)[None, :],
+    (FRAME_H, FRAME_W),
+).copy()
+
+_MELT_IDENTITY_Y = np.broadcast_to(
+    np.arange(FRAME_H, dtype=np.float32)[:, None],
+    (FRAME_H, FRAME_W),
+).copy()
+
 ## ABOVE ARE ADDED FOR THE LATEST VERSION OF MELT FOR TESTING
 
 MELT_STRIDE_LOW = 6
@@ -982,6 +1010,7 @@ def _collect_melt_drips(
     return drips
 
 
+'''
 def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
     if not drips:
         return
@@ -1071,6 +1100,140 @@ def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
         MUTABLE_PROCESSING_BUFFER[y0:end_y, cols_slice] = np.clip(
             np.round(work_view), 0, 255
         ).astype(np.uint8)
+'''
+
+
+def _render_melt_drips(drips, h=FRAME_H, w=FRAME_W):
+    """
+    Vectorized gravitational Melt renderer.
+
+    Builds a single source-coordinate map for all drips, then performs
+    one OpenCV remap and a vectorized neon blend.
+
+    Preserves the existing sorted drip order: later drips overwrite
+    the mapping and blend parameters of earlier overlapping drips.
+    """
+    if not drips:
+        return
+
+    # The persistent buffers are sized for the configured frame.
+    # This renderer expects the standard FRAME_H x FRAME_W pipeline.
+    if h != FRAME_H or w != FRAME_W:
+        raise ValueError("Melt remap buffers must match FRAME_H and FRAME_W")
+
+    # Identity mapping: untouched pixels sample their original position.
+    np.copyto(MELT_MAP_X, _MELT_IDENTITY_X)
+    np.copyto(MELT_MAP_Y, _MELT_IDENTITY_Y)
+
+    MELT_ALPHA_MAP.fill(0.0)
+    MELT_COLOR_MAP.fill(0.0)
+
+    left_offset = MELT_DRIP_WIDTH // 2
+    right_offset = MELT_DRIP_WIDTH - left_offset
+
+    # Match the original renderer's overwrite order.
+    sorted_drips = sorted(drips, key=lambda item: (item[0], item[1]))
+
+    for _, x0_raw, y0_raw, L_raw, s, p1, p2 in sorted_drips:
+        x0 = int(x0_raw)
+        y0 = int(y0_raw)
+        L = int(L_raw)
+
+        if x0 - left_offset < 0 or x0 + right_offset > w:
+            continue
+        if L <= 0 or y0 >= h - 1:
+            continue
+
+        end_y = min(h, y0 + L)
+        num_rows = end_y - y0
+        if num_rows <= 0:
+            continue
+
+        # Gravitational source-coordinate mapping.
+        y_rel = np.arange(num_rows, dtype=np.float32)
+        norm_dist = np.clip(y_rel / float(L), 0.0, 1.0)
+
+        denom = np.maximum(
+            1.0 + s * np.sqrt(norm_dist),
+            1.0,
+        )
+
+        y_float = np.clip(
+            y0 + y_rel / denom,
+            0.0,
+            float(h - 1),
+        )
+
+        # The same source Y coordinates are used across the drip width.
+        cols_slice = slice(x0 - left_offset, x0 + right_offset)
+
+        MELT_MAP_Y[y0:end_y, cols_slice] = y_float[:, None]
+
+        # Match the current configurable neon ramp.
+        neon_weight = np.clip(
+            (norm_dist - MELT_NEON_START_PCT) / MELT_NEON_RAMP_SPAN,
+            0.0,
+            1.0,
+        )
+
+        neon_color = 0.5 * NEON_PALETTES_FLOAT[p1] + 0.5 * NEON_PALETTES_FLOAT[p2]
+
+        MELT_ALPHA_MAP[y0:end_y, cols_slice] = neon_weight[:, None]
+        MELT_COLOR_MAP[y0:end_y, cols_slice] = neon_color
+
+    # Warp the immutable original snapshot once for the entire frame.
+    cv2.remap(
+        STATIC_MELT_SNAPSHOT,
+        MELT_MAP_X,
+        MELT_MAP_Y,
+        interpolation=cv2.INTER_LINEAR,
+        dst=MELT_REMAP_BUFFER,
+        borderMode=cv2.BORDER_REPLICATE,
+    )
+
+    # Expand the alpha map to three channels without allocating a
+    # repeated NumPy array.
+    for channel in range(3):
+        MELT_BLEND_ALPHA[:, :, channel] = MELT_ALPHA_MAP
+
+    # Blend the warped pixels with the per-pixel neon color.
+    np.subtract(
+        1.0,
+        MELT_BLEND_ALPHA,
+        out=MELT_BLEND_TEMP,
+    )
+
+    np.multiply(
+        MELT_REMAP_BUFFER,
+        MELT_BLEND_TEMP,
+        out=MELT_REMAP_FLOAT,
+        casting="unsafe",
+    )
+
+    np.multiply(
+        MELT_COLOR_MAP,
+        MELT_BLEND_ALPHA,
+        out=MELT_BLEND_TEMP,
+    )
+
+    np.add(
+        MELT_REMAP_FLOAT,
+        MELT_BLEND_TEMP,
+        out=MELT_REMAP_FLOAT,
+    )
+
+    np.clip(
+        MELT_REMAP_FLOAT,
+        0.0,
+        255.0,
+        out=MELT_REMAP_FLOAT,
+    )
+
+    np.copyto(
+        MUTABLE_PROCESSING_BUFFER,
+        MELT_REMAP_FLOAT,
+        casting="unsafe",
+    )
 
 
 def apply_melt_pass(melt_raw: float, current_time: float):
