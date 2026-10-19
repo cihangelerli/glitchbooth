@@ -232,9 +232,8 @@ _SCRATCH_W_FLOOR = np.empty((FRAME_H, 1, 1), dtype=np.float32)
 _SCRATCH_NW_1D = np.empty(FRAME_H, dtype=np.float32)
 _SCRATCH_NEON_WEIGHT = np.empty((FRAME_H, 1, 1), dtype=np.float32)
 
-## ABOVE ARE ADDED FOR THE LATEST VERSION OF MELT FOR TESTING
+## ABOVE ARE ADDED FOR THE PREALLOCATED BUFFERS VERSION OF MELT FOR TESTING
 
-"""
 # Vectorized Melt renderer: persistent OpenCV remap buffers.
 # Allocated once; reused on every frame.
 
@@ -262,14 +261,14 @@ _MELT_IDENTITY_Y = np.broadcast_to(
     np.arange(FRAME_H, dtype=np.float32)[:, None],
     (FRAME_H, FRAME_W),
 ).copy()
-"""
-## ABOVE ARE ALSO ADDED FOR THE VECTORIZED VERSION OF MELT FOR TESTING
+
+## ABOVE ARE ADDED FOR THE VECTORIZED VERSION OF MELT FOR TESTING
 
 MELT_STRIDE_LOW = 6
 MELT_STRIDE_MID = 3
 MELT_STRIDE_HIGH = 2  # Safe min stride for maintaining high FPS on Pi 5
-MAX_MELT_DRIPS = 20  # Balanced aesthetic ceiling 100
-MELT_DRIP_WIDTH = 12  # Thick, substantial drips when the number is bigger. 75 drips and 10 width, 100 drips and 8 width are good combos
+MAX_MELT_DRIPS = 75  # Balanced aesthetic ceiling 100
+MELT_DRIP_WIDTH = 10  # Thick, substantial drips when the number is bigger. 75 drips and 10 width, 100 drips and 8 width are good combos
 MELT_NEON_START_PCT = 0.75  # Where neon begins: 0.0 = top of drip, 0.5 = halfway down
 MELT_NEON_RAMP_SPAN = (
     0.20  # Length of the transition ramp to full neon (Start + Span should equal 1.0)
@@ -840,6 +839,7 @@ def apply_datamosh(effect_val, current_time):
 # ISOLATED GRAVITATIONAL MELT ENGINE (STAGE 6)
 # =========================================================================
 
+# original numpy-based melt code
 '''
 def _collect_melt_drips(
     melt_raw: float, current_time: float, h: int = FRAME_H, w: int = FRAME_W
@@ -956,7 +956,7 @@ def apply_melt_pass(melt_raw: float, current_time: float):
 
 '''
 
-"""
+
 def _collect_melt_drips(
     melt_raw: float, current_time: float, h: int = FRAME_H, w: int = FRAME_W
 ):
@@ -1011,8 +1011,9 @@ def _collect_melt_drips(
         if len(drips) >= MAX_MELT_DRIPS:
             break
     return drips
-"""
 
+
+### non-vectorized version with non-localized buffers
 '''
 def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
     if not drips:
@@ -1103,9 +1104,162 @@ def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
         MUTABLE_PROCESSING_BUFFER[y0:end_y, cols_slice] = np.clip(
             np.round(work_view), 0, 255
         ).astype(np.uint8)
+'''
 
+### non-vectorized version with localized buffers
+"""
+def _collect_melt_drips(
+    melt_raw: float, current_time: float, h: int = FRAME_H, w: int = FRAME_W
+):
+    max_melt_length = int(20 + melt_raw * (h * 0.85))
+    threshold = max(75, int(255 * (1.0 - melt_raw * 0.65)))
+    stride = (
+        MELT_STRIDE_LOW
+        if melt_raw < 0.35
+        else (MELT_STRIDE_MID if melt_raw < 0.7 else MELT_STRIDE_HIGH)
+    )
+    seed_step = max(2, int((1.1 - melt_raw) * 8))
+    max_seeds_per_column = 3 if melt_raw < 0.65 else 6
+    time_tick = int(current_time * 4) & 0xFF
+    g = STATIC_MELT_GRAY_BUFFER
+    col_seeds = []
+    for x0 in range(1, w - 2, stride):
+        ys = np.flatnonzero(g[:, x0] > threshold)
+        if ys.size > 0:
+            seeds = [
+                int(v) for v in ys[::seed_step][:max_seeds_per_column] if v < h - 4
+            ]
+            if seeds:
+                col_seeds.append((x0, seeds))
+    drips = []
+    for rank in range(max_seeds_per_column):
+        eligible = [(x0, seeds[rank]) for x0, seeds in col_seeds if rank < len(seeds)]
+        remaining = MAX_MELT_DRIPS - len(drips)
+        
+        if remaining <= 0:
+            break
+            
+        if len(eligible) > remaining:
+            step = len(eligible) / float(remaining)
+            eligible = [eligible[int(i * step)] for i in range(remaining)]
+            
+        for x0, start_y in eligible:
+            h1 = (x0 * 73856093) ^ (start_y * 19349663) ^ (time_tick * 83492791)
+            h2 = (x0 * 2654435761) ^ (start_y * 2246822519) ^ (time_tick * 3266489917)
+            rand_len_mult = (h1 % 1000) / 1000.0
+            rand_stretch_mult = ((h1 >> 10) % 1000) / 1000.0
+            p1 = (h2 >> 4) % len(NEON_PALETTES)
+            p2 = (p1 + 1 + ((h2 >> 12) % (len(NEON_PALETTES) - 1))) % len(NEON_PALETTES)
+            base_len = int(max_melt_length * 0.45)
+            rand_len = int(max_melt_length * 0.55 * rand_len_mult)
+            L = base_len + rand_len
+            if L <= 0:
+                continue
+            s = 1.0 + (rand_stretch_mult * 2.0)
+            reach = start_y + L
+            drips.append((reach, x0, start_y, L, s, p1, p2))
+        if len(drips) >= MAX_MELT_DRIPS:
+            break
+    return drips
 
-### vectorized version
+def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
+    if not drips:
+        return
+    sorted_drips = sorted(drips, key=lambda item: (item[0], item[1]))
+    
+    left_offset = MELT_DRIP_WIDTH // 2
+    right_offset = MELT_DRIP_WIDTH - left_offset
+
+    # Localize globals for speed inside the active drip loop
+    _snapshot = STATIC_MELT_SNAPSHOT
+    _work_buf = MELT_DRIP_WORK_BUFFER
+    _processing_buf = MUTABLE_PROCESSING_BUFFER
+    _palettes_f = NEON_PALETTES_FLOAT
+    _range_buf = _RANGE_BUFFER
+    _scratch_norm = _SCRATCH_NORM
+    _scratch_denom = _SCRATCH_DENOM
+    _scratch_yfloat = _SCRATCH_YFLOAT
+    _scratch_floor = _SCRATCH_FLOOR_FLOAT
+    _scratch_yfloor = _SCRATCH_YFLOOR
+    _scratch_yceil = _SCRATCH_YCEIL
+    _scratch_w_ceil = _SCRATCH_W_CEIL
+    _scratch_w_floor = _SCRATCH_W_FLOOR
+    _scratch_nw_1d = _SCRATCH_NW_1D
+    _scratch_nw_weight = _SCRATCH_NEON_WEIGHT
+
+    for _, x0_raw, y0_raw, L_raw, s, p1, p2 in sorted_drips:
+        x0 = int(x0_raw)
+        y0 = int(y0_raw)
+        L = int(L_raw)
+        
+        if x0 - left_offset < 0 or x0 + right_offset > w:
+            continue
+        if L <= 0 or y0 >= h - 1:
+            continue
+            
+        end_y = min(h, y0 + L)
+        num_rows = end_y - y0
+        if num_rows <= 0:
+            continue
+            
+        # Gravitational mapping
+        y_rel = _range_buf[:num_rows]
+        norm_dist = _scratch_norm[:num_rows]
+        np.clip(y_rel / float(L), 0.0, 1.0, out=norm_dist)
+        
+        denom = _scratch_denom[:num_rows]
+        np.sqrt(norm_dist, out=denom)
+        denom *= s
+        denom += 1.0
+        np.maximum(1.0, denom, out=denom)
+        
+        y_float = _scratch_yfloat[:num_rows]
+        np.divide(y_rel, denom, out=y_float)
+        y_float += y0
+        np.clip(y_float, 0.0, float(h - 1), out=y_float)
+        
+        y_floor_float = _scratch_floor[:num_rows]
+        np.floor(y_float, out=y_floor_float)
+        
+        y_floor = _scratch_yfloor[:num_rows]
+        y_floor[:] = y_floor_float
+        
+        y_ceil = _scratch_yceil[:num_rows]
+        np.clip(y_floor + 1, 0, h - 1, out=y_ceil)
+        
+        w_ceil = _scratch_w_ceil[:num_rows]
+        np.subtract(y_float, y_floor_float, out=w_ceil[:, 0, 0])
+        
+        w_floor = _scratch_w_floor[:num_rows]
+        np.subtract(1.0, w_ceil[:, 0, 0], out=w_floor[:, 0, 0])
+        
+        cols_slice = slice(x0 - left_offset, x0 + right_offset)
+        src_floor = _snapshot[y_floor, cols_slice].astype(np.float32)
+        src_ceil = _snapshot[y_ceil, cols_slice].astype(np.float32)
+        
+        work_view = _work_buf[:num_rows, :MELT_DRIP_WIDTH]
+        np.multiply(w_floor, src_floor, out=work_view)
+        work_view += w_ceil * src_ceil
+        
+        # Tunable gradient neon blend
+        nw_1d = _scratch_nw_1d[:num_rows]
+        np.subtract(norm_dist, MELT_NEON_START_PCT, out=nw_1d)
+        nw_1d /= MELT_NEON_RAMP_SPAN
+        np.clip(nw_1d, 0.0, 1.0, out=nw_1d)
+        
+        nw_view = _scratch_nw_weight[:num_rows]
+        nw_view[:, 0, 0] = nw_1d
+        
+        neon_color = (0.5 * _palettes_f[p1] + 0.5 * _palettes_f[p2])
+        
+        work_view *= (1.0 - nw_view)
+        work_view += nw_view * neon_color
+        
+        _processing_buf[y0:end_y, cols_slice] = np.clip(
+            np.round(work_view), 0, 255
+        ).astype(np.uint8)
+
+"""
 
 
 def _render_melt_drips(drips, h=FRAME_H, w=FRAME_W):
@@ -1239,162 +1393,10 @@ def _render_melt_drips(drips, h=FRAME_H, w=FRAME_W):
         MELT_REMAP_FLOAT,
         casting="unsafe",
     )
+
+
+# non-diagnostic version
 '''
-
-
-def _collect_melt_drips(
-    melt_raw: float, current_time: float, h: int = FRAME_H, w: int = FRAME_W
-):
-    max_melt_length = int(20 + melt_raw * (h * 0.85))
-    threshold = max(75, int(255 * (1.0 - melt_raw * 0.65)))
-    stride = (
-        MELT_STRIDE_LOW
-        if melt_raw < 0.35
-        else (MELT_STRIDE_MID if melt_raw < 0.7 else MELT_STRIDE_HIGH)
-    )
-    seed_step = max(2, int((1.1 - melt_raw) * 8))
-    max_seeds_per_column = 3 if melt_raw < 0.65 else 6
-    time_tick = int(current_time * 4) & 0xFF
-    g = STATIC_MELT_GRAY_BUFFER
-    col_seeds = []
-    for x0 in range(1, w - 2, stride):
-        ys = np.flatnonzero(g[:, x0] > threshold)
-        if ys.size > 0:
-            seeds = [
-                int(v) for v in ys[::seed_step][:max_seeds_per_column] if v < h - 4
-            ]
-            if seeds:
-                col_seeds.append((x0, seeds))
-    drips = []
-    for rank in range(max_seeds_per_column):
-        eligible = [(x0, seeds[rank]) for x0, seeds in col_seeds if rank < len(seeds)]
-        remaining = MAX_MELT_DRIPS - len(drips)
-
-        if remaining <= 0:
-            break
-
-        if len(eligible) > remaining:
-            step = len(eligible) / float(remaining)
-            eligible = [eligible[int(i * step)] for i in range(remaining)]
-
-        for x0, start_y in eligible:
-            h1 = (x0 * 73856093) ^ (start_y * 19349663) ^ (time_tick * 83492791)
-            h2 = (x0 * 2654435761) ^ (start_y * 2246822519) ^ (time_tick * 3266489917)
-            rand_len_mult = (h1 % 1000) / 1000.0
-            rand_stretch_mult = ((h1 >> 10) % 1000) / 1000.0
-            p1 = (h2 >> 4) % len(NEON_PALETTES)
-            p2 = (p1 + 1 + ((h2 >> 12) % (len(NEON_PALETTES) - 1))) % len(NEON_PALETTES)
-            base_len = int(max_melt_length * 0.45)
-            rand_len = int(max_melt_length * 0.55 * rand_len_mult)
-            L = base_len + rand_len
-            if L <= 0:
-                continue
-            s = 1.0 + (rand_stretch_mult * 2.0)
-            reach = start_y + L
-            drips.append((reach, x0, start_y, L, s, p1, p2))
-        if len(drips) >= MAX_MELT_DRIPS:
-            break
-    return drips
-
-
-def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
-    if not drips:
-        return
-    sorted_drips = sorted(drips, key=lambda item: (item[0], item[1]))
-
-    left_offset = MELT_DRIP_WIDTH // 2
-    right_offset = MELT_DRIP_WIDTH - left_offset
-
-    # Localize globals for speed inside the active drip loop
-    _snapshot = STATIC_MELT_SNAPSHOT
-    _work_buf = MELT_DRIP_WORK_BUFFER
-    _processing_buf = MUTABLE_PROCESSING_BUFFER
-    _palettes_f = NEON_PALETTES_FLOAT
-    _range_buf = _RANGE_BUFFER
-    _scratch_norm = _SCRATCH_NORM
-    _scratch_denom = _SCRATCH_DENOM
-    _scratch_yfloat = _SCRATCH_YFLOAT
-    _scratch_floor = _SCRATCH_FLOOR_FLOAT
-    _scratch_yfloor = _SCRATCH_YFLOOR
-    _scratch_yceil = _SCRATCH_YCEIL
-    _scratch_w_ceil = _SCRATCH_W_CEIL
-    _scratch_w_floor = _SCRATCH_W_FLOOR
-    _scratch_nw_1d = _SCRATCH_NW_1D
-    _scratch_nw_weight = _SCRATCH_NEON_WEIGHT
-
-    for _, x0_raw, y0_raw, L_raw, s, p1, p2 in sorted_drips:
-        x0 = int(x0_raw)
-        y0 = int(y0_raw)
-        L = int(L_raw)
-
-        if x0 - left_offset < 0 or x0 + right_offset > w:
-            continue
-        if L <= 0 or y0 >= h - 1:
-            continue
-
-        end_y = min(h, y0 + L)
-        num_rows = end_y - y0
-        if num_rows <= 0:
-            continue
-
-        # Gravitational mapping
-        y_rel = _range_buf[:num_rows]
-        norm_dist = _scratch_norm[:num_rows]
-        np.clip(y_rel / float(L), 0.0, 1.0, out=norm_dist)
-
-        denom = _scratch_denom[:num_rows]
-        np.sqrt(norm_dist, out=denom)
-        denom *= s
-        denom += 1.0
-        np.maximum(1.0, denom, out=denom)
-
-        y_float = _scratch_yfloat[:num_rows]
-        np.divide(y_rel, denom, out=y_float)
-        y_float += y0
-        np.clip(y_float, 0.0, float(h - 1), out=y_float)
-
-        y_floor_float = _scratch_floor[:num_rows]
-        np.floor(y_float, out=y_floor_float)
-
-        y_floor = _scratch_yfloor[:num_rows]
-        y_floor[:] = y_floor_float
-
-        y_ceil = _scratch_yceil[:num_rows]
-        np.clip(y_floor + 1, 0, h - 1, out=y_ceil)
-
-        w_ceil = _scratch_w_ceil[:num_rows]
-        np.subtract(y_float, y_floor_float, out=w_ceil[:, 0, 0])
-
-        w_floor = _scratch_w_floor[:num_rows]
-        np.subtract(1.0, w_ceil[:, 0, 0], out=w_floor[:, 0, 0])
-
-        cols_slice = slice(x0 - left_offset, x0 + right_offset)
-        src_floor = _snapshot[y_floor, cols_slice].astype(np.float32)
-        src_ceil = _snapshot[y_ceil, cols_slice].astype(np.float32)
-
-        work_view = _work_buf[:num_rows, :MELT_DRIP_WIDTH]
-        np.multiply(w_floor, src_floor, out=work_view)
-        work_view += w_ceil * src_ceil
-
-        # Tunable gradient neon blend
-        nw_1d = _scratch_nw_1d[:num_rows]
-        np.subtract(norm_dist, MELT_NEON_START_PCT, out=nw_1d)
-        nw_1d /= MELT_NEON_RAMP_SPAN
-        np.clip(nw_1d, 0.0, 1.0, out=nw_1d)
-
-        nw_view = _scratch_nw_weight[:num_rows]
-        nw_view[:, 0, 0] = nw_1d
-
-        neon_color = 0.5 * _palettes_f[p1] + 0.5 * _palettes_f[p2]
-
-        work_view *= 1.0 - nw_view
-        work_view += nw_view * neon_color
-
-        _processing_buf[y0:end_y, cols_slice] = np.clip(
-            np.round(work_view), 0, 255
-        ).astype(np.uint8)
-
-
 def apply_melt_pass(melt_raw: float, current_time: float):
     """Stage 6: Gravitational Melt Deformation Public Entry Point."""
     if melt_raw <= 0.03:
@@ -1404,11 +1406,10 @@ def apply_melt_pass(melt_raw: float, current_time: float):
     drips = _collect_melt_drips(melt_raw, current_time)
     if drips:
         _render_melt_drips(drips)
-
-
 '''
-# for diagnostic of the latency spikes
 
+
+# diagnostic version
 def apply_melt_pass(melt_raw: float, current_time: float):
     """Stage 6: Gravitational Melt Deformation Public Entry Point with Profiling."""
     if melt_raw <= 0.03:
@@ -1441,7 +1442,6 @@ def apply_melt_pass(melt_raw: float, current_time: float):
         f"Collect ({len(drips)} drips): {collect_ms:.2f}ms | "
         f"Render: {render_ms:.2f}ms"
     )
-'''
 
 
 # RADICAL COMPUTATION UNROLLED ENGINE
