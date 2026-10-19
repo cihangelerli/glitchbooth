@@ -219,10 +219,10 @@ SLICE_MAX_SHIFT = 50  # [320x240: 15] [480x360: 23] [640x480: 30]
 # MELT DRIP ENGINE CONSTANTS
 # ==============================================================================
 
-MELT_STRIDE_LOW = 3
-MELT_STRIDE_MID = 2
-MELT_STRIDE_HIGH = 1  # Safe stride: maintains high FPS on Pi 5
-MAX_MELT_DRIPS = 120  # Balanced aesthetic ceiling
+MELT_STRIDE_LOW = 4
+MELT_STRIDE_MID = 3
+MELT_STRIDE_HIGH = 2  # Safe min stride for maintaining high FPS on Pi 5
+MAX_MELT_DRIPS = 100  # Balanced aesthetic ceiling
 MELT_DRIP_WIDTH = 6  # Thick, substantial drips
 
 # NOTE: Ensure your global buffer allocation matches MELT_DRIP_WIDTH!
@@ -877,13 +877,15 @@ def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
         src_floor = STATIC_MELT_SNAPSHOT[y_floor, cols_slice].astype(np.float32)
         src_ceil = STATIC_MELT_SNAPSHOT[y_ceil, cols_slice].astype(np.float32)
 
-        work_view = MELT_DRIP_WORK_BUFFER[:num_rows, :MELT_DRIP_WIDTH]
-        work_view[:] = w_floor * src_floor + w_ceil * src_ceil
+        # Warped source image pixels
+        src_warped = w_floor * src_floor + w_ceil * src_ceil
 
-        # In-place full-width neon bleed
+        # GRADIENT NEON BLEND: 0% neon for first 25% of drip length, ramping linearly to 100% full neon at tip
+        neon_weight = np.clip((norm_dist - 0.25) / 0.75, 0.0, 1.0)[:, None, None]
         neon_color = 0.5 * NEON_PALETTES_FLOAT[p1] + 0.5 * NEON_PALETTES_FLOAT[p2]
-        work_view *= 0.75
-        work_view += 0.25 * neon_color
+
+        work_view = MELT_DRIP_WORK_BUFFER[:num_rows, :MELT_DRIP_WIDTH]
+        work_view[:] = (1.0 - neon_weight) * src_warped + neon_weight * neon_color
 
         MUTABLE_PROCESSING_BUFFER[y0:end_y, cols_slice] = np.clip(
             np.round(work_view), 0, 255
