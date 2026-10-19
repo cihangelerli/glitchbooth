@@ -239,6 +239,10 @@ MELT_STRIDE_MID = 3
 MELT_STRIDE_HIGH = 2  # Safe min stride for maintaining high FPS on Pi 5
 MAX_MELT_DRIPS = 80  # Balanced aesthetic ceiling
 MELT_DRIP_WIDTH = 8  # Thick, substantial drips
+MELT_NEON_START_PCT = 0.65  # Where neon begins: 0.0 = top of drip, 0.5 = halfway down
+MELT_NEON_RAMP_SPAN = (
+    0.35  # Length of the transition ramp to full neon (Start + Span should equal 1.0)
+)
 
 # NOTE: Ensure your global buffer allocation matches MELT_DRIP_WIDTH!
 # e.g., MELT_DRIP_WORK_BUFFER = np.zeros((max_possible_height, MELT_DRIP_WIDTH, 3), dtype=np.float32)
@@ -1041,10 +1045,18 @@ def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
         np.multiply(w_floor, src_floor, out=work_view)
         work_view += w_ceil * src_ceil
 
+        """
         # Gradient neon blend (0% at top 25%, ramping linearly to 100% at tip)
         nw_1d = _SCRATCH_NW_1D[:num_rows]
         np.subtract(norm_dist, 0.25, out=nw_1d)
         nw_1d /= 0.75
+        np.clip(nw_1d, 0.0, 1.0, out=nw_1d)
+        """
+
+        # Tunable gradient neon blend using top-level constants
+        nw_1d = _SCRATCH_NW_1D[:num_rows]
+        np.subtract(norm_dist, MELT_NEON_START_PCT, out=nw_1d)
+        nw_1d /= MELT_NEON_RAMP_SPAN
         np.clip(nw_1d, 0.0, 1.0, out=nw_1d)
 
         nw_view = _SCRATCH_NEON_WEIGHT[:num_rows]
