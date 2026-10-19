@@ -275,6 +275,73 @@ MELT_NEON_RAMP_SPAN = (
 )
 
 
+# below are added for adaptive scaling version for melt
+
+MELT_HALF_WIDTH = FRAME_W // 2
+MELT_HALF_HEIGHT = FRAME_H // 2
+
+MELT_HALF_ENTER = 0.72
+MELT_HALF_EXIT = 0.65
+
+# Separate, persistent input buffers for half-resolution Melt.
+MELT_HALF_INPUT = np.empty(
+    (MELT_HALF_HEIGHT, MELT_HALF_WIDTH, 3),
+    dtype=np.uint8,
+    order="C",
+)
+
+MELT_HALF_SNAPSHOT = np.empty_like(MELT_HALF_INPUT)
+
+MELT_HALF_GRAY = np.empty(
+    (MELT_HALF_HEIGHT, MELT_HALF_WIDTH),
+    dtype=np.uint8,
+    order="C",
+)
+
+
+def _make_melt_workspace(height, width, drip_width):
+    """Allocate a reusable vectorized-render workspace once at startup."""
+
+    identity_x = np.broadcast_to(
+        np.arange(width, dtype=np.float32)[None, :],
+        (height, width),
+    ).copy()
+
+    identity_y = np.broadcast_to(
+        np.arange(height, dtype=np.float32)[:, None],
+        (height, width),
+    ).copy()
+
+    return {
+        "height": height,
+        "width": width,
+        "drip_width": drip_width,
+        "identity_x": identity_x,
+        "map_x": identity_x.copy(),
+        "map_y": identity_y.copy(),
+        "alpha": np.zeros((height, width), dtype=np.float32),
+        "color": np.zeros((height, width, 3), dtype=np.float32),
+        "alpha3": np.zeros((height, width, 3), dtype=np.float32),
+        "inverse_alpha3": np.ones((height, width, 3), dtype=np.float32),
+        "remap": np.empty((height, width, 3), dtype=np.uint8),
+        "warped_float": np.empty((height, width, 3), dtype=np.float32),
+        "blend": np.empty((height, width, 3), dtype=np.float32),
+    }
+
+
+# Separate workspaces prevent the two resolutions from sharing buffers.
+MELT_FULL_WORKSPACE = _make_melt_workspace(FRAME_H, FRAME_W, MELT_DRIP_WIDTH)
+
+MELT_HALF_WORKSPACE = _make_melt_workspace(
+    MELT_HALF_HEIGHT,
+    MELT_HALF_WIDTH,
+    max(1, MELT_DRIP_WIDTH // 2),
+)
+
+MELT_HALF_RESOLUTION_ACTIVE = False
+
+# end of what's added for adaptive scaling version for melt
+
 # NOTE: Ensure your global buffer allocation matches MELT_DRIP_WIDTH!
 # e.g., MELT_DRIP_WORK_BUFFER = np.zeros((max_possible_height, MELT_DRIP_WIDTH, 3), dtype=np.float32)
 
@@ -319,13 +386,13 @@ FROZEN_PRINT_BUFFER = np.empty((FRAME_W, FRAME_H), dtype=np.uint8, order="C")
 FROZEN_PRINT_BUFFER.fill(255)
 
 STATIC_NOISE_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
+
 # Shared luminance buffer: utilized sequentially during Melt pass and post-capture receipt contrast prep
 STATIC_MELT_GRAY_BUFFER = np.empty((FRAME_H, FRAME_W), dtype=np.uint8, order="C")
 
 # --- PHASE 1: MELT PERSISTENT GRAVITATIONAL DEFORMATION BUFFERS ---
+# NOTE: Ensure MELT_DRIP_WIDTH is defined before these lines!
 STATIC_MELT_SNAPSHOT = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
-
-# MELT_DRIP_WORK_BUFFER = np.empty((FRAME_H, 4, 3), dtype=np.float32, order="C")
 MELT_DRIP_WORK_BUFFER = np.zeros((FRAME_H, MELT_DRIP_WIDTH, 3), dtype=np.float32)
 
 assert STATIC_MELT_SNAPSHOT.flags["C_CONTIGUOUS"], (
@@ -957,6 +1024,8 @@ def apply_melt_pass(melt_raw: float, current_time: float):
 '''
 
 
+# melt collector used with the vectorized renderer
+"""
 def _collect_melt_drips(
     melt_raw: float, current_time: float, h: int = FRAME_H, w: int = FRAME_W
 ):
@@ -1011,9 +1080,10 @@ def _collect_melt_drips(
         if len(drips) >= MAX_MELT_DRIPS:
             break
     return drips
+"""
 
 
-### non-vectorized version with non-localized buffers
+### non-vectorized renderer version with non-localized buffers
 '''
 def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
     if not drips:
@@ -1106,7 +1176,8 @@ def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
         ).astype(np.uint8)
 '''
 
-### non-vectorized version with localized buffers
+### non-vectorized melt collector and renderer version with localized buffers
+
 """
 def _collect_melt_drips(
     melt_raw: float, current_time: float, h: int = FRAME_H, w: int = FRAME_W
@@ -1262,6 +1333,8 @@ def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
 """
 
 
+# vectorized renderer
+'''
 def _render_melt_drips(drips, h=FRAME_H, w=FRAME_W):
     """
     Vectorized gravitational Melt renderer.
@@ -1393,11 +1466,12 @@ def _render_melt_drips(drips, h=FRAME_H, w=FRAME_W):
         MELT_REMAP_FLOAT,
         casting="unsafe",
     )
+'''
 
 
-# non-diagnostic version
+# non-diagnostic melt applier version
 
-
+'''
 def apply_melt_pass(melt_raw: float, current_time: float):
     """Stage 6: Gravitational Melt Deformation Public Entry Point."""
     if melt_raw <= 0.03:
@@ -1407,9 +1481,9 @@ def apply_melt_pass(melt_raw: float, current_time: float):
     drips = _collect_melt_drips(melt_raw, current_time)
     if drips:
         _render_melt_drips(drips)
+'''
 
-
-# diagnostic version
+# diagnostic melt applier version - be careful, prints diagnostics to terminal every loop and slows down the app
 '''
 def apply_melt_pass(melt_raw: float, current_time: float):
     """Stage 6: Gravitational Melt Deformation Public Entry Point with Profiling."""
@@ -1444,6 +1518,325 @@ def apply_melt_pass(melt_raw: float, current_time: float):
         f"Render: {render_ms:.2f}ms"
     )
 '''
+
+# adaptive-resolution vectorized collector - renderer - applier
+
+
+def _collect_melt_drips(
+    melt_raw,
+    current_time,
+    h=FRAME_H,
+    w=FRAME_W,
+    gray_buffer=None,
+    stride_scale=1.0,
+):
+    if gray_buffer is None:
+        gray_buffer = STATIC_MELT_GRAY_BUFFER
+
+    # Preserve the original full-resolution drip length in output pixels.
+    max_full_length = int(20 + melt_raw * (FRAME_H * 0.85))
+    max_melt_length = max(1, int(max_full_length * (h / float(FRAME_H))))
+
+    threshold = max(75, int(255 * (1.0 - melt_raw * 0.65)))
+
+    if melt_raw < 0.35:
+        stride = MELT_STRIDE_LOW
+    elif melt_raw < 0.7:
+        stride = MELT_STRIDE_MID
+    else:
+        stride = MELT_STRIDE_HIGH
+
+    stride = max(1, int(round(stride * stride_scale)))
+
+    seed_step = max(2, int((1.1 - melt_raw) * 8))
+    max_seeds_per_column = 3 if melt_raw < 0.65 else 6
+    time_tick = int(current_time * 4) & 0xFF
+
+    col_seeds = []
+
+    for x0 in range(1, w - 2, stride):
+        ys = np.flatnonzero(gray_buffer[:, x0] > threshold)
+
+        if ys.size:
+            seeds = [
+                int(v) for v in ys[::seed_step][:max_seeds_per_column] if v < h - 4
+            ]
+
+            if seeds:
+                col_seeds.append((x0, seeds))
+
+    drips = []
+
+    for rank in range(max_seeds_per_column):
+        eligible = [(x0, seeds[rank]) for x0, seeds in col_seeds if rank < len(seeds)]
+
+        remaining = MAX_MELT_DRIPS - len(drips)
+
+        if remaining <= 0:
+            break
+
+        if len(eligible) > remaining:
+            step = len(eligible) / float(remaining)
+            eligible = [eligible[int(i * step)] for i in range(remaining)]
+
+        for x0, start_y in eligible:
+            h1 = (x0 * 73856093) ^ (start_y * 19349663) ^ (time_tick * 83492791)
+            h2 = (x0 * 2654435761) ^ (start_y * 2246822519) ^ (time_tick * 3266489917)
+
+            rand_len_mult = (h1 % 1000) / 1000.0
+            rand_stretch_mult = ((h1 >> 10) % 1000) / 1000.0
+
+            p1 = (h2 >> 4) % len(NEON_PALETTES)
+            p2 = (p1 + 1 + ((h2 >> 12) % (len(NEON_PALETTES) - 1))) % len(NEON_PALETTES)
+
+            base_len = int(max_melt_length * 0.45)
+            rand_len = int(max_melt_length * 0.55 * rand_len_mult)
+
+            length = base_len + rand_len
+
+            if length <= 0:
+                continue
+
+            stretch = 1.0 + rand_stretch_mult * 2.0
+            reach = start_y + length
+
+            drips.append((reach, x0, start_y, length, stretch, p1, p2))
+
+        if len(drips) >= MAX_MELT_DRIPS:
+            break
+
+    return drips
+
+
+def _render_melt_drips_vectorized(
+    drips,
+    snapshot,
+    target,
+    workspace,
+):
+    if not drips:
+        return
+
+    h = workspace["height"]
+    w = workspace["width"]
+    drip_width = workspace["drip_width"]
+
+    map_x = workspace["map_x"]
+    map_y = workspace["map_y"]
+    alpha = workspace["alpha"]
+    color = workspace["color"]
+
+    # Reset mapping and blending fields for this frame.
+    np.copyto(map_x, workspace["identity_x"])
+    np.copyto(map_y, workspace["map_y"])
+    map_y[:] = np.broadcast_to(
+        np.arange(h, dtype=np.float32)[:, None],
+        (h, w),
+    )
+
+    alpha.fill(0.0)
+    color.fill(0.0)
+
+    left_offset = drip_width // 2
+    right_offset = drip_width - left_offset
+
+    # Preserve the original overlap ordering.
+    sorted_drips = sorted(drips, key=lambda item: (item[0], item[1]))
+
+    for _, x_raw, y_raw, length_raw, stretch, p1, p2 in sorted_drips:
+        x0 = int(x_raw)
+        y0 = int(y_raw)
+        length = int(length_raw)
+
+        if x0 - left_offset < 0 or x0 + right_offset > w:
+            continue
+        if length <= 0 or y0 >= h - 1:
+            continue
+
+        end_y = min(h, y0 + length)
+        rows = end_y - y0
+
+        if rows <= 0:
+            continue
+
+        y_rel = np.arange(rows, dtype=np.float32)
+        norm_dist = np.clip(y_rel / float(length), 0.0, 1.0)
+
+        denominator = np.maximum(
+            1.0 + stretch * np.sqrt(norm_dist),
+            1.0,
+        )
+
+        source_y = np.clip(
+            y0 + y_rel / denominator,
+            0.0,
+            float(h - 1),
+        )
+
+        cols = slice(x0 - left_offset, x0 + right_offset)
+
+        map_y[y0:end_y, cols] = source_y[:, None]
+
+        neon_weight = np.clip(
+            (norm_dist - MELT_NEON_START_PCT) / max(MELT_NEON_RAMP_SPAN, 1e-6),
+            0.0,
+            1.0,
+        )
+
+        neon_color = 0.5 * NEON_PALETTES_FLOAT[p1] + 0.5 * NEON_PALETTES_FLOAT[p2]
+
+        # Later overlapping drips overwrite earlier map and color data.
+        alpha[y0:end_y, cols] = neon_weight[:, None]
+        color[y0:end_y, cols] = neon_color
+
+    cv2.remap(
+        snapshot,
+        map_x,
+        map_y,
+        interpolation=cv2.INTER_LINEAR,
+        dst=workspace["remap"],
+        borderMode=cv2.BORDER_REPLICATE,
+    )
+
+    # Prepare reusable 3-channel blend weights.
+    workspace["alpha3"][:] = alpha[:, :, None]
+    np.subtract(
+        1.0,
+        workspace["alpha3"],
+        out=workspace["inverse_alpha3"],
+    )
+
+    np.copyto(
+        workspace["warped_float"],
+        workspace["remap"],
+    )
+
+    np.multiply(
+        workspace["warped_float"],
+        workspace["inverse_alpha3"],
+        out=workspace["blend"],
+    )
+
+    np.multiply(
+        color,
+        workspace["alpha3"],
+        out=workspace["warped_float"],
+    )
+
+    np.add(
+        workspace["blend"],
+        workspace["warped_float"],
+        out=workspace["blend"],
+    )
+
+    np.clip(
+        workspace["blend"],
+        0.0,
+        255.0,
+        out=workspace["blend"],
+    )
+
+    np.rint(
+        workspace["blend"],
+        out=workspace["blend"],
+    )
+
+    np.copyto(target, workspace["blend"], casting="unsafe")
+
+
+def apply_melt_pass(melt_raw: float, current_time: float):
+    """Adaptive-resolution gravitational Melt stage."""
+
+    global MELT_HALF_RESOLUTION_ACTIVE
+
+    if melt_raw <= 0.03:
+        MELT_HALF_RESOLUTION_ACTIVE = False
+        return
+
+    # Hysteresis prevents resolution thrashing around the threshold.
+    if MELT_HALF_RESOLUTION_ACTIVE:
+        if melt_raw < MELT_HALF_EXIT:
+            MELT_HALF_RESOLUTION_ACTIVE = False
+    elif melt_raw >= MELT_HALF_ENTER:
+        MELT_HALF_RESOLUTION_ACTIVE = True
+
+    if MELT_HALF_RESOLUTION_ACTIVE:
+        # Downscale the current image into dedicated buffers.
+        cv2.resize(
+            MUTABLE_PROCESSING_BUFFER,
+            (MELT_HALF_WIDTH, MELT_HALF_HEIGHT),
+            dst=MELT_HALF_INPUT,
+            interpolation=cv2.INTER_AREA,
+        )
+
+        np.copyto(MELT_HALF_SNAPSHOT, MELT_HALF_INPUT)
+
+        cv2.cvtColor(
+            MELT_HALF_SNAPSHOT,
+            cv2.COLOR_BGR2GRAY,
+            dst=MELT_HALF_GRAY,
+        )
+
+        # Half-resolution: half the pixel width for equivalent output width.
+        half_drip_width = MELT_HALF_WORKSPACE["drip_width"]
+
+        drips = _collect_melt_drips(
+            melt_raw,
+            current_time,
+            h=MELT_HALF_HEIGHT,
+            w=MELT_HALF_WIDTH,
+            gray_buffer=MELT_HALF_GRAY,
+            stride_scale=0.5,
+        )
+
+        if drips:
+            _render_melt_drips_vectorized(
+                drips,
+                MELT_HALF_SNAPSHOT,
+                MELT_HALF_INPUT,
+                MELT_HALF_WORKSPACE,
+            )
+
+        # Return to the unchanged resolution expected by other effects.
+        cv2.resize(
+            MELT_HALF_INPUT,
+            (FRAME_W, FRAME_H),
+            dst=MUTABLE_PROCESSING_BUFFER,
+            interpolation=cv2.INTER_LINEAR,
+        )
+
+    else:
+        # Original-resolution Melt path.
+        np.copyto(
+            STATIC_MELT_SNAPSHOT,
+            MUTABLE_PROCESSING_BUFFER,
+        )
+
+        cv2.cvtColor(
+            STATIC_MELT_SNAPSHOT,
+            cv2.COLOR_BGR2GRAY,
+            dst=STATIC_MELT_GRAY_BUFFER,
+        )
+
+        drips = _collect_melt_drips(
+            melt_raw,
+            current_time,
+            h=FRAME_H,
+            w=FRAME_W,
+            gray_buffer=STATIC_MELT_GRAY_BUFFER,
+            stride_scale=1.0,
+        )
+
+        if drips:
+            _render_melt_drips_vectorized(
+                drips,
+                STATIC_MELT_SNAPSHOT,
+                MUTABLE_PROCESSING_BUFFER,
+                MELT_FULL_WORKSPACE,
+            )
+
+
+# end of adaptive-resolution vectorized collector - renderer - applier
 
 
 # RADICAL COMPUTATION UNROLLED ENGINE
