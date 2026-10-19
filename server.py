@@ -901,8 +901,8 @@ def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
         neon_bgr = (0.5 * NEON_PALETTES_FLOAT[p1] + 0.5 * NEON_PALETTES_FLOAT[p2])[
             None, :
         ]
-        work_view[:, 0] = 0.85 * work_view[:, 0] + 0.15 * neon_bgr
-        work_view[:, 3] = 0.85 * work_view[:, 3] + 0.15 * neon_bgr
+        work_view[:, 0] = 0.45 * work_view[:, 0] + 0.55 * neon_bgr
+        work_view[:, 3] = 0.45 * work_view[:, 3] + 0.55 * neon_bgr
 
         # Single contiguous slice write into active processing buffer
         MUTABLE_PROCESSING_BUFFER[y0:end_y, cols_slice] = np.clip(
