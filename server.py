@@ -223,7 +223,7 @@ MELT_STRIDE_LOW = 4
 MELT_STRIDE_MID = 3
 MELT_STRIDE_HIGH = 2  # Safe min stride for maintaining high FPS on Pi 5
 MAX_MELT_DRIPS = 100  # Balanced aesthetic ceiling
-MELT_DRIP_WIDTH = 6  # Thick, substantial drips
+MELT_DRIP_WIDTH = 8  # Thick, substantial drips
 
 # NOTE: Ensure your global buffer allocation matches MELT_DRIP_WIDTH!
 # e.g., MELT_DRIP_WORK_BUFFER = np.zeros((max_possible_height, MELT_DRIP_WIDTH, 3), dtype=np.float32)
