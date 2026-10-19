@@ -217,11 +217,11 @@ SLICE_MAX_H = 36  # [320x240: 12] [480x360: 18] [640x480: 24]
 SLICE_MAX_SHIFT = 50  # [320x240: 15] [480x360: 23] [640x480: 30]
 
 
-MELT_STRIDE_LOW = 3
-MELT_STRIDE_MID = 2
-MELT_STRIDE_HIGH = 1
-MAX_MELT_DRIPS = 120  # Tunable aesthetic ceiling: ensures rich density while guarding governor latency (10-15 FPS)
-MELT_DRIP_WIDTH = 6  # Tunable horizontal width of melt drips in pixels
+MELT_STRIDE_LOW = 5
+MELT_STRIDE_MID = 3
+MELT_STRIDE_HIGH = 2  # Safe stride: avoids the CPU-melting overhead of stride 1
+MAX_MELT_DRIPS = 90  # Stable ceiling for Pi 5 frame rates
+MELT_DRIP_WIDTH = 6  # Keeps drips wide and substantial
 
 # NEON_PALETTES defined in native OpenCV BGR format: [Blue, Green, Red]
 NEON_PALETTES = np.array(
@@ -889,11 +889,10 @@ def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
         work_view = MELT_DRIP_WORK_BUFFER[:num_rows, :MELT_DRIP_WIDTH]
         work_view[:] = w_floor * src_floor + w_ceil * src_ceil
 
-        # Uniform neon bleed applied across ALL columns of the drip work view
-        neon_bgr = (0.5 * NEON_PALETTES_FLOAT[p1] + 0.5 * NEON_PALETTES_FLOAT[p2])[
-            None, None, :
-        ]
-        work_view[:] = 0.65 * work_view[:] + 0.35 * neon_bgr
+        # OPTIMIZED IN-PLACE FULL-WIDTH NEON BLEED: avoids temporary array allocations
+        neon_color = 0.5 * NEON_PALETTES_FLOAT[p1] + 0.5 * NEON_PALETTES_FLOAT[p2]
+        work_view *= 0.65
+        work_view += 0.35 * neon_color
 
         # Single contiguous slice write into active processing buffer
         MUTABLE_PROCESSING_BUFFER[y0:end_y, cols_slice] = np.clip(
