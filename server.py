@@ -1396,7 +1396,8 @@ def _render_melt_drips(drips, h=FRAME_H, w=FRAME_W):
 
 
 # non-diagnostic version
-'''
+
+
 def apply_melt_pass(melt_raw: float, current_time: float):
     """Stage 6: Gravitational Melt Deformation Public Entry Point."""
     if melt_raw <= 0.03:
@@ -1406,10 +1407,10 @@ def apply_melt_pass(melt_raw: float, current_time: float):
     drips = _collect_melt_drips(melt_raw, current_time)
     if drips:
         _render_melt_drips(drips)
-'''
 
 
 # diagnostic version
+'''
 def apply_melt_pass(melt_raw: float, current_time: float):
     """Stage 6: Gravitational Melt Deformation Public Entry Point with Profiling."""
     if melt_raw <= 0.03:
@@ -1442,6 +1443,7 @@ def apply_melt_pass(melt_raw: float, current_time: float):
         f"Collect ({len(drips)} drips): {collect_ms:.2f}ms | "
         f"Render: {render_ms:.2f}ms"
     )
+'''
 
 
 # RADICAL COMPUTATION UNROLLED ENGINE
