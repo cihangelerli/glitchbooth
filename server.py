@@ -880,8 +880,8 @@ def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
 
         # In-place full-width neon bleed
         neon_color = 0.5 * NEON_PALETTES_FLOAT[p1] + 0.5 * NEON_PALETTES_FLOAT[p2]
-        work_view *= 0.65
-        work_view += 0.35 * neon_color
+        work_view *= 0.75
+        work_view += 0.25 * neon_color
 
         MUTABLE_PROCESSING_BUFFER[y0:end_y, cols_slice] = np.clip(
             np.round(work_view), 0, 255
