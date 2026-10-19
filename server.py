@@ -216,10 +216,12 @@ SLICE_MIN_H = 8  # [320x240: 4 ] [480x360: 6 ] [640x480: 8 ]
 SLICE_MAX_H = 36  # [320x240: 12] [480x360: 18] [640x480: 24]
 SLICE_MAX_SHIFT = 50  # [320x240: 15] [480x360: 23] [640x480: 30]
 
+# MELT DRIP ENGINE CONSTANTS
+# ==============================================================================
 
-MELT_STRIDE_LOW = 5
-MELT_STRIDE_MID = 3
-MELT_STRIDE_HIGH = 2  # Safe stride: maintains high FPS on Pi 5
+MELT_STRIDE_LOW = 3
+MELT_STRIDE_MID = 2
+MELT_STRIDE_HIGH = 1  # Safe stride: maintains high FPS on Pi 5
 MAX_MELT_DRIPS = 120  # Balanced aesthetic ceiling
 MELT_DRIP_WIDTH = 6  # Thick, substantial drips
 
