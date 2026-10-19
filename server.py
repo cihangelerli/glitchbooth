@@ -2391,8 +2391,8 @@ def background_loop():
                 effect_intensity = (
                     norm_knobs[0] * 0.10
                     + norm_knobs[1] * 0.07
-                    + norm_knobs[2] * 0.42
-                    + norm_knobs[4] * 0.27
+                    + norm_knobs[2] * 0.27
+                    + norm_knobs[4] * 0.42
                     + norm_knobs[3] * 0.07
                     + norm_knobs[5] * 0.07
                 )
