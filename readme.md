@@ -423,33 +423,14 @@ Note for Phases 2–3: after Phase 2, **corruption has no knob** until the fusio
 
 Numbers are **starting values** unless marked ✅; they are tunable and judged by eye (§9.2), not by tests.
 
-### 6.1 Melt (Phase 1: work still on-going; acceptance pending)
+### 6.1 Melt (Phase 1: implemented, accepted, end of phase, might have to come back to this to tune and change further down the overhaul in the future.)
 
 **Today (the current version of server.py).** Bright points in sampled columns become drip origins (column stride 6 / 3 / 2 by strength). Each drip is **8 columns wide** (`MELT_DRIP_WIDTH`), sampled from a pre-melt snapshot and stretched along its length; capped at `MAX_MELT_DRIPS = 100`; longer drips are drawn last. **Neon:** none for the first 75% of a drip's length, rising linearly to full neon at 95%, across the whole width (each neon color ach drip uses a mix of two palette colors).
 **Measured on the Pi 5** (synthetic scenes, kiosk stopped, 40 runs): 10–20 ms per frame; p95 20.2 ms at strength 1.0 with 100 drips; about 105–168 µs per drip; temperature 50–55 °C, no throttling. **Owner's verdict on the machine:** nearly happy, feels usable. A/B check against the original pre-Phase-1 code (84 knob and frame combinations with Melt dormant): identical, so nothing outside Melt changed.
 
-Changes have been made to melt to have an adaptive-resolution vectorized version of melt after testing multiple versions with different techniques. These tested versions of the melt code is commented out but still can be found in the server.py. The reason is that the numpy version of the code was causing frequent frame copy latency spikes and after extensive testing owner was able to identify that the render is taking up the time and causing the latency. Owner has also tested with the non-vectorized version and still found the same result, the culprit is the render.
+After various tries and testing, the owner has decided to leave the older versions of the melt code inside as commented out code, since it is possible that we will want to come back to this in the future. The owner will remove the unused, commented code after the whole overhaul is completed.
 
-Also initial findings suggest that when the melt knob is 0 there is no latency.
-
-For the non-vectorized versions, one particular and important discovery is that even when the config is 
-
-MELT_STRIDE_LOW = 6
-MELT_STRIDE_MID = 3
-MELT_STRIDE_HIGH = 2 
-MAX_MELT_DRIPS = 20
-MELT_DRIP_WIDTH = 20 
-
-there is still latency so owner's understanding is that the moment melt_raw > 0.03 triggers, even with just 20 drips:
-1. It instantly forces a full-frame buffer copy: STATIC_MELT_SNAPSHOT[:] = MUTABLE_PROCESSING_BUFFER[:].
-2. It runs a full-frame color conversion: cv2.cvtColor(...).
-3. It loops through hundreds of columns to scan for pixel thresholds using np.flatnonzero().
-
-The vectorized version behaves much better. read current server.py to understand the situation better.
-
-So the current melt implementation offers the best results that the owner has found with the given constraints. So now the adaptive-resolution version is introduced and currently under testing and also the owner is looking into improving the frame's visuals because when downscaled the frame does not look very good, it is a little bit too blurry and kind of muddy by employing post-process sharpening or other solutions or improving the melt code performance to not have to do the downscaling. 
-
-**This section (6.1) should be updated after phase 1 is completed before moved into the past development section.**
+The existing newest vectorized melt renderer is accepted for the moment, since the tests show it does not cause latency spikes and the owner accepts the look of the effect. It is possible that a more advanced effect will be developed in the future, but for now this is fine. This marks the end of Phase 1.
 
 **Remaining steps (R0 applies):**
 1. The owner finishes tuning on the machine. The tunables are the constants at the top of the Melt code (`MELT_DRIP_WIDTH`, strides, `MAX_MELT_DRIPS`, the neon ramp).

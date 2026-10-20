@@ -222,6 +222,7 @@ SLICE_MAX_SHIFT = 50  # [320x240: 15] [480x360: 23] [640x480: 30]
 # MELT DRIP ENGINE CONSTANTS
 # ==============================================================================
 
+"""
 # PREALLOCATED ARITHMETIC SCRATCH BUFFERS
 _RANGE_BUFFER = np.arange(FRAME_H, dtype=np.float32)
 _SCRATCH_NORM = np.empty(FRAME_H, dtype=np.float32)
@@ -236,7 +237,9 @@ _SCRATCH_NW_1D = np.empty(FRAME_H, dtype=np.float32)
 _SCRATCH_NEON_WEIGHT = np.empty((FRAME_H, 1, 1), dtype=np.float32)
 
 ## ABOVE ARE ADDED FOR THE PREALLOCATED BUFFERS VERSION OF MELT FOR TESTING
+"""
 
+"""
 # Vectorized Melt renderer: persistent OpenCV remap buffers.
 # Allocated once; reused on every frame.
 
@@ -266,6 +269,7 @@ _MELT_IDENTITY_Y = np.broadcast_to(
 ).copy()
 
 ## ABOVE ARE ADDED FOR THE VECTORIZED VERSION OF MELT FOR TESTING
+"""
 
 # addition for the newest vectorized melt
 
@@ -282,6 +286,7 @@ MELT_NEON_RAMP_SPAN = (
     0.20  # Length of the transition ramp to full neon (Start + Span should equal 1.0)
 )
 
+'''
 # below are added for adaptive scaling version for melt
 
 MELT_HALF_WIDTH = FRAME_W // 2
@@ -304,7 +309,6 @@ MELT_HALF_GRAY = np.empty(
     dtype=np.uint8,
     order="C",
 )
-
 
 def _make_melt_workspace(height, width, drip_width):
     """Allocate a reusable vectorized-render workspace once at startup."""
@@ -348,11 +352,10 @@ MELT_HALF_WORKSPACE = _make_melt_workspace(
 MELT_HALF_RESOLUTION_ACTIVE = False
 
 # end of what's added for adaptive scaling version for melt
-
-# NOTE: Ensure your global buffer allocation matches MELT_DRIP_WIDTH!
-# e.g., MELT_DRIP_WORK_BUFFER = np.zeros((max_possible_height, MELT_DRIP_WIDTH, 3), dtype=np.float32)
+'''
 
 # NEON_PALETTES defined in native OpenCV BGR format: [Blue, Green, Red]
+# these palettes might be shared later with future POSTERIZE effect addition
 NEON_PALETTES = np.array(
     [
         [0, 255, 255],  # Neon Yellow      (B: 0,   G: 255, R: 255)
@@ -398,16 +401,22 @@ STATIC_NOISE_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
 STATIC_MELT_GRAY_BUFFER = np.empty((FRAME_H, FRAME_W), dtype=np.uint8, order="C")
 
 # --- PHASE 1: MELT PERSISTENT GRAVITATIONAL DEFORMATION BUFFERS ---
-# NOTE: Ensure MELT_DRIP_WIDTH is defined before these lines!
+
 STATIC_MELT_SNAPSHOT = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
-MELT_DRIP_WORK_BUFFER = np.zeros((FRAME_H, MELT_DRIP_WIDTH, 3), dtype=np.float32)
 
 assert STATIC_MELT_SNAPSHOT.flags["C_CONTIGUOUS"], (
     "CRITICAL: STATIC_MELT_SNAPSHOT layout fault!"
 )
+
+# Used with the earlier versions of numpy based melt, vectorized melt. Not used in the current version.
+"""
+# NOTE: Ensure MELT_DRIP_WIDTH is defined before these lines!
+MELT_DRIP_WORK_BUFFER = np.zeros((FRAME_H, MELT_DRIP_WIDTH, 3), dtype=np.float32)
+
 assert MELT_DRIP_WORK_BUFFER.flags["C_CONTIGUOUS"], (
     "CRITICAL: MELT_DRIP_WORK_BUFFER layout fault!"
 )
+"""
 
 COMPRESSION_STAGE_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
 
@@ -917,7 +926,7 @@ def apply_datamosh(effect_val, current_time):
 # =========================================================================
 
 # original numpy-based melt code
-'''
+"""
 def _collect_melt_drips(
     melt_raw: float, current_time: float, h: int = FRAME_H, w: int = FRAME_W
 ):
@@ -1020,21 +1029,10 @@ def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
             np.round(work_view), 0, 255
         ).astype(np.uint8)
 
-
-def apply_melt_pass(melt_raw: float, current_time: float):
-    """Stage 6: Gravitational Melt Deformation Public Entry Point."""
-    if melt_raw <= 0.03:
-        return
-    STATIC_MELT_SNAPSHOT[:] = MUTABLE_PROCESSING_BUFFER[:]
-    cv2.cvtColor(STATIC_MELT_SNAPSHOT, cv2.COLOR_BGR2GRAY, dst=STATIC_MELT_GRAY_BUFFER)
-    drips = _collect_melt_drips(melt_raw, current_time)
-    if drips:
-        _render_melt_drips(drips)
-
-'''
+"""
 
 
-# melt collector used with the vectorized renderer
+# melt collector that can be used both with the vectorized and non-vectorized melt renderers
 """
 def _collect_melt_drips(
     melt_raw: float, current_time: float, h: int = FRAME_H, w: int = FRAME_W
@@ -1094,7 +1092,7 @@ def _collect_melt_drips(
 
 
 ### non-vectorized renderer version with non-localized buffers
-'''
+"""
 def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
     if not drips:
         return
@@ -1159,14 +1157,6 @@ def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
         np.multiply(w_floor, src_floor, out=work_view)
         work_view += w_ceil * src_ceil
 
-        """
-        # Gradient neon blend (0% at top 25%, ramping linearly to 100% at tip)
-        nw_1d = _SCRATCH_NW_1D[:num_rows]
-        np.subtract(norm_dist, 0.25, out=nw_1d)
-        nw_1d /= 0.75
-        np.clip(nw_1d, 0.0, 1.0, out=nw_1d)
-        """
-
         # Tunable gradient neon blend using top-level constants
         nw_1d = _SCRATCH_NW_1D[:num_rows]
         np.subtract(norm_dist, MELT_NEON_START_PCT, out=nw_1d)
@@ -1184,64 +1174,11 @@ def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
         MUTABLE_PROCESSING_BUFFER[y0:end_y, cols_slice] = np.clip(
             np.round(work_view), 0, 255
         ).astype(np.uint8)
-'''
+"""
 
-### non-vectorized melt collector and renderer version with localized buffers
+### non-vectorized melt renderer version with localized buffers
 
 """
-def _collect_melt_drips(
-    melt_raw: float, current_time: float, h: int = FRAME_H, w: int = FRAME_W
-):
-    max_melt_length = int(20 + melt_raw * (h * 0.85))
-    threshold = max(75, int(255 * (1.0 - melt_raw * 0.65)))
-    stride = (
-        MELT_STRIDE_LOW
-        if melt_raw < 0.35
-        else (MELT_STRIDE_MID if melt_raw < 0.7 else MELT_STRIDE_HIGH)
-    )
-    seed_step = max(2, int((1.1 - melt_raw) * 8))
-    max_seeds_per_column = 3 if melt_raw < 0.65 else 6
-    time_tick = int(current_time * 4) & 0xFF
-    g = STATIC_MELT_GRAY_BUFFER
-    col_seeds = []
-    for x0 in range(1, w - 2, stride):
-        ys = np.flatnonzero(g[:, x0] > threshold)
-        if ys.size > 0:
-            seeds = [
-                int(v) for v in ys[::seed_step][:max_seeds_per_column] if v < h - 4
-            ]
-            if seeds:
-                col_seeds.append((x0, seeds))
-    drips = []
-    for rank in range(max_seeds_per_column):
-        eligible = [(x0, seeds[rank]) for x0, seeds in col_seeds if rank < len(seeds)]
-        remaining = MAX_MELT_DRIPS - len(drips)
-        
-        if remaining <= 0:
-            break
-            
-        if len(eligible) > remaining:
-            step = len(eligible) / float(remaining)
-            eligible = [eligible[int(i * step)] for i in range(remaining)]
-            
-        for x0, start_y in eligible:
-            h1 = (x0 * 73856093) ^ (start_y * 19349663) ^ (time_tick * 83492791)
-            h2 = (x0 * 2654435761) ^ (start_y * 2246822519) ^ (time_tick * 3266489917)
-            rand_len_mult = (h1 % 1000) / 1000.0
-            rand_stretch_mult = ((h1 >> 10) % 1000) / 1000.0
-            p1 = (h2 >> 4) % len(NEON_PALETTES)
-            p2 = (p1 + 1 + ((h2 >> 12) % (len(NEON_PALETTES) - 1))) % len(NEON_PALETTES)
-            base_len = int(max_melt_length * 0.45)
-            rand_len = int(max_melt_length * 0.55 * rand_len_mult)
-            L = base_len + rand_len
-            if L <= 0:
-                continue
-            s = 1.0 + (rand_stretch_mult * 2.0)
-            reach = start_y + L
-            drips.append((reach, x0, start_y, L, s, p1, p2))
-        if len(drips) >= MAX_MELT_DRIPS:
-            break
-    return drips
 
 def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
     if not drips:
@@ -1479,7 +1416,7 @@ def _render_melt_drips(drips, h=FRAME_H, w=FRAME_W):
 '''
 
 
-# non-diagnostic melt applier version
+# non-diagnostic melt applier version (original) that can be used with numpy based and early vectorized versions
 
 '''
 def apply_melt_pass(melt_raw: float, current_time: float):
@@ -1848,6 +1785,7 @@ def apply_melt_pass(melt_raw: float, current_time: float):
 
 '''
 # end of adaptive-resolution vectorized collector - renderer - applier
+# =========================================================================
 
 # newest vectorized melt collector - renderer - applier
 
