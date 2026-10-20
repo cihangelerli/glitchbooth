@@ -39,6 +39,9 @@ import qrcode
 import requests
 import serial
 from escpos.printer import File
+
+# numpy as_strided based vectorized melt implementations for testing
+from numpy.lib.stride_tricks import as_strided
 from PIL import Image, ImageDraw, ImageFont
 
 # import gc
@@ -264,6 +267,11 @@ _MELT_IDENTITY_Y = np.broadcast_to(
 
 ## ABOVE ARE ADDED FOR THE VECTORIZED VERSION OF MELT FOR TESTING
 
+# addition for the newest vectorized melt
+
+MELT_CHUNK_ROWS = 4096  # drip-rows processed per chunk. Keeps temporaries in cache.
+# Tune 2048-16384 on the Pi; it only affects speed.
+
 MELT_STRIDE_LOW = 6
 MELT_STRIDE_MID = 3
 MELT_STRIDE_HIGH = 2  # Safe min stride for maintaining high FPS on Pi 5 - 1 GB is 2
@@ -273,7 +281,6 @@ MELT_NEON_START_PCT = 0.75  # Where neon begins: 0.0 = top of drip, 0.5 = halfwa
 MELT_NEON_RAMP_SPAN = (
     0.20  # Length of the transition ramp to full neon (Start + Span should equal 1.0)
 )
-
 
 # below are added for adaptive scaling version for melt
 
@@ -1521,7 +1528,7 @@ def apply_melt_pass(melt_raw: float, current_time: float):
 
 # adaptive-resolution vectorized collector - renderer - applier
 
-
+'''
 def _collect_melt_drips(
     melt_raw,
     current_time,
@@ -1836,7 +1843,231 @@ def apply_melt_pass(melt_raw: float, current_time: float):
             )
 
 
+'''
 # end of adaptive-resolution vectorized collector - renderer - applier
+
+# newest vectorized melt collector - renderer - applier
+
+# =========================================================================
+# ISOLATED GRAVITATIONAL MELT ENGINE (STAGE 6) -- VECTORIZED
+# =========================================================================
+# Drop-in replacement for _collect_melt_drips / _render_melt_drips in server.py.
+# apply_melt_pass() stays exactly as it is.
+#
+# Needs this extra import at the top of server.py:
+#     from numpy.lib.stride_tricks import as_strided
+#
+# Why: the old renderer made ~30 tiny NumPy calls per drip (~3,000 per frame
+# at the 100-drip cap). Small NumPy calls hold the GIL, so the pygame thread
+# had to wait for it. This version makes a few dozen large NumPy calls per
+# frame; those release the GIL while they run.
+#
+# Visual behaviour is kept: same seed selection, same hashing, same gravity
+# curve, same bilinear sampling, same neon ramp, same (reach, x0) draw order
+# so overlapping drips composite the same way.
+
+
+def _collect_melt_drips(
+    melt_raw: float, current_time: float, h: int = FRAME_H, w: int = FRAME_W
+):
+    """Seed discovery without a Python loop over columns.
+
+    Returns a float64 array of shape (n, 7):
+        [reach, x0, start_y, L, s, p1, p2]
+    or None when there is nothing to draw.
+    """
+    max_melt_length = int(20 + melt_raw * (h * 0.85))
+    threshold = max(75, int(255 * (1.0 - melt_raw * 0.65)))
+    stride = (
+        MELT_STRIDE_LOW
+        if melt_raw < 0.35
+        else (MELT_STRIDE_MID if melt_raw < 0.7 else MELT_STRIDE_HIGH)
+    )
+    seed_step = max(2, int((1.1 - melt_raw) * 8))
+    max_seeds_per_column = 3 if melt_raw < 0.65 else 6
+    time_tick = int(current_time * 4) & 0xFF
+
+    # One threshold over every sampled column at once.
+    mask = STATIC_MELT_GRAY_BUFFER[:, 1 : w - 2 : stride] > threshold  # (h, ncols)
+    col_idx, ys = np.nonzero(mask.T)  # ordered by column, then by y
+    if ys.size == 0:
+        return None
+
+    # Position of each hit inside its own column -> every seed_step-th hit,
+    # at most max_seeds_per_column per column, nothing in the bottom 4 rows.
+    counts = np.bincount(col_idx, minlength=mask.shape[1])
+    first = np.cumsum(counts) - counts
+    rank = np.arange(ys.size) - first[col_idx]
+    keep = (
+        (rank % seed_step == 0)
+        & (rank // seed_step < max_seeds_per_column)
+        & (ys < h - 4)
+    )
+    col_idx, ys, rank = col_idx[keep], ys[keep], rank[keep]
+    if ys.size == 0:
+        return None
+    seed_rank = rank // seed_step
+    xs = 1 + col_idx * stride
+
+    # Same ordering as before: all rank-0 seeds (by column), then rank-1, ...
+    order = np.lexsort((xs, seed_rank))
+    xs, ys, seed_rank = xs[order], ys[order], seed_rank[order]
+    bounds = np.searchsorted(seed_rank, np.arange(max_seeds_per_column + 1))
+
+    # Apply the drip cap rank by rank, thinning evenly when a rank overflows.
+    picked = []
+    total = 0
+    for r in range(max_seeds_per_column):
+        remaining = MAX_MELT_DRIPS - total
+        if remaining <= 0:
+            break
+        idx = np.arange(bounds[r], bounds[r + 1])
+        if idx.size > remaining:
+            step = idx.size / float(remaining)
+            idx = idx[(np.arange(remaining) * step).astype(np.int64)]
+        if idx.size:
+            picked.append(idx)
+            total += idx.size
+    if not picked:
+        return None
+    sel = np.concatenate(picked)
+
+    # Per-drip pseudo-random parameters (same integer hashes as before).
+    x = xs[sel].astype(np.int64)
+    y = ys[sel].astype(np.int64)
+    h1 = (x * 73856093) ^ (y * 19349663) ^ (time_tick * 83492791)
+    h2 = (x * 2654435761) ^ (y * 2246822519) ^ (time_tick * 3266489917)
+    rand_len_mult = (h1 % 1000) / 1000.0
+    rand_stretch_mult = ((h1 >> 10) % 1000) / 1000.0
+    n_pal = len(NEON_PALETTES)
+    p1 = (h2 >> 4) % n_pal
+    p2 = (p1 + 1 + ((h2 >> 12) % (n_pal - 1))) % n_pal
+    base_len = int(max_melt_length * 0.45)
+    rand_len = (max_melt_length * 0.55 * rand_len_mult).astype(np.int64)
+    L = base_len + rand_len
+    s = 1.0 + rand_stretch_mult * 2.0
+    reach = y + L
+
+    live = L > 0
+    out = np.column_stack((reach, x, y, L, s, p1, p2)).astype(np.float64)
+    return out[live] if not live.all() else out
+
+
+def _melt_window_view(buf, width: int, writeable: bool):
+    """View of a C-contiguous (H, W, 3) uint8 frame where view[y, x] is the
+    3*width bytes of `width` consecutive pixels starting at column x.
+    Lets one fancy-index gather/scatter move a whole drip row (8 px)."""
+    h, w = buf.shape[:2]
+    return as_strided(
+        buf,
+        shape=(h, w - width + 1, 3 * width),
+        strides=(buf.strides[0], 3, 1),
+        writeable=writeable,
+    )
+
+
+def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
+    if drips is None or len(drips) == 0:
+        return
+
+    # Draw order: ascending (reach, x0). Stable, so ties keep discovery order.
+    drips = drips[np.lexsort((drips[:, 1], drips[:, 0]))]
+
+    left = MELT_DRIP_WIDTH // 2
+    right = MELT_DRIP_WIDTH - left
+
+    x0 = drips[:, 1].astype(np.int32)
+    y0 = drips[:, 2].astype(np.int32)
+    L = drips[:, 3].astype(np.int32)
+    s = drips[:, 4].astype(np.float32)
+    p1 = drips[:, 5].astype(np.int32)
+    p2 = drips[:, 6].astype(np.int32)
+
+    nr = np.minimum(y0 + L, h) - y0  # rows each drip covers
+    ok = (x0 - left >= 0) & (x0 + right <= w) & (L > 0) & (y0 < h - 1) & (nr > 0)
+    if not ok.any():
+        return
+    if not ok.all():
+        x0, y0, L, s, p1, p2, nr = (a[ok] for a in (x0, y0, L, s, p1, p2, nr))
+
+    n = x0.size
+    total = int(nr.sum())
+
+    # ---- geometry: one flat row list covering every drip, in draw order ----
+    starts = np.cumsum(nr) - nr
+    did = np.repeat(np.arange(n, dtype=np.int32), nr)  # drip id per row
+    y_rel_i = np.arange(total, dtype=np.int32) - starts[did]  # row within drip
+    y_rel = y_rel_i.astype(np.float32)
+
+    norm = np.divide(y_rel, L.astype(np.float32)[did])
+    np.clip(norm, 0.0, 1.0, out=norm)
+
+    denom = np.sqrt(norm)
+    denom *= s[did]
+    denom += 1.0
+    np.maximum(denom, 1.0, out=denom)
+
+    y_float = np.divide(y_rel, denom)
+    y_float += y0.astype(np.float32)[did]
+    np.clip(y_float, 0.0, float(h - 1), out=y_float)
+
+    y_fl = np.floor(y_float)
+    w_ceil = y_float - y_fl
+    y_floor = y_fl.astype(np.int32)
+    y_ceil = np.minimum(y_floor + 1, h - 1)
+    y_dest = y0[did] + y_rel_i
+    x_start = (x0 - left)[did]
+
+    # ---- per-row blend weights --------------------------------------------
+    # out = (1-nw)*((1-wc)*floor_px + wc*ceil_px) + nw*neon
+    #     =  a*floor_px + b*ceil_px + nw*neon
+    nw = np.subtract(norm, np.float32(MELT_NEON_START_PCT))
+    nw /= np.float32(MELT_NEON_RAMP_SPAN)
+    np.clip(nw, 0.0, 1.0, out=nw)
+
+    one_minus_nw = 1.0 - nw
+    wt_floor = one_minus_nw * (1.0 - w_ceil)
+    wt_ceil = one_minus_nw * w_ceil
+
+    neon_color = 0.5 * NEON_PALETTES_FLOAT[p1] + 0.5 * NEON_PALETTES_FLOAT[p2]  # (n,3)
+    neon_term = nw[:, None] * neon_color[did]  # (total, 3)
+
+    # ---- pixels: gather, blend, scatter, in cache-sized chunks ------------
+    src_win = _melt_window_view(STATIC_MELT_SNAPSHOT, MELT_DRIP_WIDTH, False)
+    dst_win = _melt_window_view(MUTABLE_PROCESSING_BUFFER, MELT_DRIP_WIDTH, True)
+
+    for i in range(0, total, MELT_CHUNK_ROWS):
+        j = min(total, i + MELT_CHUNK_ROWS)
+        m = j - i
+        xs_c = x_start[i:j]
+
+        acc = src_win[y_floor[i:j], xs_c].astype(np.float32)  # (m, 24)
+        acc *= wt_floor[i:j, None]
+        tmp = src_win[y_ceil[i:j], xs_c].astype(np.float32)
+        tmp *= wt_ceil[i:j, None]
+        acc += tmp
+
+        acc3 = acc.reshape(m, MELT_DRIP_WIDTH, 3)
+        acc3 += neon_term[i:j, None, :]
+
+        np.rint(acc, out=acc)
+        np.clip(acc, 0.0, 255.0, out=acc)
+
+        # Rows are written in draw order, so later drips overwrite earlier
+        # ones exactly as the per-drip loop did.
+        dst_win[y_dest[i:j], xs_c] = acc.astype(np.uint8)
+
+
+def apply_melt_pass(melt_raw: float, current_time: float):
+    """Stage 6: Gravitational Melt Deformation Public Entry Point."""
+    if melt_raw <= 0.03:
+        return
+    STATIC_MELT_SNAPSHOT[:] = MUTABLE_PROCESSING_BUFFER[:]
+    cv2.cvtColor(STATIC_MELT_SNAPSHOT, cv2.COLOR_BGR2GRAY, dst=STATIC_MELT_GRAY_BUFFER)
+    drips = _collect_melt_drips(melt_raw, current_time)
+    # NOTE: drips is now a NumPy array (or None), so no `if drips:` truth test.
+    if drips is not None:
+        _render_melt_drips(drips)
 
 
 # RADICAL COMPUTATION UNROLLED ENGINE
