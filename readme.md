@@ -283,7 +283,7 @@ The Arduino (installed sketch = the one in `readme.md`, ✅) sends six 10-bit kn
 ### 3.5 Where knob labels live
 
 - `pygame_display.py` (`KNOB_ROWS`): ASCII Matrix, Signal Drift, Pixel Damage, Melt, Data Corruption, Chroma Shift.
-- `index.html` (served at `/`; label rows hard-coded): "EMPTY" for knob 0 (a mishap ✅), then Signal Drift, Pixel Damage, Melt, Data Corruption, Chroma Shift. It is **not in active use**: it is a **backup** for when the dedicated screen breaks, so it must still be correct if that happens. Its labels are updated together with the kiosk labels (as an approved change) and "EMPTY" becomes "ASCII Matrix". The physical knobs carry **stickers** (✅), which are easy to change.
+- `index.html` (served at `/`; label rows hard-coded): ASCII Matrix, Signal Drift, Pixel Damage, Melt, Data Corruption, Chroma Shift. It is **not in active use**: it is a **backup** for when the dedicated screen breaks, so it must still be correct if that happens. Its labels are updated together with the kiosk labels (as an approved change). The physical knobs carry **stickers** (✅), which are easy to change.
 - `telemetry.py`: `ALL_EFFECTS` is indexed by knob number (see 3.6).
 
 ### 3.6 Telemetry today (`telemetry.py`, "v2.7")
@@ -319,7 +319,7 @@ The Arduino (installed sketch = the one in `readme.md`, ✅) sends six 10-bit kn
 **ALREADY IMPLEMENTED!**
 
 - The display targets **60 FPS**; the pipeline runs at 10–15 FPS. On every display tick (4 to 6 per pipeline frame) the display copies the 640×480 frame from `UI_DISPLAY_BUFFER`, wraps it as a surface, mirrors it, scales it (640×480 to 640×480) and blits it, **even if no new pipeline frame has arrived**.
-- The message `[PERF WARNING] Frame copy latency spike` is printed by the display thread whenever that copy takes more than **2 ms**. In my test on a PC the same copy takes about 0.12 ms, so the 2.2–3.9 ms seen in the console photo are most likely **waiting** (competition for the CPU or for Python's global interpreter lock with the pipeline thread), not the copy itself. **Not proven on the Pi**; the experiment in §10 will show whether Melt or another effect is responsible.
+- **SOLVED** The message `[PERF WARNING] Frame copy latency spike` is printed by the display thread whenever that copy takes more than **2 ms**. In my test on a PC the same copy takes about 0.12 ms, so the 2.2–3.9 ms seen in the console photo are most likely **waiting** (competition for the CPU or for Python's global interpreter lock with the pipeline thread), not the copy itself. **Not proven on the Pi**; the experiment in §10 will show whether Melt or another effect is responsible.
 - A warning is printed for **every** such tick (the photo shows dozens in a row), which buries real messages on the console.
 - The server writes `UI_DISPLAY_BUFFER` without holding `frame_lock` (the lock is only taken for the JPEG hand-off), so the display can occasionally copy a half-updated frame (one torn display frame). Not observed; low severity.
 - `FRAME_ID` increases only when a JPEG is encoded, so it cannot tell the display that a new frame is ready.
@@ -728,7 +728,7 @@ Reading the result: about as many warnings in run 1 as in run 2 means Melt is no
 | :-- | :-- | :-- | :-- | :-- |
 | P1-01 | Update `test_melt_phase1.py` to the owner's Melt (8-column slices, neon ramp, edge bounds 4 to 636) | test file only | none | now |
 | P1-02 | Benchmark: verdict advisory with a small tolerance; add a whole-pipeline mode so Melt is judged against the full frame time; print per-drip cost; default budget tied to the 15 FPS frame interval | `test_melt_benchmark.py` only | none | now |
-| PX-01 | Display efficiency (outline): the server publishes a new-frame counter; the display copies, mirrors and scales only when it changes and otherwise re-blits the cached picture; the server takes `frame_lock` while updating the shared buffer; `PERF WARNING` becomes a summary every 10 s. Lossless (same picture). Measure before and after. | `server.py`, `pygame_display.py` | none intended | after the event |
+| PX-01 | Display efficiency (outline): the server publishes a new-frame counter; the display copies, mirrors and scales only when it changes and otherwise re-blits the cached picture; the server takes `frame_lock` while updating the shared buffer; `PERF WARNING` becomes a summary every 10 s. Lossless (same picture). Measure before and after. | `server.py`, `pygame_display.py` | none intended | SOLVED FOR THE MOMENT! |
 | PX-02 | Logging (outline): either send service output to the journal (`StandardOutput=journal`; requires the warning flood to be rate-limited first) or write a rotating log file; plus a periodic performance summary | service file or `server.py` | none | after the event |
 | PX-03 | Melt render speed (only if wanted): fewer, larger operations; a candidate is OpenCV's remap, which has a tiny sub-pixel rounding difference and would need your visual approval | `server.py` | possibly tiny | after the event, only if needed |
 
