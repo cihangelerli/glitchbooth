@@ -279,7 +279,7 @@ MELT_CHUNK_ROWS = 4096  # drip-rows processed per chunk. Keeps temporaries in ca
 MELT_STRIDE_LOW = 6
 MELT_STRIDE_MID = 3
 MELT_STRIDE_HIGH = 2  # Safe min stride for maintaining high FPS on Pi 5 - 1 GB is 2
-MAX_MELT_DRIPS = 100  # Balanced aesthetic ceiling 100
+MAX_MELT_DRIPS = 120  # Balanced aesthetic ceiling 100
 MELT_DRIP_WIDTH = 10  # Thick, substantial drips when the number is bigger. 75 drips and 10 width, 100 drips and 8 width are good combos
 MELT_NEON_START_PCT = 0.85  # Where neon begins: 0.0 = top of drip, 0.5 = halfway down
 MELT_NEON_RAMP_SPAN = (
