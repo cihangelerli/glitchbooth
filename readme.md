@@ -269,12 +269,12 @@ There is **no Posterize** in the code today.
 
 ### 3.3 The strength-vs-quality balancer (the "governor")
 
-`effect_intensity` is a weighted sum **by knob index**: knob0 0.10 (ASCII), knob1 0.07 (drift), knob2 0.42 (corruption + datamosh), knob3 0.07 (pixelation), knob4 0.27 (melt), knob5 0.07 (chroma). It drives:
+`effect_intensity` is a weighted sum **by knob index**: knob0 0.10 (ASCII), knob1 0.07 (drift), knob2 0.27 (corruption + datamosh), knob3 0.07 (pixelation), knob4 0.42 (melt), knob5 0.07 (chroma). It drives:
 1. the **loop frame rate**: ≥ 0.75 → 10 FPS, ≥ 0.55 → 12 FPS, otherwise 15 FPS;
 2. the **stream JPEG quality**: `65 − 30 × intensity`, clamped to 35–65;
 3. the **stream preview width** (downscaled at ≥ 0.55).
 
-Observations (to verify, not yet measured): the Pygame kiosk copies `UI_DISPLAY_BUFFER` directly, so items 2 and 3 appear to affect only the web stream; the balancer is **predicted** from knob positions, not **measured**, so it can lower the frame rate even when the Pi has headroom; its weights belong to today's effects; and the camera is requested at 10 FPS (`CAP_PROP_FPS`), so a 12–15 FPS loop may process the same camera frame more than once, which matters for motion-based effects like Data Mosh. The improvement program is in §5.6. Note: Melt alone (weight 0.27) never leaves the 15 FPS tier, so its whole cost has to fit inside a 66.7 ms frame together with whatever else is active.
+Observations (to verify, not yet measured): the Pygame kiosk copies `UI_DISPLAY_BUFFER` directly, so items 2 and 3 appear to affect only the web stream; the balancer is **predicted** from knob positions, not **measured**, so it can lower the frame rate even when the Pi has headroom; its weights belong to today's effects; and the camera is requested at 10 FPS (`CAP_PROP_FPS`), so a 12–15 FPS loop may process the same camera frame more than once, which matters for motion-based effects like Data Mosh. The improvement program is in §5.6. 
 
 ### 3.4 Input hardware
 
@@ -315,6 +315,8 @@ The Arduino (installed sketch = the one in `readme.md`, ✅) sends six 10-bit kn
 - Not verified: whether other pages of the site read `stats.json` too.
 
 ### 3.9 Display loop and frame hand-off (`pygame_display.py`, `server.py`)
+
+**ALREADY IMPLEMENTED!**
 
 - The display targets **60 FPS**; the pipeline runs at 10–15 FPS. On every display tick (4 to 6 per pipeline frame) the display copies the 640×480 frame from `UI_DISPLAY_BUFFER`, wraps it as a surface, mirrors it, scales it (640×480 to 640×480) and blits it, **even if no new pipeline frame has arrived**.
 - The message `[PERF WARNING] Frame copy latency spike` is printed by the display thread whenever that copy takes more than **2 ms**. In my test on a PC the same copy takes about 0.12 ms, so the 2.2–3.9 ms seen in the console photo are most likely **waiting** (competition for the CPU or for Python's global interpreter lock with the pipeline thread), not the copy itself. **Not proven on the Pi**; the experiment in §10 will show whether Melt or another effect is responsible.
@@ -425,17 +427,17 @@ Numbers are **starting values** unless marked ✅; they are tunable and judged b
 
 ### 6.1 Melt (Phase 1: implemented, accepted, end of phase, might have to come back to this to tune and change further down the overhaul in the future.)
 
-**Today (the current version of server.py).** Bright points in sampled columns become drip origins (column stride 6 / 3 / 2 by strength). Each drip is **8 columns wide** (`MELT_DRIP_WIDTH`), sampled from a pre-melt snapshot and stretched along its length; capped at `MAX_MELT_DRIPS = 100`; longer drips are drawn last. **Neon:** none for the first 75% of a drip's length, rising linearly to full neon at 95%, across the whole width (each neon color ach drip uses a mix of two palette colors).
+**Today (the current version of server.py).** Bright points in sampled columns become drip origins (column stride 6 / 3 / 2 by strength). Each drip is **8 columns wide** (`MELT_DRIP_WIDTH`), sampled from a pre-melt snapshot and stretched along its length; capped at `MAX_MELT_DRIPS = 100`; longer drips are drawn last. **Neon:** none for the first 75% of a drip's length, rising linearly to full neon at 95%, across the whole width (each neon color each drip uses a mix of two palette colors).
 **Measured on the Pi 5** (synthetic scenes, kiosk stopped, 40 runs): 10–20 ms per frame; p95 20.2 ms at strength 1.0 with 100 drips; about 105–168 µs per drip; temperature 50–55 °C, no throttling. **Owner's verdict on the machine:** nearly happy, feels usable. A/B check against the original pre-Phase-1 code (84 knob and frame combinations with Melt dormant): identical, so nothing outside Melt changed.
 
 After various tries and testing, the owner has decided to leave the older versions of the melt code inside as commented out code, since it is possible that we will want to come back to this in the future. The owner will remove the unused, commented code after the whole overhaul is completed.
 
 The existing newest vectorized melt renderer is accepted for the moment, since the tests show it does not cause latency spikes and the owner accepts the look of the effect. It is possible that a more advanced effect will be developed in the future, but for now this is fine. This marks the end of Phase 1.
 
-**Remaining steps (R0 applies):**
+**Remaining steps - After Completion of the whole Overhaul:**
 1. The owner finishes tuning on the machine. The tunables are the constants at the top of the Melt code (`MELT_DRIP_WIDTH`, strides, `MAX_MELT_DRIPS`, the neon ramp).
-2. No need to update the melt test since the owner is already testing versions and recording results on the hardware (the benchmark result is only meant to be advisory anyway since the only way to really tell if it is good is to see it working on the hardware and with the kiosk and the owner has already accepted the current version).
-3. Acceptance: owner approval on the booth screen. Further tuning is allowed after the event.
+2. No need to update the melt tests since the owner is already testing versions and recording results on the hardware (the benchmark result is only meant to be advisory anyway since the only way to really tell if it is good is to see it working on the hardware and with the kiosk and the owner has already accepted the current version).
+3. Final Acceptance: owner approval on the booth screen. Further tuning is allowed after the event.
 
 **Observations (no action required):** each drip has one gradient neon color, so the old gradient between the two colors along the drip is gone (cheap to restore if wanted). With width 8 and strides 2–4 neighboring drips overlap a lot, so pixels are drawn several times (cost, little visible change). If this is important for the performance, then it should be looked into making the overlap smaller or non-existent by more careful calculation. Drips cannot start in the outer 4 columns on either side. On solid bright areas all drips still start on one row, and lengths still change together four times a second.
 
@@ -562,7 +564,7 @@ Today is **D-5**. The freeze is **D-1** (no code changes; smoke test only). The 
 **Postponed until after the event:** per-effect cost table, knob-noise probe, contact-sheet tool beyond what Phases 1–3 need.
 
 ### Phase 1: Finish Melt (see §6.1)
-**Status:** implemented and owner-tuned; tests need updating (P1-01, P1-02). **Exit:** owner accepts on the booth screen.
+**Status:** implemented, accepted, end of phase... This marks the end of Phase 1. **Exit:** owner accepts on the booth screen.
 
 ### Phase 2: Decouple and improve Data Mosh (§6.3)
 **Steps:** (1) design proposal for the look and its parameters; the owner approves it (optional scratch previews on synthetic motion if the owner wants them); (2) Change Proposal for the code (new Data Mosh function per R13, coupling removed, knob 2 wired to it, labels in `pygame_display.py` and `index.html` updated, "EMPTY" fixed; corruption left unwired); (3) approved changes applied; (4) tests and Pi measurements; (5) the owner judges and tunes the look live on the booth, including the Data Mosh position test A/B/C (§6.3).
@@ -654,6 +656,8 @@ Never run the service and a manual copy at the same time: they would fight over 
 
 Reading the result: about as many warnings in run 1 as in run 2 means Melt is not the cause (the display loop itself is). Many more in run 2 means Melt's many small Python operations are starving the display thread. Also run `vcgencmd get_throttled` afterwards.
 
+**!CONDUCTED!**
+
 **Health:** `vcgencmd measure_temp`, `vcgencmd get_throttled`.
 
 **Event freeze.** One day before the event nothing changes. After the freeze begins only smoke tests (§9.3) are allowed.
@@ -715,7 +719,8 @@ Reading the result: about as many warnings in run 1 as in run 2 means Melt is no
 | ID | Question | Why it matters |
 | :-- | :-- | :-- |
 | D23 | Should Data Mosh sit **after Melt**? Nothing to answer now: it is decided by the live A/B/C test in Phase 2 (§6.3). | Order of effects |
-| Q11 | Is the current Melt (8-px drips, 100 drips, neon ramp to full at the tip) **your accepted look**, so the tests and benchmark can be updated to it, or do you plan more changes first? | P1-01 and P1-02 depend on it |
+| Q11 | Is the current Melt (8-px drips, 100 drips, neon ramp to full at the tip) **your accepted look**, so the tests and benchmark can be updated to it, or do you plan more changes first? | P1-01 and P1-02 depend on it | 
+**for Q11, P1-01, P1-02, P1-03: Phase 1 Complete. No need to update the tests for now. Later tuning might be done after the completion of the whole Overhaul. The Proposals are kept for documentation only.**
 
 ### 11.3 Pending proposals (reply `APPROVED <id>` to start; nothing has been changed)
 
@@ -748,10 +753,11 @@ Reading the result: about as many warnings in run 1 as in run 2 means Melt is no
 
 | Group | Name | Starting value |
 | :-- | :-- | :-- |
+| Melt | `MELT_CHUNK_ROWS` | 4096 (owner) | # drip-rows processed per chunk. Keeps temporaries in cache.
 | Melt | `MAX_MELT_DRIPS` | 100 (owner) |
 | Melt | `MELT_DRIP_WIDTH` | 8 columns (owner) |
-| Melt | neon ramp | 0% until 25% of the drip length, 100% at the tip (owner) |
-| Melt | `MELT_STRIDE_LOW/MID/HIGH` | 4 / 3 / 2 (owner) |
+| Melt | neon ramp | 0% neon until 75%, ramping to 100% full neon at 95% (owner) |
+| Melt | `MELT_STRIDE_LOW/MID/HIGH` | 6 / 3 / 2 (owner) |
 | Data Mosh | motion threshold range | 18 to 58 (today) |
 | Data Mosh | `MOSH_VECTOR_PX` | 4 (today) |
 | Data Mosh | `MOSH_HOLD_FRAMES` | 4 to 12, rising with strength |
@@ -774,6 +780,10 @@ Reading the result: about as many warnings in run 1 as in run 2 means Melt is no
 ## Appendix B: Buffer inventory rule
 
 A table of every module-level buffer (name, shape, owner effect, who may share it, lifetime), updated in each phase that adds or removes a buffer. Known sharing: `STATIC_MELT_GRAY_BUFFER` is used by Melt during the frame loop and by capture print preparation, sequentially on the same thread. Pixelation keeps `COMPRESSION_STAGE_BUFFER`. Data Mosh and Posterize need their own working buffers (decided during prototyping).
+
+STATIC_MELT_SNAPSHOT((480, 640, 3) uint8, ~921.6 KB), is actively allocated and used by the vectorized Melt pass.
+
+MELT_DRIP_WORK_BUFFER was commented out / retired with the adoption of the as_strided chunk renderer.
 
 ---
 
