@@ -89,9 +89,11 @@ VIDEO_RECT = pygame.Rect(PADDING_LEFT, PADDING_TOP, VIDEO_RENDER_W, VIDEO_RENDER
 # LIVE FEED QR GUIDE INDICATOR CONFIGURATION
 # ==============================================================================
 QR_GUIDE_ENABLED = True
-QR_GUIDE_SIZE    = 130        # px — square side length
-QR_GUIDE_MARGIN  = 2         # px — gap from image edges
-QR_GUIDE_CORNER  = "bottom-left"  # Options: "bottom-left", "bottom-right", "top-left", "top-right"
+QR_GUIDE_SIZE = 130  # px — square side length
+QR_GUIDE_MARGIN = 2  # px — gap from image edges
+QR_GUIDE_CORNER = (
+    "bottom-left"  # Options: "bottom-left", "bottom-right", "top-left", "top-right"
+)
 
 # Ticker Tape Presentation Layer Geometry
 TICKER_ITEM_W = 240
@@ -115,6 +117,8 @@ local_frame_buffer = np.empty((OP_FRAME_H, OP_FRAME_W, 3), dtype=np.uint8, order
 
 # Local presentation tracking registers
 last_valid_surface = None
+last_seq = -1  # NEW: last server.UI_FRAME_SEQ we copied
+scaled_video_surface = None  # NEW: cached mirrored + scaled video frame
 last_processed_session_id = None
 latest_display_surface = None
 latest_qr_surface = None
@@ -276,23 +280,25 @@ if QR_GUIDE_ENABLED:
     except Exception:
         qr_guide_font = pygame.font.Font(None, int(QR_GUIDE_SIZE * 0.6))
     qr_text_surf = qr_guide_font.render("QR", True, (0, 0, 0))
-    qr_text_rect = qr_text_surf.get_rect(center=(QR_GUIDE_SIZE // 2, QR_GUIDE_SIZE // 2))
+    qr_text_rect = qr_text_surf.get_rect(
+        center=(QR_GUIDE_SIZE // 2, QR_GUIDE_SIZE // 2)
+    )
     qr_guide_surface.blit(qr_text_surf, qr_text_rect)
     _corner = QR_GUIDE_CORNER.lower()
     if _corner == "bottom-right":
         QR_GUIDE_POS = (
-            VIDEO_RECT.right  - QR_GUIDE_SIZE - QR_GUIDE_MARGIN,
+            VIDEO_RECT.right - QR_GUIDE_SIZE - QR_GUIDE_MARGIN,
             VIDEO_RECT.bottom - QR_GUIDE_SIZE - QR_GUIDE_MARGIN,
         )
     elif _corner == "top-left":
         QR_GUIDE_POS = (
             VIDEO_RECT.left + QR_GUIDE_MARGIN,
-            VIDEO_RECT.top  + QR_GUIDE_MARGIN,
+            VIDEO_RECT.top + QR_GUIDE_MARGIN,
         )
     elif _corner == "top-right":
         QR_GUIDE_POS = (
             VIDEO_RECT.right - QR_GUIDE_SIZE - QR_GUIDE_MARGIN,
-            VIDEO_RECT.top   + QR_GUIDE_MARGIN,
+            VIDEO_RECT.top + QR_GUIDE_MARGIN,
         )
     else:  # default: bottom-left
         QR_GUIDE_POS = (
@@ -473,9 +479,7 @@ try:
             current_mode = server.ACTIVE_SESSION["mode"]
             current_session_id = server.ACTIVE_SESSION["session_id"]
             countdown_val = server.ACTIVE_SESSION["countdown_remaining"]
-            countdown_start_time = server.ACTIVE_SESSION.get(
-                "countdown_start_time", 0
-            )
+            countdown_start_time = server.ACTIVE_SESSION.get("countdown_start_time", 0)
             upload_status = server.ACTIVE_SESSION.get("upload_status", "SUCCESS")
             current_knobs = server.ACTIVE_SESSION.get("knobs", [0] * 6)
 
@@ -492,27 +496,26 @@ try:
         # ----------------------------------------------------------------------
         if current_mode in ("live", "pre-capture-countdown", "countdown"):
             # Attempt non-blocking lock acquisition to secure presentation smoothness
+            new_frame = False
             lock_acquired = server.frame_lock.acquire(blocking=False)
             if lock_acquired:
                 try:
-                    # --- MICRO-PROFILING HOOK ---
-                    # Profiles memory footprint bandwidth timings for the 640x480x3 frame copies
-                    t_start = time.perf_counter()
-
-                    # Direct, fast memory copy directly inside lock context boundaries
-                    local_frame_buffer[:] = server.UI_DISPLAY_BUFFER
-
-                    t_duration = time.perf_counter() - t_start
-                    if (
-                        t_duration > 0.002
-                    ):  # Log warning flags if copy exceeds 2.0ms window
-                        print(
-                            f"[PERF WARNING] Frame copy latency spike detected: {t_duration * 1000:.2f}ms"
-                        )
-
+                    seq = server.UI_FRAME_SEQ
+                    if seq != last_seq:
+                        new_frame = True
+                        # --- MICRO-PROFILING HOOK ---
+                        t_start = time.perf_counter()
+                        local_frame_buffer[:] = server.UI_DISPLAY_BUFFER
+                        t_duration = time.perf_counter() - t_start
+                        if t_duration > 0.002:
+                            print(
+                                f"[PERF WARNING] Frame copy latency spike detected: {t_duration * 1000:.2f}ms"
+                            )
+                        last_seq = seq
                 finally:
                     server.frame_lock.release()
 
+            if new_frame:
                 # Materialize surface wrapper via boot-validated configuration routing
                 if USE_FROMBUFFER:
                     raw_video_surface = pygame.image.frombuffer(
@@ -524,16 +527,17 @@ try:
                     )
                 last_valid_surface = raw_video_surface
             else:
-                # Fallback implementation: Render last verified frame to sustain steady 60Hz cadence
+                # No new backend frame (or backend holds the lock): reuse last verified frame
                 raw_video_surface = last_valid_surface
 
             if raw_video_surface is not None:
-                mirrored_video_surface = pygame.transform.flip(
-                    raw_video_surface, True, False
-                )
-                scaled_video_surface = pygame.transform.scale(
-                    mirrored_video_surface, (VIDEO_RENDER_W, VIDEO_RENDER_H)
-                )
+                if new_frame or scaled_video_surface is None:
+                    mirrored_video_surface = pygame.transform.flip(
+                        raw_video_surface, True, False
+                    )
+                    scaled_video_surface = pygame.transform.scale(
+                        mirrored_video_surface, (VIDEO_RENDER_W, VIDEO_RENDER_H)
+                    )
                 virtual_canvas.blit(scaled_video_surface, VIDEO_RECT)
             else:
                 pygame.draw.rect(virtual_canvas, (20, 20, 25), VIDEO_RECT)

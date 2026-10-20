@@ -539,6 +539,9 @@ ACTIVE_SESSION = {
 
 mode_lock = threading.Lock()
 frame_lock = threading.Lock()
+UI_FRAME_SEQ = (
+    0  # NEW: bumped (under frame_lock) each time UI_DISPLAY_BUFFER is fully rewritten
+)
 cam_raw_lock = threading.Lock()
 
 printer_hardware_lock = threading.Lock()
@@ -2926,6 +2929,7 @@ def upload_queue_worker():
 
 def background_loop():
     global last_button_state, capture_lock_until, FRAME_ID
+    global UI_FRAME_SEQ  # NEW
     # Disabling button-knobs combo shutdown feature
     # global shutdown_hold_start
     global SHARED_JPEG_STREAM_BUFFER, SHARED_JPEG_ARRAY
@@ -3024,18 +3028,23 @@ def background_loop():
             except Exception:
                 effect_intensity = 0.5
 
-            if loop_mode in ["countdown", "processing", "latest"]:
-                UI_DISPLAY_BUFFER[:] = FROZEN_DISPLAY_BUFFER[:]
-                if loop_mode == "countdown":
-                    if (loop_monotonic - c_start) < FLASH_DURATION:
-                        UI_DISPLAY_BUFFER.fill(255)  # Pure white camera flash
-                    else:
-                        cv2.convertScaleAbs(
-                            UI_DISPLAY_BUFFER, dst=UI_DISPLAY_BUFFER, alpha=0.4, beta=0
-                        )
-            else:
-                # Live preview used in "live" AND "pre-capture-countdown"
-                UI_DISPLAY_BUFFER[:] = MUTABLE_PROCESSING_BUFFER[:]
+            with frame_lock:
+                if loop_mode in ["countdown", "processing", "latest"]:
+                    UI_DISPLAY_BUFFER[:] = FROZEN_DISPLAY_BUFFER[:]
+                    if loop_mode == "countdown":
+                        if (loop_monotonic - c_start) < FLASH_DURATION:
+                            UI_DISPLAY_BUFFER.fill(255)  # Pure white camera flash
+                        else:
+                            cv2.convertScaleAbs(
+                                UI_DISPLAY_BUFFER,
+                                dst=UI_DISPLAY_BUFFER,
+                                alpha=0.4,
+                                beta=0,
+                            )
+                else:
+                    # Live preview used in "live" AND "pre-capture-countdown"
+                    UI_DISPLAY_BUFFER[:] = MUTABLE_PROCESSING_BUFFER[:]
+                UI_FRAME_SEQ += 1
 
             stream_jpeg_quality = max(35, min(65, int(65 - (effect_intensity * 30))))
 
