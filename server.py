@@ -220,8 +220,8 @@ MOSH_BLEED_MAX = 0.9  # bleed mix = MAX * strength (0-1)
 MOSH_RNG_SEED = (
     None  # None = fresh entropy each start; tests reseed via seed_private_rngs()
 )
-MOSH_CELL_H = 32  # [320x240: 16] [480x360: 24] [640x480: 32]
-MOSH_CELL_W = 24  # [320x240: 12] [480x360: 18] [640x480: 24]
+MOSH_CELL_H = 16  # [320x240: 16] [480x360: 24] [640x480: 32]
+MOSH_CELL_W = 12  # [320x240: 12] [480x360: 18] [640x480: 24]
 
 # --- Packet Corruption (values are exactly the old inline stage) ------------------
 CORRUPTION_CELL_H = 32
