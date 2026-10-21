@@ -550,7 +550,7 @@ SPARK_INTERVAL = 14  # Will dynamically re-roll between 7 and 17
 
 # PATH B STABLE GLITCH STORAGE (ZERO RUNTIME HEAP CHURN)
 # =========================================================================
-MAX_GLITCHES = 11
+MAX_GLITCHES = 13
 
 glitch_active = np.zeros(MAX_GLITCHES, dtype=bool)
 glitch_type = np.zeros(MAX_GLITCHES, dtype=np.uint8)
