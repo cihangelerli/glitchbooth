@@ -191,8 +191,8 @@ FRAME_W = 640
 # PHASE 2 TUNABLES: EFFECT WIRING, DATA MOSH, PACKET CORRUPTION (readme R7)
 # ==============================================================================
 # --- wiring: which knob (0-5) drives which effect, or None = not connected -------
-DATAMOSH_KNOB = None
-PACKET_CORRUPTION_KNOB = 2  # standalone effect, ready: set to a knob index to connect it, "None" if not connected, 0-5 to connect to a knob
+DATAMOSH_KNOB = 2
+PACKET_CORRUPTION_KNOB = 5  # standalone effect, ready: set to a knob index to connect it, "None" if not connected, 0-5 to connect to a knob
 
 # --- Data Mosh -------------------------------------------------------------------
 # Where in the pipeline it runs:
@@ -549,6 +549,7 @@ clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
 SPARK_COUNTER = 0
 SPARK_INTERVAL = 14  # Will dynamically re-roll between 7 and 17
 
+"""
 # PATH B STABLE GLITCH STORAGE (ZERO RUNTIME HEAP CHURN)
 # =========================================================================
 MAX_GLITCHES = 13
@@ -560,6 +561,7 @@ glitch_y = np.zeros(MAX_GLITCHES, dtype=np.int16)
 glitch_size = np.zeros(MAX_GLITCHES, dtype=np.int16)
 glitch_life = np.zeros(MAX_GLITCHES, dtype=np.int16)
 glitch_max = np.zeros(MAX_GLITCHES, dtype=np.int16)
+"""
 
 # ATOMIC REFERENCE GLOBALS & PIPELINE LOCKS
 # ==================================================
@@ -988,10 +990,18 @@ class DataMoshEngine:
 
         # ---- 2. newly held cells start from the picture of just before the motion ----
         # (`hold` already is that picture; each new cell only needs a drag direction)
+        """
         if new_cells.any():
             count = int(new_cells.sum())
             self.vx[new_cells] = np.where(self.rng.random(count) > 0.5, vec, -vec)
         self.timer[motion] = hold_frames
+        """
+        if new_cells.any():
+            count = int(new_cells.sum())
+            self.vx[new_cells] = np.where(self.rng.random(count) > 0.5, vec, -vec)
+            self.timer[new_cells] = (
+                hold_frames  # Only new cells get the timer; active cells count down freely
+            )
         active = self.timer > 0
         band = None
 
