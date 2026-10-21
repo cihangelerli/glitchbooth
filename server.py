@@ -204,9 +204,9 @@ MOSH_DORMANT_BELOW = (
     0.02  # strength = (knob/1023)**2 below this cancels everything at once
 )
 MOSH_THRESH_BASE = 18  # motion threshold = BASE + (1 - strength) * SPAN   (18 .. 58)
-MOSH_THRESH_SPAN = 57
+MOSH_THRESH_SPAN = 77
 MOSH_HOLD_MIN_FRAMES = 17  # hold time rises from MIN to MAX with strength (1-60)
-MOSH_HOLD_MAX_FRAMES = 49
+MOSH_HOLD_MAX_FRAMES = 57
 MOSH_VECTOR_PX = 7  # horizontal drag per frame (1-8)
 MOSH_DRAG_NEW_WEIGHT = (
     161 / 256
@@ -230,11 +230,11 @@ CORRUPTION_GRID_H = FRAME_H // CORRUPTION_CELL_H
 CORRUPTION_GRID_W = FRAME_W // CORRUPTION_CELL_W
 CORRUPTION_CLEAR_BELOW = 0.01  # below this strength all damage is cleared
 CORRUPTION_SPAWN_ABOVE = 0.012  # new damage only spawns above this strength
-CORRUPTION_SPAWN_RATE = 0.33  # spawn chance per frame = strength * RATE
+CORRUPTION_SPAWN_RATE = 0.43  # spawn chance per frame = strength * RATE
 CORRUPTION_SQUARE_PROB = 0.80  # square block (else a full-height column)
 CORRUPTION_SQUARE_MAX_CELLS = 4  # square block is 1..N cells each way
 CORRUPTION_THIN_COLUMN_PROB = 0.9  # column is 1 cell wide (else 2)
-CORRUPTION_COLUMN_NOISE_PROB = 0.60  # column kind: noise below this roll
+CORRUPTION_COLUMN_NOISE_PROB = 0.70  # column kind: noise below this roll
 CORRUPTION_COLUMN_BLACK_PROB_END = 0.90  # black up to this roll, white above
 CORRUPTION_DECAY = 0.9  # energy multiplier per frame
 CORRUPTION_CLEAR_ENERGY = 0.005  # damage at or below this energy disappears
@@ -248,9 +248,9 @@ GLOBAL_NOISE_BUFFER = np.empty(
     (CORRUPTION_CELL_H, CORRUPTION_CELL_W, 3), dtype=np.uint8, order="C"
 )
 
-GLITCH_BOX_MIN = 16  # [320x240: 8 ] [480x360: 12] [640x480: 16]
+GLITCH_BOX_MIN = 8  # [320x240: 8 ] [480x360: 12] [640x480: 16]
 GLITCH_BOX_SCALE = 48  # [320x240: 24] [480x360: 36] [640x480: 48]
-GLITCH_STRIP_MIN = 8  # [320x240: 4 ] [480x360: 6 ] [640x480: 8 ]
+GLITCH_STRIP_MIN = 4  # [320x240: 4 ] [480x360: 6 ] [640x480: 8 ]
 GLITCH_STRIP_SCALE = 24  # [320x240: 12] [480x360: 18] [640x480: 24]
 
 DRIFT_MAX_AMOUNT = 60  # [320x240: 30] [480x360: 45] [640x480: 60]
