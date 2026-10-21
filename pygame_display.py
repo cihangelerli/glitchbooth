@@ -94,6 +94,7 @@ QR_GUIDE_MARGIN = 2  # px — gap from image edges
 QR_GUIDE_CORNER = (
     "bottom-left"  # Options: "bottom-left", "bottom-right", "top-left", "top-right"
 )
+QR_GUIDE_OPACITY = 200  # 0–255: 0 = fully transparent, 255 = fully opaque
 
 # Ticker Tape Presentation Layer Geometry
 TICKER_ITEM_W = 240
@@ -284,6 +285,7 @@ if QR_GUIDE_ENABLED:
         center=(QR_GUIDE_SIZE // 2, QR_GUIDE_SIZE // 2)
     )
     qr_guide_surface.blit(qr_text_surf, qr_text_rect)
+    qr_guide_surface.set_alpha(QR_GUIDE_OPACITY)
     _corner = QR_GUIDE_CORNER.lower()
     if _corner == "bottom-right":
         QR_GUIDE_POS = (
