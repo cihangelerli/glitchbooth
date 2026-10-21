@@ -1098,7 +1098,7 @@ def data_mosh_take_samples(frame):
 
 def apply_data_mosh(raw_knob, current_time, motion_samples=None):
     """Data Mosh entry point. raw_knob 0-1023. Modifies MUTABLE_PROCESSING_BUFFER in place."""
-    strength = n(raw_knob) ** 2  # response curve unchanged from the old effect
+    strength = n(raw_knob) ** 5  # response curve unchanged from the old effect
     if strength < MOSH_DORMANT_BELOW:
         if _MOSH.is_dirty():  # lowering the knob cancels all moshing at once
             _MOSH.reset()
