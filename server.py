@@ -216,7 +216,7 @@ MOSH_RELEASE_FRAMES = 11  # edges dissolve over the last N frames of a hold
 MOSH_RELEASE_ERODE_PX = 0  # extra erosion per release frame
 # Colour-plane bleed inside held cells: "shape_live_colour_held", "shape_held_colour_live", "off"
 MOSH_BLEED_MODE = "shape_live_colour_held"
-MOSH_BLEED_MAX = 0.65  # bleed mix = MAX * strength (0-1)
+MOSH_BLEED_MAX = 0.05  # bleed mix = MAX * strength (0-1)
 
 MOSH_RNG_SEED = (
     None  # None = fresh entropy each start; tests reseed via seed_private_rngs()
