@@ -191,8 +191,8 @@ FRAME_W = 640
 # PHASE 2 TUNABLES: EFFECT WIRING, DATA MOSH, PACKET CORRUPTION (readme R7)
 # ==============================================================================
 # --- wiring: which knob (0-5) drives which effect, or None = not connected -------
-DATAMOSH_KNOB = 2
-PACKET_CORRUPTION_KNOB = 5  # standalone effect, ready: set to a knob index to connect it, "None" if not connected, 0-5 to connect to a knob
+DATAMOSH_KNOB = None
+PACKET_CORRUPTION_KNOB = 2  # standalone effect, ready: set to a knob index to connect it, "None" if not connected, 0-5 to connect to a knob
 
 # --- Data Mosh -------------------------------------------------------------------
 # Where in the pipeline it runs:
