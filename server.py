@@ -206,13 +206,13 @@ MOSH_DORMANT_BELOW = (
 MOSH_THRESH_BASE = 17  # motion threshold = BASE + (1 - strength) * SPAN   (18 .. 58)
 MOSH_THRESH_SPAN = 53
 MOSH_HOLD_MIN_FRAMES = 11  # hold time rises from MIN to MAX with strength (1-60)
-MOSH_HOLD_MAX_FRAMES = 59
+MOSH_HOLD_MAX_FRAMES = 89
 MOSH_VECTOR_PX = 7  # horizontal drag per frame (1-8)
 MOSH_DRAG_NEW_WEIGHT = (
     161 / 256
 )  # share of the dragged picture per frame (as the old effect)
-MOSH_EDGE_ERODE_MAX_PX = 2  # random edge erosion 0..N px on held cells (as before)
-MOSH_RELEASE_FRAMES = 17  # edges dissolve over the last N frames of a hold
+MOSH_EDGE_ERODE_MAX_PX = 1  # random edge erosion 0..N px on held cells (as before)
+MOSH_RELEASE_FRAMES = 3  # edges dissolve over the last N frames of a hold
 MOSH_RELEASE_ERODE_PX = 1  # extra erosion per release frame
 # Colour-plane bleed inside held cells: "shape_live_colour_held", "shape_held_colour_live", "off"
 MOSH_BLEED_MODE = "shape_live_colour_held"
@@ -224,7 +224,7 @@ MOSH_RNG_SEED = (
 MOSH_CELL_H = 16  # [320x240: 16] [480x360: 24] [640x480: 32]
 MOSH_CELL_W = 12  # [320x240: 12] [480x360: 18] [640x480: 24]
 
-# --- Packet Corruption (values are exactly the old inline stage) ------------------
+
 CORRUPTION_CELL_H = 32
 CORRUPTION_CELL_W = 24
 CORRUPTION_GRID_H = FRAME_H // CORRUPTION_CELL_H
