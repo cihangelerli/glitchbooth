@@ -199,7 +199,7 @@ PACKET_CORRUPTION_KNOB = 5  # standalone effect, ready: set to a knob index to c
 #   "before_drift"               today's position (after chroma, before Signal Drift)
 #   "after_melt_own_motion"      after Melt, motion measured on its own input
 #   "after_melt_pre_melt_motion" after Melt, motion measured on the picture before Melt
-MOSH_STAGE_POSITION = "after_melt_own_motion"
+MOSH_STAGE_POSITION = "before_drift"
 MOSH_DORMANT_BELOW = (
     0.02  # strength = (knob/1023)**2 below this cancels everything at once
 )
@@ -255,7 +255,7 @@ GLITCH_STRIP_SCALE = 24  # [320x240: 12] [480x360: 18] [640x480: 24]
 
 DRIFT_MAX_AMOUNT = 60  # [320x240: 30] [480x360: 45] [640x480: 60]
 COMPRESSION_TILE_BASE = 6  # [320x240: 6 ] [480x360: 9 ] [640x480: 12]
-COMPRESSION_TILE_SCALE = 9  # [320x240: 3 ] [480x360: 4 ] [640x480: 6 ]
+COMPRESSION_TILE_SCALE = 11  # [320x240: 3 ] [480x360: 4 ] [640x480: 6 ]
 
 ANA_SHIFT_MAX = 48  # [320x240: 18] [480x360: 27] [640x480: 36]
 ANA_GHOST_OFFSET = 40  # [320x240: 20] [480x360: 30] [640x480: 40]
