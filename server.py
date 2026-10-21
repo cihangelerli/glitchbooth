@@ -192,7 +192,7 @@ FRAME_W = 640
 # ==============================================================================
 # --- wiring: which knob (0-5) drives which effect, or None = not connected -------
 DATAMOSH_KNOB = 2
-PACKET_CORRUPTION_KNOB = 2  # standalone effect, ready: set to a knob index to connect it, "None" if not connected, 0-5 to connect to a knob
+PACKET_CORRUPTION_KNOB = 3  # standalone effect, ready: set to a knob index to connect it, "None" if not connected, 0-5 to connect to a knob
 
 # --- Data Mosh -------------------------------------------------------------------
 # Where in the pipeline it runs:
