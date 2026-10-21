@@ -204,7 +204,7 @@ MOSH_DORMANT_BELOW = (
     0.02  # strength = (knob/1023)**2 below this cancels everything at once
 )
 MOSH_THRESH_BASE = 18  # motion threshold = BASE + (1 - strength) * SPAN   (18 .. 58)
-MOSH_THRESH_SPAN = 57
+MOSH_THRESH_SPAN = 30
 MOSH_HOLD_MIN_FRAMES = 17  # hold time rises from MIN to MAX with strength (1-60)
 MOSH_HOLD_MAX_FRAMES = 49
 MOSH_VECTOR_PX = 7  # horizontal drag per frame (1-8)
@@ -213,7 +213,7 @@ MOSH_DRAG_NEW_WEIGHT = (
 )  # share of the dragged picture per frame (as the old effect)
 MOSH_EDGE_ERODE_MAX_PX = 2  # random edge erosion 0..N px on held cells (as before)
 MOSH_RELEASE_FRAMES = 13  # edges dissolve over the last N frames of a hold
-MOSH_RELEASE_ERODE_PX = 4  # extra erosion per release frame
+MOSH_RELEASE_ERODE_PX = 0  # extra erosion per release frame
 # Colour-plane bleed inside held cells: "shape_live_colour_held", "shape_held_colour_live", "off"
 MOSH_BLEED_MODE = "shape_live_colour_held"
 MOSH_BLEED_MAX = 0.9  # bleed mix = MAX * strength (0-1)
@@ -1096,7 +1096,7 @@ def data_mosh_take_samples(frame):
 
 def apply_data_mosh(raw_knob, current_time, motion_samples=None):
     """Data Mosh entry point. raw_knob 0-1023. Modifies MUTABLE_PROCESSING_BUFFER in place."""
-    strength = n(raw_knob) ** 3  # response curve unchanged from the old effect
+    strength = n(raw_knob) ** 1  # response curve unchanged from the old effect
     if strength < MOSH_DORMANT_BELOW:
         if _MOSH.is_dirty():  # lowering the knob cancels all moshing at once
             _MOSH.reset()
