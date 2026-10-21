@@ -203,8 +203,8 @@ MOSH_STAGE_POSITION = "after_melt_own_motion"
 MOSH_DORMANT_BELOW = (
     0.02  # strength = (knob/1023)**2 below this cancels everything at once
 )
-MOSH_THRESH_BASE = 18  # motion threshold = BASE + (1 - strength) * SPAN   (18 .. 58)
-MOSH_THRESH_SPAN = 77
+MOSH_THRESH_BASE = 11  # motion threshold = BASE + (1 - strength) * SPAN   (18 .. 58)
+MOSH_THRESH_SPAN = 47
 MOSH_HOLD_MIN_FRAMES = 17  # hold time rises from MIN to MAX with strength (1-60)
 MOSH_HOLD_MAX_FRAMES = 57
 MOSH_VECTOR_PX = 7  # horizontal drag per frame (1-8)
