@@ -133,7 +133,7 @@ KNOB_ROWS = [
     (1, "Signal Drift"),
     (3, "Pixel Damage"),
     (4, "Melt"),
-    (2, "Data Corruption"),
+    (2, "Data Mosh"),
     (5, "Chroma Shift"),
 ]
 

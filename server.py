@@ -188,20 +188,58 @@ FRAME_W = 640
 # SCALABLE GLITCH MATRIX CONSTANTS
 # ==============================================================================
 
-DATAMOSH_BLOCK_H = 32  # [320x240: 16] [480x360: 24] [640x480: 32]
-DATAMOSH_BLOCK_W = 24  # [320x240: 12] [480x360: 18] [640x480: 24]
+# PHASE 2 TUNABLES: EFFECT WIRING, DATA MOSH, PACKET CORRUPTION (readme R7)
+# ==============================================================================
+# --- wiring: which knob (0-5) drives which effect, or None = not connected -------
+DATAMOSH_KNOB = 2
+PACKET_CORRUPTION_KNOB = None  # standalone effect, ready: set to a knob index to connect it
+
+# --- Data Mosh -------------------------------------------------------------------
+# Where in the pipeline it runs:
+#   "before_drift"               today's position (after chroma, before Signal Drift)
+#   "after_melt_own_motion"      after Melt, motion measured on its own input
+#   "after_melt_pre_melt_motion" after Melt, motion measured on the picture before Melt
+MOSH_STAGE_POSITION = "before_drift"
+MOSH_DORMANT_BELOW = 0.02  # strength = (knob/1023)**2 below this cancels everything at once
+MOSH_THRESH_BASE = 18  # motion threshold = BASE + (1 - strength) * SPAN   (18 .. 58)
+MOSH_THRESH_SPAN = 40
+MOSH_HOLD_MIN_FRAMES = 6  # hold time rises from MIN to MAX with strength (1-60)
+MOSH_HOLD_MAX_FRAMES = 16
+MOSH_VECTOR_PX = 4  # horizontal drag per frame (1-8)
+MOSH_DRAG_NEW_WEIGHT = 161 / 256  # share of the dragged picture per frame (as the old effect)
+MOSH_EDGE_ERODE_MAX_PX = 2  # random edge erosion 0..N px on held cells (as before)
+MOSH_RELEASE_FRAMES = 3  # edges dissolve over the last N frames of a hold
+MOSH_RELEASE_ERODE_PX = 4  # extra erosion per release frame
+# Colour-plane bleed inside held cells: "shape_live_colour_held", "shape_held_colour_live", "off"
+MOSH_BLEED_MODE = "shape_live_colour_held"
+MOSH_BLEED_MAX = 0.8  # bleed mix = MAX * strength (0-1)
+MOSH_RNG_SEED = None  # None = fresh entropy each start; tests reseed via seed_private_rngs()
+MOSH_CELL_H = 32  # [320x240: 16] [480x360: 24] [640x480: 32]
+MOSH_CELL_W = 24  # [320x240: 12] [480x360: 18] [640x480: 24]
+
+# --- Packet Corruption (values are exactly the old inline stage) ------------------
+CORRUPTION_CELL_H = 32
+CORRUPTION_CELL_W = 24
+CORRUPTION_GRID_H = FRAME_H // CORRUPTION_CELL_H
+CORRUPTION_GRID_W = FRAME_W // CORRUPTION_CELL_W
+CORRUPTION_CLEAR_BELOW = 0.01  # below this strength all damage is cleared
+CORRUPTION_SPAWN_ABOVE = 0.02  # new damage only spawns above this strength
+CORRUPTION_SPAWN_RATE = 0.33  # spawn chance per frame = strength * RATE
+CORRUPTION_SQUARE_PROB = 0.80  # square block (else a full-height column)
+CORRUPTION_SQUARE_MAX_CELLS = 3  # square block is 1..N cells each way
+CORRUPTION_THIN_COLUMN_PROB = 0.9  # column is 1 cell wide (else 2)
+CORRUPTION_COLUMN_NOISE_PROB = 0.60  # column kind: noise below this roll
+CORRUPTION_COLUMN_BLACK_PROB_END = 0.90  # black up to this roll, white above
+CORRUPTION_DECAY = 0.9  # energy multiplier per frame
+CORRUPTION_CLEAR_ENERGY = 0.005  # damage at or below this energy disappears
+CORRUPTION_BLEND_BELOW = 0.95  # below this energy the damage is blended, not solid
 
 STATIC_BLOCK_BUFFER = np.empty(
-    (DATAMOSH_BLOCK_H, DATAMOSH_BLOCK_W, 3), dtype=np.uint8, order="C"
+    (CORRUPTION_CELL_H, CORRUPTION_CELL_W, 3), dtype=np.uint8, order="C"
 )
 
-DATAMOSH_START_Y = DATAMOSH_BLOCK_H // 2
-DATAMOSH_START_X = DATAMOSH_BLOCK_W // 2
-DATAMOSH_STRIDE_Y = DATAMOSH_BLOCK_H
-DATAMOSH_STRIDE_X = DATAMOSH_BLOCK_W
-
 GLOBAL_NOISE_BUFFER = np.empty(
-    (DATAMOSH_BLOCK_H, DATAMOSH_BLOCK_W, 3), dtype=np.uint8, order="C"
+    (CORRUPTION_CELL_H, CORRUPTION_CELL_W, 3), dtype=np.uint8, order="C"
 )
 
 GLITCH_BOX_MIN = 16  # [320x240: 8 ] [480x360: 12] [640x480: 16]
@@ -460,32 +498,22 @@ def initialize_crt_mask():
     print("[SYSTEM SETUP] CRT Mask locked into contiguous C-memory.")
 
 
-# ISOLATED DATAMOSH TEMPORAL MEMORY REGISTERS (ZERO RUNTIME HEAP CHURN)
+# TEMPORAL REGISTERS (WARM-UP, PURGE) AND PACKET CORRUPTION STATE
 # =========================================================================
 WARMUP_FRAMES = 10
 WARMUP_COUNTER = 0
 LAST_TEMPORAL_PURGE = time.time()
 
-GRID_H = FRAME_H // DATAMOSH_BLOCK_H
-GRID_W = FRAME_W // DATAMOSH_BLOCK_W
-
 PREV_FRAME_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
-DATAMOSH_PREV_FRAME = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
 SHARED_GRAY_BUFFER = np.empty((FRAME_H, FRAME_W), dtype=np.uint8, order="C")
 
-DATAMOSH_WORK_BUFFER = np.zeros((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
-DATAMOSH_DIFF_BUFFER = np.zeros((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
-DATAMOSH_GRAY_DIFF = np.zeros((FRAME_H, FRAME_W), dtype=np.uint8, order="C")
+CORRUPTION_ENERGY = np.zeros(
+    (CORRUPTION_GRID_H, CORRUPTION_GRID_W), dtype=np.float32, order="C"
+)
 
-DATAMOSH_VX = np.zeros((GRID_H, GRID_W), dtype=np.int8, order="C")
-
-CORRUPTION_ENERGY = np.zeros((GRID_H, GRID_W), dtype=np.float32, order="C")
-
-CORRUPTION_MODE = np.zeros((GRID_H, GRID_W), dtype=np.uint8, order="C")
-
-DATAMOSH_CYCLE_COUNTER = 0
-RANDOM_SIGN_POOL = np.where(np.random.rand(4096) > 0.5, 4, -4).astype(np.int8)
-RNG_PTR_SIGN = 0
+CORRUPTION_MODE = np.zeros(
+    (CORRUPTION_GRID_H, CORRUPTION_GRID_W), dtype=np.uint8, order="C"
+)
 
 # ASCII ENGINE PRE-ALLOCATED STORAGE (PHASE 1 MVP)
 # =========================================================================
@@ -833,92 +861,407 @@ def update_knobs(ser):
         raise e
 
 
-# ISOLATED DATAMOSH ENGINE
+# =========================================================================
+# DATA MOSH v2 (PHASE 2) - INDEPENDENT EFFECT, DRIVEN BY ITS OWN KNOB ONLY
+# =========================================================================
+# Self-contained (readme R13). It owns its buffers, its timers and its own random
+# generator. It never reads, writes or calls anything that belongs to Packet
+# Corruption (or any other effect), and Packet Corruption never touches it.
+#
+# Per frame it makes a fixed, small number of large OpenCV/NumPy calls (no per-cell
+# Python loop), all inside preallocated buffers and restricted to the row band that
+# contains the held cells. OpenCV calls release the GIL, so the display thread is
+# not starved the way the old per-cell loop could starve it.
+#
+# Look (approved in P2-00): a cell that shows motion freezes the PREVIOUS picture,
+# drags it +-MOSH_VECTOR_PX per frame, holds it for MOSH_HOLD_*_FRAMES (rising with
+# strength), then dissolves from its edges. Inside held cells the brightness and the
+# colour can come from different pictures (colour-plane bleed).
+#
+# Cancel rule (protected behaviour): the moment the knob drops below the dormancy
+# threshold every hold is cancelled at once and nothing is left over.
+# =========================================================================
+
+MOSH_GRID_H = FRAME_H // MOSH_CELL_H
+MOSH_GRID_W = FRAME_W // MOSH_CELL_W
+MOSH_GRID_PX_W = MOSH_GRID_W * MOSH_CELL_W  # columns beyond this are never touched
+
+_MOSH_GRAY_WEIGHTS = np.array([0.114, 0.587, 0.299], dtype=np.float32)  # B, G, R
+_MOSH_SAMPLE_Y0 = MOSH_CELL_H // 2
+_MOSH_SAMPLE_X0 = MOSH_CELL_W // 2
+
+
+class DataMoshEngine:
+    """Temporal memory and scratch buffers of Data Mosh (about 10 MiB, allocated once)."""
+
+    def __init__(self, seed=None):
+        H, W = FRAME_H, FRAME_W
+        gh, gw = MOSH_GRID_H, MOSH_GRID_W
+        z3 = lambda: np.zeros((H, W, 3), dtype=np.uint8, order="C")
+        z1 = lambda: np.zeros((H, W), dtype=np.uint8, order="C")
+        # picture memory: `hold` is the PREVIOUS picture everywhere except inside held cells,
+        # where it is the frozen, dragged picture. It is always a complete picture, so the
+        # drag never pulls stale or empty pixels in from a neighbouring cell.
+        self.hold, self.cur = z3(), z3()
+        # scratch (each used only inside one step)
+        self.sh_right, self.sh_left, self.blend = z3(), z3(), z3()
+        self.comp, self.pos3, self.neg3 = z3(), z3(), z3()
+        self.m_keep, self.m_act, self.m_neg = z1(), z1(), z1()
+        self.m_inset, self.m_tmp, self.m_fin = z1(), z1(), z1()
+        self.y_live, self.y_hold, self.y_pos, self.y_neg = z1(), z1(), z1(), z1()
+        # distance of every pixel from its cell border (for edge erosion)
+        yy, xx = np.mgrid[0:H, 0:W]
+        iy, ix = yy % MOSH_CELL_H, xx % MOSH_CELL_W
+        self.edge_dist = np.minimum(
+            np.minimum(iy, MOSH_CELL_H - 1 - iy), np.minimum(ix, MOSH_CELL_W - 1 - ix)
+        ).astype(np.uint8)
+        # per-cell state
+        self.timer = np.zeros((gh, gw), dtype=np.int16)
+        self.vx = np.zeros((gh, gw), dtype=np.int8)
+        self.samp = np.zeros((gh, gw, 3), dtype=np.int16)
+        self.prev_samp = np.zeros((gh, gw, 3), dtype=np.int16)
+        self.have_prev = False
+        self.rng = np.random.default_rng(seed)
+
+    def reseed(self, seed):
+        self.rng = np.random.default_rng(seed)
+
+    def is_dirty(self):
+        return self.have_prev or bool(self.timer.any())
+
+    def reset(self):
+        """Forget everything: no hold, no vector, no remembered picture."""
+        self.timer[:] = 0
+        self.vx[:] = 0
+        self.have_prev = False
+
+    @staticmethod
+    def _cells_to_pixels(cells_u8, row0, row1, dst):
+        """Exact cell-grid upsample of cell rows row0..row1 into dst (pixel rows of those cells)."""
+        rows = row1 - row0 + 1
+        cv2.resize(
+            cells_u8[row0 : row1 + 1],
+            (MOSH_GRID_PX_W, rows * MOSH_CELL_H),
+            dst=dst[row0 * MOSH_CELL_H : (row1 + 1) * MOSH_CELL_H, :MOSH_GRID_PX_W],
+            interpolation=cv2.INTER_NEAREST,
+        )
+
+    def step(self, frame, strength, motion_samples=None):
+        """Apply one frame of Data Mosh to `frame` (modified in place)."""
+        gh, gw, W = MOSH_GRID_H, MOSH_GRID_W, FRAME_W
+        vec = MOSH_VECTOR_PX
+
+        if motion_samples is None:
+            motion_samples = frame[
+                _MOSH_SAMPLE_Y0 :: MOSH_CELL_H, _MOSH_SAMPLE_X0 :: MOSH_CELL_W
+            ][:gh, :gw]
+        np.copyto(self.samp, motion_samples, casting="unsafe")
+
+        if not self.have_prev:  # first frame after start / cancel: only remember
+            np.copyto(self.hold, frame)
+            np.copyto(self.prev_samp, self.samp)
+            self.have_prev = True
+            return
+
+        # ---- 1. which cells show motion (same metric and threshold as before) ----
+        threshold = int(MOSH_THRESH_BASE + (1.0 - strength) * MOSH_THRESH_SPAN)
+        if np.array_equal(self.samp, self.prev_samp):
+            motion = np.zeros((gh, gw), dtype=bool)  # duplicate camera frame
+        else:
+            motion = (
+                np.abs(self.samp - self.prev_samp) * _MOSH_GRAY_WEIGHTS
+            ).sum(-1) > threshold
+        hold_frames = int(
+            round(
+                MOSH_HOLD_MIN_FRAMES
+                + (MOSH_HOLD_MAX_FRAMES - MOSH_HOLD_MIN_FRAMES) * strength
+            )
+        )
+        new_cells = motion & (self.timer == 0)
+
+        # ---- 2. newly held cells start from the picture of just before the motion ----
+        # (`hold` already is that picture; each new cell only needs a drag direction)
+        if new_cells.any():
+            count = int(new_cells.sum())
+            self.vx[new_cells] = np.where(self.rng.random(count) > 0.5, vec, -vec)
+        self.timer[motion] = hold_frames
+        active = self.timer > 0
+        band = None
+
+        # ---- 3. drag, erode, composite - only inside the band of rows with held cells ----
+        if active.any():
+            np.copyto(self.cur, frame)  # this stage's INPUT (frame is modified below)
+            rows = np.flatnonzero(active.any(axis=1))
+            r0, r1 = int(rows[0]), int(rows[-1])
+            band = slice(r0 * MOSH_CELL_H, (r1 + 1) * MOSH_CELL_H)
+            self._cells_to_pixels(active.view(np.uint8), r0, r1, self.m_act)
+            self._cells_to_pixels((self.vx < 0).view(np.uint8), r0, r1, self.m_neg)
+
+            hold_band = self.hold[band]
+            # +-vec px horizontal shift with edge clamp, picked per cell by its vector sign
+            self.sh_right[band, : W - vec] = hold_band[:, vec:]
+            self.sh_right[band, W - vec :] = hold_band[:, W - 1 : W]
+            self.sh_left[band, vec:] = hold_band[:, : W - vec]
+            self.sh_left[band, :vec] = hold_band[:, 0:1]
+            cv2.copyTo(self.sh_left[band], self.m_neg[band], self.sh_right[band])
+            cv2.addWeighted(
+                self.sh_right[band],
+                MOSH_DRAG_NEW_WEIGHT,
+                hold_band,
+                1.0 - MOSH_DRAG_NEW_WEIGHT,
+                0,
+                dst=self.blend[band],
+            )
+            cv2.copyTo(self.blend[band], self.m_act[band], hold_band)
+
+            # edges erode a little always, and progressively during the last frames
+            inset = self.rng.integers(
+                0, MOSH_EDGE_ERODE_MAX_PX + 1, (gh, gw), dtype=np.int16
+            ) + (
+                np.clip(MOSH_RELEASE_FRAMES - self.timer, 0, MOSH_RELEASE_FRAMES)
+                * MOSH_RELEASE_ERODE_PX
+            )
+            inset = np.clip(inset, 0, 255).astype(np.uint8)
+            self._cells_to_pixels(inset, r0, r1, self.m_inset)
+            cv2.compare(
+                self.edge_dist[band], self.m_inset[band], cv2.CMP_GE, dst=self.m_tmp[band]
+            )
+            cv2.bitwise_and(self.m_tmp[band], self.m_act[band], dst=self.m_fin[band])
+
+            if MOSH_BLEED_MODE == "off":
+                cv2.copyTo(hold_band, self.m_fin[band], frame[band])
+            else:
+                bleed = MOSH_BLEED_MAX * strength
+                cv2.cvtColor(self.cur[band], cv2.COLOR_BGR2GRAY, dst=self.y_live[band])
+                cv2.cvtColor(hold_band, cv2.COLOR_BGR2GRAY, dst=self.y_hold[band])
+                if MOSH_BLEED_MODE == "shape_live_colour_held":
+                    luma_a, luma_b, base = self.y_live, self.y_hold, hold_band
+                else:  # "shape_held_colour_live"
+                    luma_a, luma_b, base = self.y_hold, self.y_live, self.cur[band]
+                cv2.subtract(luma_a[band], luma_b[band], dst=self.y_pos[band])
+                cv2.subtract(luma_b[band], luma_a[band], dst=self.y_neg[band])
+                cv2.convertScaleAbs(self.y_pos[band], dst=self.y_pos[band], alpha=bleed)
+                cv2.convertScaleAbs(self.y_neg[band], dst=self.y_neg[band], alpha=bleed)
+                cv2.merge([self.y_pos[band]] * 3, dst=self.pos3[band])
+                cv2.merge([self.y_neg[band]] * 3, dst=self.neg3[band])
+                cv2.add(base, self.pos3[band], dst=self.comp[band])
+                cv2.subtract(self.comp[band], self.neg3[band], dst=self.comp[band])
+                cv2.copyTo(self.comp[band], self.m_fin[band], frame[band])
+
+        # ---- 4. time moves on; the memory follows this frame outside the cells still held ----
+        self.timer[self.timer > 0] -= 1
+        self.vx[self.timer == 0] = 0
+        still_held = self.timer > 0
+        if band is None:  # nothing was held: the frame is unchanged, remember it directly
+            np.copyto(self.hold, frame)
+        elif not still_held.any():
+            np.copyto(self.hold, self.cur)
+        else:
+            y0, y1 = band.start, band.stop
+            np.copyto(self.hold[:y0], self.cur[:y0])
+            np.copyto(self.hold[y1:], self.cur[y1:])
+            self._cells_to_pixels(still_held.view(np.uint8), r0, r1, self.m_keep)
+            cv2.compare(self.m_keep[band], 0, cv2.CMP_EQ, dst=self.m_tmp[band])  # 255 outside held cells
+            cv2.copyTo(self.cur[band], self.m_tmp[band], self.hold[band])
+        np.copyto(self.prev_samp, self.samp)
+
+
+_MOSH = DataMoshEngine(MOSH_RNG_SEED)
+
+
+def data_mosh_reset():
+    """Cancel every hold and forget the remembered picture."""
+    _MOSH.reset()
+
+
+def data_mosh_take_samples(frame):
+    """Snapshot of the per-cell motion sample points (for MOSH_STAGE_POSITION C)."""
+    return frame[_MOSH_SAMPLE_Y0 :: MOSH_CELL_H, _MOSH_SAMPLE_X0 :: MOSH_CELL_W][
+        :MOSH_GRID_H, :MOSH_GRID_W
+    ].copy()
+
+
+def apply_data_mosh(raw_knob, current_time, motion_samples=None):
+    """Data Mosh entry point. raw_knob 0-1023. Modifies MUTABLE_PROCESSING_BUFFER in place."""
+    strength = n(raw_knob) ** 2  # response curve unchanged from the old effect
+    if strength < MOSH_DORMANT_BELOW:
+        if _MOSH.is_dirty():  # lowering the knob cancels all moshing at once
+            _MOSH.reset()
+        return
+    _MOSH.step(MUTABLE_PROCESSING_BUFFER, strength, motion_samples)
+
+
+# =========================================================================
+# PACKET CORRUPTION - STANDALONE EFFECT (PHASE 2: EXTRACTED, LOOK UNCHANGED)
+# =========================================================================
+# Unwired by default (PACKET_CORRUPTION_KNOB = None) and ready to be connected to
+# any knob. It has no connection to Data Mosh. Same random draws, in the same order,
+# as the old inline stage, so its look is unchanged.
+#   corruption_update(strength)  - spawn new damage, age the existing damage
+#   corruption_render(frame)     - paint the current damage onto `frame`
+# Both helpers take the strength as an argument and read no knobs, so the later
+# Packet Corruption + Pixellation fusion can call them directly.
 # =========================================================================
 
 
-def apply_datamosh(effect_val, current_time):
-    global DATAMOSH_CYCLE_COUNTER, RNG_PTR_SIGN, WARMUP_COUNTER
+def corruption_reset():
+    CORRUPTION_ENERGY[:] = 0.0
+    CORRUPTION_MODE[:] = 0
 
-    if WARMUP_COUNTER < WARMUP_FRAMES:
-        DATAMOSH_PREV_FRAME[:] = MUTABLE_PROCESSING_BUFFER
-        DATAMOSH_VX[:] = 0
+
+def corruption_update(strength):
+    global CORRUPTION_ENERGY, CORRUPTION_MODE
+    gh, gw = CORRUPTION_GRID_H, CORRUPTION_GRID_W
+
+    if strength < CORRUPTION_CLEAR_BELOW:
+        CORRUPTION_ENERGY[:] = 0.0
+        CORRUPTION_MODE[:] = 0
+
+    if strength > CORRUPTION_SPAWN_ABOVE and np.random.rand() < (
+        strength * CORRUPTION_SPAWN_RATE
+    ):
+        if np.random.rand() < CORRUPTION_SQUARE_PROB:
+            gy = np.random.randint(0, gh)
+            gx = np.random.randint(0, gw)
+
+            block_size_y = np.random.randint(1, CORRUPTION_SQUARE_MAX_CELLS + 1)
+            block_size_x = np.random.randint(1, CORRUPTION_SQUARE_MAX_CELLS + 1)
+
+            gy_end = min(gh, gy + block_size_y)
+            gx_end = min(gw, gx + block_size_x)
+
+            CORRUPTION_ENERGY[gy:gy_end, gx:gx_end] = 1.0
+            CORRUPTION_MODE[gy:gy_end, gx:gx_end] = 1
+
+        else:
+            col_width = 1 if np.random.rand() < CORRUPTION_THIN_COLUMN_PROB else 2
+            gx = np.random.randint(0, max(1, gw - col_width))
+            gx_end = gx + col_width
+
+            col_roll = np.random.rand()
+            if col_roll < CORRUPTION_COLUMN_NOISE_PROB:
+                mode_selection = 2  # Noise Column
+            elif col_roll < CORRUPTION_COLUMN_BLACK_PROB_END:
+                mode_selection = 3  # Black Column
+            else:
+                mode_selection = 4  # White Column
+
+            CORRUPTION_ENERGY[:, gx:gx_end] = 1.0
+            CORRUPTION_MODE[:, gx:gx_end] = mode_selection
+
+    CORRUPTION_ENERGY *= CORRUPTION_DECAY
+    np.clip(CORRUPTION_ENERGY, 0.0, 1.0, out=CORRUPTION_ENERGY)
+
+    CORRUPTION_MODE[CORRUPTION_ENERGY <= CORRUPTION_CLEAR_ENERGY] = 0
+
+
+def corruption_render(frame):
+    if np.any(CORRUPTION_MODE):
+        active_gy, active_gx = np.nonzero(CORRUPTION_MODE)
+        bh = CORRUPTION_CELL_H
+        bw = CORRUPTION_CELL_W
+
+        if np.any((CORRUPTION_MODE == 1) | (CORRUPTION_MODE == 2)):
+            cv2.randu(GLOBAL_NOISE_BUFFER, (0, 0, 0), (255, 255, 255))
+
+        for gy, gx in zip(active_gy, active_gx):
+            y1, y2 = gy * bh, (gy + 1) * bh
+            x1, x2 = gx * bw, (gx + 1) * bw
+
+            energy = float(CORRUPTION_ENERGY[gy, gx])
+            mode = CORRUPTION_MODE[gy, gx]
+
+            block_view = frame[y1:y2, x1:x2]
+
+            need_blend = energy < CORRUPTION_BLEND_BELOW
+            if need_blend:
+                scratch = STATIC_BLOCK_BUFFER[: (y2 - y1), : (x2 - x1)]
+                scratch[:] = block_view
+
+            # Values: 0 = Clean, 1 = Square Noise Block, 2 = Noise Column, 3 = Black Column, 4 = White Column
+            if mode == 1 or mode == 2:
+                block_view[:] = GLOBAL_NOISE_BUFFER[: (y2 - y1), : (x2 - x1)]
+            elif mode == 3:
+                block_view[:] = 0
+            elif mode == 4:
+                block_view[:] = 255
+
+            if need_blend:
+                cv2.addWeighted(
+                    block_view, energy, scratch, 1.0 - energy, 0, dst=block_view
+                )
+
+
+def apply_packet_corruption(raw_knob, current_time=0.0):
+    """Packet Corruption entry point. raw_knob 0-1023. Modifies MUTABLE_PROCESSING_BUFFER in place."""
+    strength = n(raw_knob)
+    if strength < CORRUPTION_CLEAR_BELOW:
+        # dormant: identical to the old stage (everything cleared, nothing drawn, no random draws)
+        if CORRUPTION_MODE.any() or CORRUPTION_ENERGY.any():
+            corruption_reset()
         return
+    corruption_update(strength)
+    corruption_render(MUTABLE_PROCESSING_BUFFER)
 
-    BLOCK_X = FRAME_W // GRID_W
-    BLOCK_Y = FRAME_H // GRID_H
 
-    if effect_val < 0.02:
-        DATAMOSH_VX[:] = 0
-        cv2.addWeighted(
-            MUTABLE_PROCESSING_BUFFER,
-            0.8,  # 80% clean active frame
-            DATAMOSH_PREV_FRAME,
-            0.2,  # 20% residual history
-            0,
-            dst=DATAMOSH_PREV_FRAME,
+# =========================================================================
+# PRIVATE RANDOM GENERATORS AND WIRING CHECK
+# =========================================================================
+
+
+def seed_private_rngs(seed):
+    """Reseed every effect that owns a private random generator (tests / A-B harness)."""
+    _MOSH.reseed(seed)
+
+
+def _validate_effect_wiring():
+    """Check the Phase 2 tunables. Never raises: a bad value is reported and replaced by
+    its safe default so the booth keeps running (readme R14). Returns the messages."""
+    global DATAMOSH_KNOB, PACKET_CORRUPTION_KNOB, MOSH_STAGE_POSITION, MOSH_BLEED_MODE
+    global MOSH_HOLD_MIN_FRAMES, MOSH_HOLD_MAX_FRAMES, MOSH_VECTOR_PX
+    notes = []
+
+    def knob_ok(v):
+        return v is None or (isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 5)
+
+    if not knob_ok(DATAMOSH_KNOB):
+        notes.append(f"DATAMOSH_KNOB={DATAMOSH_KNOB!r} invalid, using 2")
+        DATAMOSH_KNOB = 2
+    if not knob_ok(PACKET_CORRUPTION_KNOB):
+        notes.append(f"PACKET_CORRUPTION_KNOB={PACKET_CORRUPTION_KNOB!r} invalid, using None")
+        PACKET_CORRUPTION_KNOB = None
+    if MOSH_STAGE_POSITION not in (
+        "before_drift",
+        "after_melt_own_motion",
+        "after_melt_pre_melt_motion",
+    ):
+        notes.append(f"MOSH_STAGE_POSITION={MOSH_STAGE_POSITION!r} invalid, using 'before_drift'")
+        MOSH_STAGE_POSITION = "before_drift"
+    if MOSH_BLEED_MODE not in ("shape_live_colour_held", "shape_held_colour_live", "off"):
+        notes.append(f"MOSH_BLEED_MODE={MOSH_BLEED_MODE!r} invalid, using 'shape_live_colour_held'")
+        MOSH_BLEED_MODE = "shape_live_colour_held"
+    if not (1 <= MOSH_VECTOR_PX <= 8):
+        notes.append(f"MOSH_VECTOR_PX={MOSH_VECTOR_PX} outside 1-8, using 4")
+        MOSH_VECTOR_PX = 4
+    if not (1 <= MOSH_HOLD_MIN_FRAMES <= MOSH_HOLD_MAX_FRAMES <= 60):
+        notes.append("MOSH_HOLD_*_FRAMES must satisfy 1 <= min <= max <= 60, using 6 and 16")
+        MOSH_HOLD_MIN_FRAMES, MOSH_HOLD_MAX_FRAMES = 6, 16
+
+    if (
+        DATAMOSH_KNOB is not None
+        and PACKET_CORRUPTION_KNOB is not None
+        and DATAMOSH_KNOB == PACKET_CORRUPTION_KNOB
+    ):
+        notes.append(
+            f"NOTE: Data Mosh and Packet Corruption both listen to knob {DATAMOSH_KNOB}"
         )
-        return
 
-    DATAMOSH_CYCLE_COUNTER += 1
-    vx = DATAMOSH_VX
+    for msg in notes:
+        print(f"[EFFECT WIRING] {msg}")
+    return notes
 
-    if DATAMOSH_CYCLE_COUNTER & 1:
-        cv2.absdiff(
-            MUTABLE_PROCESSING_BUFFER, DATAMOSH_PREV_FRAME, dst=DATAMOSH_DIFF_BUFFER
-        )
-        cv2.cvtColor(DATAMOSH_DIFF_BUFFER, cv2.COLOR_BGR2GRAY, dst=DATAMOSH_GRAY_DIFF)
 
-        motion_thresh = int(18 + (1.0 - effect_val) * 40)
-        center_diffs = DATAMOSH_GRAY_DIFF[
-            DATAMOSH_START_Y::DATAMOSH_STRIDE_Y, DATAMOSH_START_X::DATAMOSH_STRIDE_X
-        ][:GRID_H, :GRID_W]
-        motion_mask = center_diffs > motion_thresh
-        new_motion_trigger = (vx == 0) & motion_mask
-
-        if np.any(new_motion_trigger):
-            ys, xs = np.nonzero(new_motion_trigger)
-            count = len(ys)
-            pool_len = len(RANDOM_SIGN_POOL)
-            for idx in range(count):
-                vx[ys[idx], xs[idx]] = RANDOM_SIGN_POOL[(RNG_PTR_SIGN + idx) % pool_len]
-            RNG_PTR_SIGN = (RNG_PTR_SIGN + count) % pool_len
-
-        decay_eligible = ~motion_mask
-        np.subtract(vx, 1, out=vx, where=(vx > 0) & decay_eligible)
-        np.add(vx, 1, out=vx, where=(vx < 0) & decay_eligible)
-
-    DATAMOSH_WORK_BUFFER[:] = MUTABLE_PROCESSING_BUFFER
-    active_y, active_x = np.nonzero(vx)
-
-    for gy, gx in zip(active_y, active_x):
-        block_v = vx[gy, gx]
-        by = gy * BLOCK_Y
-        bx = gx * BLOCK_X
-        shift_bx = max(0, min(FRAME_W - BLOCK_X, bx + block_v))
-        target_block = DATAMOSH_WORK_BUFFER[by : by + BLOCK_Y, bx : bx + BLOCK_X]
-        history_source = DATAMOSH_PREV_FRAME[
-            by : by + BLOCK_Y, shift_bx : shift_bx + BLOCK_X
-        ]
-        history_dest = DATAMOSH_PREV_FRAME[by : by + BLOCK_Y, bx : bx + BLOCK_X]
-        erosion_seed = gy ^ gx ^ DATAMOSH_CYCLE_COUNTER
-        top_e = erosion_seed % 3 if (erosion_seed & 1) else 0
-        bottom_e = (erosion_seed >> 1) % 3 if (erosion_seed & 2) else 0
-        left_e = (erosion_seed >> 2) % 3 if (erosion_seed & 4) else 0
-        right_e = (erosion_seed >> 3) % 3 if (erosion_seed & 8) else 0
-        target_interior = target_block[
-            top_e : BLOCK_Y - bottom_e, left_e : BLOCK_X - right_e
-        ]
-        source_interior = history_source[
-            top_e : BLOCK_Y - bottom_e, left_e : BLOCK_X - right_e
-        ]
-        target_interior[:] = source_interior
-        history_dest[:] = (
-            (target_block.astype(np.uint16) * 161 + history_dest.astype(np.uint16) * 95)
-            >> 8
-        ).astype(np.uint8)
-
-    MUTABLE_PROCESSING_BUFFER[:] = DATAMOSH_WORK_BUFFER
+_validate_effect_wiring()
 
 
 # =========================================================================
@@ -2020,7 +2363,7 @@ def n(val):
 
 
 def apply_glitch_pipeline(current_time, control_packet):
-    global WARMUP_COUNTER, LAST_TEMPORAL_PURGE, CORRUPTION_ENERGY, CORRUPTION_MODE
+    global WARMUP_COUNTER, LAST_TEMPORAL_PURGE
     global \
         ASCII_LOWRES_GRAY, \
         ASCII_UPRES_GRAY, \
@@ -2034,88 +2377,12 @@ def apply_glitch_pipeline(current_time, control_packet):
     pkt_knobs = control_packet.knobs
     is_warming_up = WARMUP_COUNTER < WARMUP_FRAMES
 
-    # DIGITAL CORRUPTION GRID STATE EVALUATION ENGINE (DRIVEN BY KNOB 2)
+    # PACKET CORRUPTION (STANDALONE; UNWIRED UNLESS PACKET_CORRUPTION_KNOB IS SET)
     # =========================================================================
-    knob2_val = n(pkt_knobs[2])
-
-    if knob2_val < 0.01:
-        CORRUPTION_ENERGY[:] = 0.0
-        CORRUPTION_MODE[:] = 0
-
-    if not is_warming_up:
-        CORRUPTION_ENERGY[DATAMOSH_VX != 0] += 0.1
-
-    if knob2_val > 0.02 and np.random.rand() < (knob2_val * 0.33):
-        if np.random.rand() < 0.80:
-            gy = np.random.randint(0, GRID_H)
-            gx = np.random.randint(0, GRID_W)
-
-            block_size_y = np.random.randint(1, 4)
-            block_size_x = np.random.randint(1, 4)
-
-            gy_end = min(GRID_H, gy + block_size_y)
-            gx_end = min(GRID_W, gx + block_size_x)
-
-            CORRUPTION_ENERGY[gy:gy_end, gx:gx_end] = 1.0
-            CORRUPTION_MODE[gy:gy_end, gx:gx_end] = 1
-
-        else:
-            col_width = 1 if np.random.rand() < 0.9 else 2
-            gx = np.random.randint(0, max(1, GRID_W - col_width))
-            gx_end = gx + col_width
-
-            col_roll = np.random.rand()
-            if col_roll < 0.60:
-                mode_selection = 2  # Noise Column
-            elif col_roll < 0.90:
-                mode_selection = 3  # Black Column
-            else:
-                mode_selection = 4  # White Column
-
-            CORRUPTION_ENERGY[:, gx:gx_end] = 1.0
-            CORRUPTION_MODE[:, gx:gx_end] = mode_selection
-
-    CORRUPTION_ENERGY *= 0.9
-    np.clip(CORRUPTION_ENERGY, 0.0, 1.0, out=CORRUPTION_ENERGY)
-
-    CORRUPTION_MODE[CORRUPTION_ENERGY <= 0.005] = 0
-
-    # SPATIAL METADATA RENDERING ENGINE (DRIVEN BY KNOB 2)
-    # =========================================================================
-    if np.any(CORRUPTION_MODE):
-        active_gy, active_gx = np.nonzero(CORRUPTION_MODE)
-        bh = DATAMOSH_BLOCK_H
-        bw = DATAMOSH_BLOCK_W
-
-        if np.any((CORRUPTION_MODE == 1) | (CORRUPTION_MODE == 2)):
-            cv2.randu(GLOBAL_NOISE_BUFFER, (0, 0, 0), (255, 255, 255))
-
-        for gy, gx in zip(active_gy, active_gx):
-            y1, y2 = gy * bh, (gy + 1) * bh
-            x1, x2 = gx * bw, (gx + 1) * bw
-
-            energy = float(CORRUPTION_ENERGY[gy, gx])
-            mode = CORRUPTION_MODE[gy, gx]
-
-            block_view = MUTABLE_PROCESSING_BUFFER[y1:y2, x1:x2]
-
-            need_blend = energy < 0.95
-            if need_blend:
-                scratch = STATIC_BLOCK_BUFFER[: (y2 - y1), : (x2 - x1)]
-                scratch[:] = block_view
-
-            # Values: 0 = Clean, 1 = Square Noise Block, 2 = Noise Column, 3 = Black Column, 4 = White Column
-            if mode == 1 or mode == 2:
-                block_view[:] = GLOBAL_NOISE_BUFFER[: (y2 - y1), : (x2 - x1)]
-            elif mode == 3:
-                block_view[:] = 0
-            elif mode == 4:
-                block_view[:] = 255
-
-            if need_blend:
-                cv2.addWeighted(
-                    block_view, energy, scratch, 1.0 - energy, 0, dst=block_view
-                )
+    apply_packet_corruption(
+        pkt_knobs[PACKET_CORRUPTION_KNOB] if PACKET_CORRUPTION_KNOB is not None else 0,
+        current_time,
+    )
 
     # PIXEL DAMAGE (KNOB 3)
     # =========================================================================
@@ -2200,27 +2467,27 @@ def apply_glitch_pipeline(current_time, control_packet):
                             scratch[:, -s_s:] = slice_view[:, :s_s]
                             slice_view[:] = scratch
 
-    # TEMPORAL ISOLATION & DATAMOSH MODULE (RELATED TO KNOB 2)
+    # TEMPORAL REGISTERS (WARM-UP / PURGE)
     # =========================================================================
     cv2.cvtColor(MUTABLE_PROCESSING_BUFFER, cv2.COLOR_BGR2GRAY, dst=SHARED_GRAY_BUFFER)
 
     if is_warming_up:
         PREV_FRAME_BUFFER[:] = MUTABLE_PROCESSING_BUFFER
-        DATAMOSH_PREV_FRAME[:] = MUTABLE_PROCESSING_BUFFER
         WARMUP_COUNTER += 1
 
     if (current_time - LAST_TEMPORAL_PURGE) > 90.0:
-        DATAMOSH_VX[:] = 0
-        DATAMOSH_PREV_FRAME[:] = MUTABLE_PROCESSING_BUFFER
         PREV_FRAME_BUFFER[:] = MUTABLE_PROCESSING_BUFFER
         LAST_TEMPORAL_PURGE = current_time
 
-    # === ISOLATED KNOB 2 ROUTING BLOCK ===
+    # === DATA MOSH (KNOB = DATAMOSH_KNOB), POSITION "before_drift" ===
     # =========================================================================
 
-    if not is_warming_up:
-        datamosh_intensity = n(pkt_knobs[2]) ** 2
-        apply_datamosh(datamosh_intensity, current_time)
+    if (
+        not is_warming_up
+        and DATAMOSH_KNOB is not None
+        and MOSH_STAGE_POSITION == "before_drift"
+    ):
+        apply_data_mosh(pkt_knobs[DATAMOSH_KNOB], current_time)
 
     # HORIZONTAL SIGNAL DRIFT (KNOB 1)
     # =========================================================================
@@ -2284,7 +2551,26 @@ def apply_glitch_pipeline(current_time, control_packet):
 
     # STAGE 6: GRAVITATIONAL MELT DEFORMATION (KNOB 4)
     # =========================================================================
+    mosh_samples = None
+    if (
+        not is_warming_up
+        and DATAMOSH_KNOB is not None
+        and MOSH_STAGE_POSITION == "after_melt_pre_melt_motion"
+        and n(pkt_knobs[DATAMOSH_KNOB]) ** 2 >= MOSH_DORMANT_BELOW
+    ):
+        mosh_samples = data_mosh_take_samples(MUTABLE_PROCESSING_BUFFER)
+
     apply_melt_pass(n(pkt_knobs[4]), current_time)
+
+    # === DATA MOSH, POSITIONS "after_melt_*" ===
+    # =========================================================================
+    if (
+        not is_warming_up
+        and DATAMOSH_KNOB is not None
+        and MOSH_STAGE_POSITION
+        in ("after_melt_own_motion", "after_melt_pre_melt_motion")
+    ):
+        apply_data_mosh(pkt_knobs[DATAMOSH_KNOB], current_time, mosh_samples)
 
     # HIGH-DENSITY ASCII LAYER ENGINE (KNOB 0)
     # =========================================================================
