@@ -203,10 +203,10 @@ MOSH_STAGE_POSITION = "after_melt_own_motion"
 MOSH_DORMANT_BELOW = (
     0.02  # strength = (knob/1023)**2 below this cancels everything at once
 )
-MOSH_THRESH_BASE = 11  # motion threshold = BASE + (1 - strength) * SPAN   (18 .. 58)
-MOSH_THRESH_SPAN = 47
+MOSH_THRESH_BASE = 18  # motion threshold = BASE + (1 - strength) * SPAN   (18 .. 58)
+MOSH_THRESH_SPAN = 57
 MOSH_HOLD_MIN_FRAMES = 17  # hold time rises from MIN to MAX with strength (1-60)
-MOSH_HOLD_MAX_FRAMES = 57
+MOSH_HOLD_MAX_FRAMES = 49
 MOSH_VECTOR_PX = 7  # horizontal drag per frame (1-8)
 MOSH_DRAG_NEW_WEIGHT = (
     161 / 256
@@ -1096,7 +1096,7 @@ def data_mosh_take_samples(frame):
 
 def apply_data_mosh(raw_knob, current_time, motion_samples=None):
     """Data Mosh entry point. raw_knob 0-1023. Modifies MUTABLE_PROCESSING_BUFFER in place."""
-    strength = n(raw_knob) ** 5  # response curve unchanged from the old effect
+    strength = n(raw_knob) ** 3  # response curve unchanged from the old effect
     if strength < MOSH_DORMANT_BELOW:
         if _MOSH.is_dirty():  # lowering the knob cancels all moshing at once
             _MOSH.reset()
