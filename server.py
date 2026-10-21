@@ -192,14 +192,14 @@ FRAME_W = 640
 # ==============================================================================
 # --- wiring: which knob (0-5) drives which effect, or None = not connected -------
 DATAMOSH_KNOB = 2
-PACKET_CORRUPTION_KNOB = 3  # standalone effect, ready: set to a knob index to connect it, "None" if not connected, 0-5 to connect to a knob
+PACKET_CORRUPTION_KNOB = 5  # standalone effect, ready: set to a knob index to connect it, "None" if not connected, 0-5 to connect to a knob
 
 # --- Data Mosh -------------------------------------------------------------------
 # Where in the pipeline it runs:
 #   "before_drift"               today's position (after chroma, before Signal Drift)
 #   "after_melt_own_motion"      after Melt, motion measured on its own input
 #   "after_melt_pre_melt_motion" after Melt, motion measured on the picture before Melt
-MOSH_STAGE_POSITION = "after_melt_own_motion"
+MOSH_STAGE_POSITION = "after_melt_pre_melt_motion"
 MOSH_DORMANT_BELOW = (
     0.02  # strength = (knob/1023)**2 below this cancels everything at once
 )
