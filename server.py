@@ -199,7 +199,7 @@ PACKET_CORRUPTION_KNOB = 5  # standalone effect, ready: set to a knob index to c
 #   "before_drift"               today's position (after chroma, before Signal Drift)
 #   "after_melt_own_motion"      after Melt, motion measured on its own input
 #   "after_melt_pre_melt_motion" after Melt, motion measured on the picture before Melt
-MOSH_STAGE_POSITION = "after_melt_pre_melt_motion"
+MOSH_STAGE_POSITION = "after_melt_own_motion"
 MOSH_DORMANT_BELOW = (
     0.02  # strength = (knob/1023)**2 below this cancels everything at once
 )
@@ -229,10 +229,10 @@ CORRUPTION_CELL_W = 24
 CORRUPTION_GRID_H = FRAME_H // CORRUPTION_CELL_H
 CORRUPTION_GRID_W = FRAME_W // CORRUPTION_CELL_W
 CORRUPTION_CLEAR_BELOW = 0.01  # below this strength all damage is cleared
-CORRUPTION_SPAWN_ABOVE = 0.02  # new damage only spawns above this strength
+CORRUPTION_SPAWN_ABOVE = 0.012  # new damage only spawns above this strength
 CORRUPTION_SPAWN_RATE = 0.33  # spawn chance per frame = strength * RATE
 CORRUPTION_SQUARE_PROB = 0.80  # square block (else a full-height column)
-CORRUPTION_SQUARE_MAX_CELLS = 3  # square block is 1..N cells each way
+CORRUPTION_SQUARE_MAX_CELLS = 4  # square block is 1..N cells each way
 CORRUPTION_THIN_COLUMN_PROB = 0.9  # column is 1 cell wide (else 2)
 CORRUPTION_COLUMN_NOISE_PROB = 0.60  # column kind: noise below this roll
 CORRUPTION_COLUMN_BLACK_PROB_END = 0.90  # black up to this roll, white above
@@ -254,7 +254,7 @@ GLITCH_STRIP_MIN = 8  # [320x240: 4 ] [480x360: 6 ] [640x480: 8 ]
 GLITCH_STRIP_SCALE = 24  # [320x240: 12] [480x360: 18] [640x480: 24]
 
 DRIFT_MAX_AMOUNT = 60  # [320x240: 30] [480x360: 45] [640x480: 60]
-COMPRESSION_TILE_BASE = 12  # [320x240: 6 ] [480x360: 9 ] [640x480: 12]
+COMPRESSION_TILE_BASE = 6  # [320x240: 6 ] [480x360: 9 ] [640x480: 12]
 COMPRESSION_TILE_SCALE = 9  # [320x240: 3 ] [480x360: 4 ] [640x480: 6 ]
 
 ANA_SHIFT_MAX = 48  # [320x240: 18] [480x360: 27] [640x480: 36]
@@ -550,7 +550,7 @@ SPARK_INTERVAL = 14  # Will dynamically re-roll between 7 and 17
 
 # PATH B STABLE GLITCH STORAGE (ZERO RUNTIME HEAP CHURN)
 # =========================================================================
-MAX_GLITCHES = 8
+MAX_GLITCHES = 11
 
 glitch_active = np.zeros(MAX_GLITCHES, dtype=bool)
 glitch_type = np.zeros(MAX_GLITCHES, dtype=np.uint8)
