@@ -192,7 +192,9 @@ FRAME_W = 640
 # ==============================================================================
 # --- wiring: which knob (0-5) drives which effect, or None = not connected -------
 DATAMOSH_KNOB = 2
-PACKET_CORRUPTION_KNOB = None  # standalone effect, ready: set to a knob index to connect it
+PACKET_CORRUPTION_KNOB = (
+    None  # standalone effect, ready: set to a knob index to connect it
+)
 
 # --- Data Mosh -------------------------------------------------------------------
 # Where in the pipeline it runs:
@@ -200,20 +202,26 @@ PACKET_CORRUPTION_KNOB = None  # standalone effect, ready: set to a knob index t
 #   "after_melt_own_motion"      after Melt, motion measured on its own input
 #   "after_melt_pre_melt_motion" after Melt, motion measured on the picture before Melt
 MOSH_STAGE_POSITION = "before_drift"
-MOSH_DORMANT_BELOW = 0.02  # strength = (knob/1023)**2 below this cancels everything at once
+MOSH_DORMANT_BELOW = (
+    0.02  # strength = (knob/1023)**2 below this cancels everything at once
+)
 MOSH_THRESH_BASE = 18  # motion threshold = BASE + (1 - strength) * SPAN   (18 .. 58)
 MOSH_THRESH_SPAN = 40
-MOSH_HOLD_MIN_FRAMES = 6  # hold time rises from MIN to MAX with strength (1-60)
-MOSH_HOLD_MAX_FRAMES = 16
+MOSH_HOLD_MIN_FRAMES = 13  # hold time rises from MIN to MAX with strength (1-60)
+MOSH_HOLD_MAX_FRAMES = 37
 MOSH_VECTOR_PX = 4  # horizontal drag per frame (1-8)
-MOSH_DRAG_NEW_WEIGHT = 161 / 256  # share of the dragged picture per frame (as the old effect)
+MOSH_DRAG_NEW_WEIGHT = (
+    161 / 256
+)  # share of the dragged picture per frame (as the old effect)
 MOSH_EDGE_ERODE_MAX_PX = 2  # random edge erosion 0..N px on held cells (as before)
 MOSH_RELEASE_FRAMES = 3  # edges dissolve over the last N frames of a hold
 MOSH_RELEASE_ERODE_PX = 4  # extra erosion per release frame
 # Colour-plane bleed inside held cells: "shape_live_colour_held", "shape_held_colour_live", "off"
-MOSH_BLEED_MODE = "shape_live_colour_held"
-MOSH_BLEED_MAX = 0.8  # bleed mix = MAX * strength (0-1)
-MOSH_RNG_SEED = None  # None = fresh entropy each start; tests reseed via seed_private_rngs()
+MOSH_BLEED_MODE = "shape_held_colour_live"
+MOSH_BLEED_MAX = 0.9  # bleed mix = MAX * strength (0-1)
+MOSH_RNG_SEED = (
+    None  # None = fresh entropy each start; tests reseed via seed_private_rngs()
+)
 MOSH_CELL_H = 32  # [320x240: 16] [480x360: 24] [640x480: 32]
 MOSH_CELL_W = 24  # [320x240: 12] [480x360: 18] [640x480: 24]
 
@@ -953,7 +961,7 @@ class DataMoshEngine:
 
         if motion_samples is None:
             motion_samples = frame[
-                _MOSH_SAMPLE_Y0 :: MOSH_CELL_H, _MOSH_SAMPLE_X0 :: MOSH_CELL_W
+                _MOSH_SAMPLE_Y0::MOSH_CELL_H, _MOSH_SAMPLE_X0::MOSH_CELL_W
             ][:gh, :gw]
         np.copyto(self.samp, motion_samples, casting="unsafe")
 
@@ -968,9 +976,9 @@ class DataMoshEngine:
         if np.array_equal(self.samp, self.prev_samp):
             motion = np.zeros((gh, gw), dtype=bool)  # duplicate camera frame
         else:
-            motion = (
-                np.abs(self.samp - self.prev_samp) * _MOSH_GRAY_WEIGHTS
-            ).sum(-1) > threshold
+            motion = (np.abs(self.samp - self.prev_samp) * _MOSH_GRAY_WEIGHTS).sum(
+                -1
+            ) > threshold
         hold_frames = int(
             round(
                 MOSH_HOLD_MIN_FRAMES
@@ -1024,7 +1032,10 @@ class DataMoshEngine:
             inset = np.clip(inset, 0, 255).astype(np.uint8)
             self._cells_to_pixels(inset, r0, r1, self.m_inset)
             cv2.compare(
-                self.edge_dist[band], self.m_inset[band], cv2.CMP_GE, dst=self.m_tmp[band]
+                self.edge_dist[band],
+                self.m_inset[band],
+                cv2.CMP_GE,
+                dst=self.m_tmp[band],
             )
             cv2.bitwise_and(self.m_tmp[band], self.m_act[band], dst=self.m_fin[band])
 
@@ -1052,7 +1063,9 @@ class DataMoshEngine:
         self.timer[self.timer > 0] -= 1
         self.vx[self.timer == 0] = 0
         still_held = self.timer > 0
-        if band is None:  # nothing was held: the frame is unchanged, remember it directly
+        if (
+            band is None
+        ):  # nothing was held: the frame is unchanged, remember it directly
             np.copyto(self.hold, frame)
         elif not still_held.any():
             np.copyto(self.hold, self.cur)
@@ -1061,7 +1074,9 @@ class DataMoshEngine:
             np.copyto(self.hold[:y0], self.cur[:y0])
             np.copyto(self.hold[y1:], self.cur[y1:])
             self._cells_to_pixels(still_held.view(np.uint8), r0, r1, self.m_keep)
-            cv2.compare(self.m_keep[band], 0, cv2.CMP_EQ, dst=self.m_tmp[band])  # 255 outside held cells
+            cv2.compare(
+                self.m_keep[band], 0, cv2.CMP_EQ, dst=self.m_tmp[band]
+            )  # 255 outside held cells
             cv2.copyTo(self.cur[band], self.m_tmp[band], self.hold[band])
         np.copyto(self.prev_samp, self.samp)
 
@@ -1076,7 +1091,7 @@ def data_mosh_reset():
 
 def data_mosh_take_samples(frame):
     """Snapshot of the per-cell motion sample points (for MOSH_STAGE_POSITION C)."""
-    return frame[_MOSH_SAMPLE_Y0 :: MOSH_CELL_H, _MOSH_SAMPLE_X0 :: MOSH_CELL_W][
+    return frame[_MOSH_SAMPLE_Y0::MOSH_CELL_H, _MOSH_SAMPLE_X0::MOSH_CELL_W][
         :MOSH_GRID_H, :MOSH_GRID_W
     ].copy()
 
@@ -1222,29 +1237,43 @@ def _validate_effect_wiring():
     notes = []
 
     def knob_ok(v):
-        return v is None or (isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 5)
+        return v is None or (
+            isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 5
+        )
 
     if not knob_ok(DATAMOSH_KNOB):
         notes.append(f"DATAMOSH_KNOB={DATAMOSH_KNOB!r} invalid, using 2")
         DATAMOSH_KNOB = 2
     if not knob_ok(PACKET_CORRUPTION_KNOB):
-        notes.append(f"PACKET_CORRUPTION_KNOB={PACKET_CORRUPTION_KNOB!r} invalid, using None")
+        notes.append(
+            f"PACKET_CORRUPTION_KNOB={PACKET_CORRUPTION_KNOB!r} invalid, using None"
+        )
         PACKET_CORRUPTION_KNOB = None
     if MOSH_STAGE_POSITION not in (
         "before_drift",
         "after_melt_own_motion",
         "after_melt_pre_melt_motion",
     ):
-        notes.append(f"MOSH_STAGE_POSITION={MOSH_STAGE_POSITION!r} invalid, using 'before_drift'")
+        notes.append(
+            f"MOSH_STAGE_POSITION={MOSH_STAGE_POSITION!r} invalid, using 'before_drift'"
+        )
         MOSH_STAGE_POSITION = "before_drift"
-    if MOSH_BLEED_MODE not in ("shape_live_colour_held", "shape_held_colour_live", "off"):
-        notes.append(f"MOSH_BLEED_MODE={MOSH_BLEED_MODE!r} invalid, using 'shape_live_colour_held'")
+    if MOSH_BLEED_MODE not in (
+        "shape_live_colour_held",
+        "shape_held_colour_live",
+        "off",
+    ):
+        notes.append(
+            f"MOSH_BLEED_MODE={MOSH_BLEED_MODE!r} invalid, using 'shape_live_colour_held'"
+        )
         MOSH_BLEED_MODE = "shape_live_colour_held"
     if not (1 <= MOSH_VECTOR_PX <= 8):
         notes.append(f"MOSH_VECTOR_PX={MOSH_VECTOR_PX} outside 1-8, using 4")
         MOSH_VECTOR_PX = 4
     if not (1 <= MOSH_HOLD_MIN_FRAMES <= MOSH_HOLD_MAX_FRAMES <= 60):
-        notes.append("MOSH_HOLD_*_FRAMES must satisfy 1 <= min <= max <= 60, using 6 and 16")
+        notes.append(
+            "MOSH_HOLD_*_FRAMES must satisfy 1 <= min <= max <= 60, using 6 and 16"
+        )
         MOSH_HOLD_MIN_FRAMES, MOSH_HOLD_MAX_FRAMES = 6, 16
 
     if (
