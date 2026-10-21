@@ -94,7 +94,7 @@ QR_GUIDE_MARGIN = 2  # px — gap from image edges
 QR_GUIDE_CORNER = (
     "bottom-left"  # Options: "bottom-left", "bottom-right", "top-left", "top-right"
 )
-QR_GUIDE_OPACITY = 200  # 0–255: 0 = fully transparent, 255 = fully opaque
+QR_GUIDE_OPACITY = 151  # 0–255: 0 = fully transparent, 255 = fully opaque
 
 # Ticker Tape Presentation Layer Geometry
 TICKER_ITEM_W = 240
