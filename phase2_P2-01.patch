@@ -1,0 +1,1746 @@
+diff --git a/ab_regression.py b/ab_regression.py
+index c89aa41..10795d1 100644
+--- a/ab_regression.py
++++ b/ab_regression.py
+@@ -10,21 +10,24 @@ How: it loads two versions of server.py side by side in ONE Python process
+     NEW = the working-tree server.py    (imported normally)
+ Both run the full apply_glitch_pipeline() on identical frames, identical knob
+ settings and identical RNG seeds. Wherever the phase is supposed to be inert
+-(Melt dormant), the outputs must be byte-identical. Because both versions
++(knob 2 dormant: Data Mosh and the old corruption both idle, every other knob
++busy, Melt included), the outputs must be byte-identical. Because both versions
+ run on the same libraries, any difference can only come from the code change.
+ 
+ Run from the repo root (kiosk stopped):
+-    git tag pre-phase1 <commit-before-phase-1>      # once, on the commit BEFORE Phase 1
+-    python3 ab_regression.py --ref pre-phase1
++    git tag pre-phase2 <commit-before-phase-2>      # once, on the commit BEFORE Phase 2
++    python3 ab_regression.py --ref pre-phase2
+ or, without git:
+     python3 ab_regression.py --old-file path/to/old_server.py
+ 
+ Checks
+-    1. DORMANT cases (knob 4 raw 0 and 30): OLD == NEW, byte for byte, for every frame
+-       of a multi-frame sequence (so temporal effects like Data Mosh are exercised).
+-    2. BOUNDARY: raw 30 (0.0293 <= 0.03, dormant) must match; raw 31 (0.0303) must differ.
+-    3. NEGATIVE CONTROL: with Melt active, OLD and NEW must differ. If they do not,
+-       the comparison cannot tell the versions apart and the PASS above means nothing.
++    1. DORMANT cases (knob 2 raw 0 and 20): OLD == NEW, byte for byte, for every frame
++       of a multi-frame sequence, with all other knobs free to be busy (Melt included).
++    2. BOUNDARY: raw 20 (0.0196 <= 0.02: old corruption does not spawn, Data Mosh idle)
++       with the other knobs busy must match.
++    3. NEGATIVE CONTROL: with knob 2 active, OLD and NEW must differ (old fused effect
++       against Data Mosh v2). If they do not, the comparison cannot tell the versions
++       apart and the PASS above means nothing.
+     4. VACUITY: outputs must not be all black and must differ from their inputs in
+        most cases (a black output makes every hash match; this is a real trap).
+ Exit code 0 = everything holds, 1 = something failed.
+@@ -46,17 +49,18 @@ os.environ.setdefault("IK_URL_ENDPOINT", "https://ik.imagekit.io/mock")
+ os.environ.setdefault("IK_PRIVATE_KEY", "mock_key")
+ sys.path.insert(0, os.getcwd())
+ 
+-MELT_KNOB = 4
++FOCUS_KNOB = 2  # Data Mosh (the old fused corruption + mosh knob)
+ BASE_TIME = 5000.0
+-DORMANT_RAW = (0, 30)  # n(30) = 0.0293 <= 0.03
+-FIRST_ACTIVE_RAW = 31  # n(31) = 0.0303 >  0.03
++DORMANT_RAW = (0, 20)  # n(20) = 0.0196 <= 0.02: nothing on knob 2 acts in OLD or NEW
+ 
+ # Module-level state that is randomised at IMPORT time (before any seed can be set).
+ # The two server modules would otherwise start with different random pools and the
+ # comparison would report differences that have nothing to do with the code change.
+ # Add a name with --sync NAME if the self-test below flags new unseeded state.
+-SYNC_GLOBALS = ["RANDOM_SIGN_POOL"]
+-RESET_TO_ZERO = ["RNG_PTR_SIGN"]  # pointers into those pools
++# (Phase 2 removed RANDOM_SIGN_POOL; Data Mosh now owns a private generator that
++# seed_private_rngs() reseeds on every step, so nothing needs syncing today.)
++SYNC_GLOBALS = []
++RESET_TO_ZERO = []  # pointers into those pools
+ 
+ 
+ # --------------------------------------------------------------------------
+@@ -137,6 +141,8 @@ def run_step(mod, frame, knobs, t, seed):
+     np.random.seed(seed)
+     random.seed(seed)
+     cv2.setRNGSeed(seed)  # cv2.randu (packet corruption noise) uses OpenCV's own RNG
++    if hasattr(mod, "seed_private_rngs"):  # effects with their own generator (Data Mosh v2)
++        mod.seed_private_rngs(seed)
+     mod.MUTABLE_PROCESSING_BUFFER[:] = frame
+     pkt = mod.ControlPacket(list(knobs), 0, "live")
+     t0 = time.perf_counter()
+@@ -177,29 +183,29 @@ def run_case(old, new, name, knobs, frames, seed0):
+ # --------------------------------------------------------------------------
+ def dormant_cases(n_random, rng):
+     cases = []
+-    for k in (0, 1, 2, 3, 5):
++    for k in (0, 1, 3, 4, 5):  # every knob except the focus knob, alone
+         for level in (512, 1023):
+             knobs = [0] * 6
+             knobs[k] = level
+             cases.append((f"knob{k}={level}", knobs))
+     for level in (400, 1023):
+-        cases.append((f"all-others={level}", [level if i != MELT_KNOB else 0 for i in range(6)]))
++        cases.append((f"all-others={level}", [level if i != FOCUS_KNOB else 0 for i in range(6)]))
+     for i in range(n_random):
+         knobs = [int(v) for v in rng.integers(0, 1024, 6)]
+-        knobs[MELT_KNOB] = 0
++        knobs[FOCUS_KNOB] = DORMANT_RAW[i % len(DORMANT_RAW)]
+         cases.append((f"random#{i}", knobs))
+     # boundary: still dormant, with the other knobs busy
+-    cases.append(("boundary raw=30", [300, 200, 150, 400, 30, 500]))
++    cases.append(("boundary raw=20", [300, 200, 20, 400, 600, 500]))
+     return cases
+ 
+ 
+ def active_cases():
+-    """(name, knobs, input frame). Every case must have Melt seeds, or OLD == NEW is expected."""
++    """(name, knobs, input frame). Knob 2 acts in both versions, so OLD and NEW must differ."""
+     return [
+-        ("melt only 0.78", [0, 0, 0, 0, 800, 0], "textured"),
+-        ("melt only 1.00", [0, 0, 0, 0, 1023, 0], "textured"),
+-        ("melt + others", [200, 300, 400, 100, 1023, 50], "textured"),
+-        ("boundary raw=31", [300, 200, 150, 400, FIRST_ACTIVE_RAW, 500], "bright"),
++        ("knob2 only 0.59", [0, 0, 600, 0, 0, 0], "textured"),
++        ("knob2 only 1.00", [0, 0, 1023, 0, 0, 0], "textured"),
++        ("knob2 + others", [200, 300, 1023, 100, 400, 50], "textured"),
++        ("knob2 on portrait", [0, 0, 800, 0, 0, 0], "portrait"),
+     ]
+ 
+ 
+@@ -290,7 +296,7 @@ def main():
+     results_dormant, results_active = [], []
+     case_no = 0
+ 
+-    print("\n--- DORMANT MELT: OLD must equal NEW (byte for byte) ---")
++    print("\n--- KNOB 2 DORMANT: OLD must equal NEW (byte for byte) ---")
+     for cname, knobs in dormant_cases(args.random_cases, rng):
+         for fname, base in bases.items():
+             case_no += 1
+@@ -304,7 +310,7 @@ def main():
+                 extra = f"  first at step {i}: {n_px} px, bbox {bbox}, md5 {ho} vs {hn}"
+             print(f" [{mark}] {res['name']:<34} knobs={res['knobs']}{extra}")
+ 
+-    print("\n--- ACTIVE MELT (negative control): OLD and NEW must differ ---")
++    print("\n--- KNOB 2 ACTIVE (negative control): OLD and NEW must differ ---")
+     for cname, knobs, base_name in active_cases():
+         case_no += 1
+         res = run_case(old, new, f"{cname} / {base_name}", knobs,
+@@ -321,7 +327,7 @@ def main():
+ 
+     not_differing = [r["name"] for r in results_active if r["identical"]]
+     if not_differing:
+-        problems.append("negative control failed (OLD == NEW with Melt active): " + ", ".join(not_differing))
++        problems.append("negative control failed (OLD == NEW with knob 2 active): " + ", ".join(not_differing))
+ 
+     black = [r["name"] for r in results_dormant + results_active if r["all_black"]]
+     if black:
+@@ -335,7 +341,7 @@ def main():
+     print("\n" + "=" * 74)
+     print(f" Dormant cases compared : {len(results_dormant)}  (differing: {n_dormant_diff})")
+     print(f" Cases that altered the input frame: {changed}/{len(results_dormant)}")
+-    print(f" Active-melt cases that differ     : "
++    print(f" Knob-2-active cases that differ   : "
+           f"{sum(1 for r in results_active if not r['identical'])}/{len(results_active)}")
+     if problems:
+         print(" RESULT: FAIL")
+diff --git a/index.html b/index.html
+index 20ac6d8..b885127 100644
+--- a/index.html
++++ b/index.html
+@@ -302,7 +302,7 @@ html, body, img, div{ -webkit-touch-callout:none; -webkit-user-select:none; user
+         <div class="row">Signal Drift <span id="k1"></span></div>
+         <div class="row">Pixel Damage <span id="k3"></span></div>
+         <div class="row">Melt <span id="k4"></span></div>
+-        <div class="row">Data Corruption <span id="k2"></span></div>
++        <div class="row">Data Mosh <span id="k2"></span></div>
+         <div class="row">Chroma Shift <span id="k5"></span></div>
+ 
+     </div>
+diff --git a/pygame_display.py b/pygame_display.py
+index 2390d46..04a1a8f 100644
+--- a/pygame_display.py
++++ b/pygame_display.py
+@@ -133,7 +133,7 @@ KNOB_ROWS = [
+     (1, "Signal Drift"),
+     (3, "Pixel Damage"),
+     (4, "Melt"),
+-    (2, "Data Corruption"),
++    (2, "Data Mosh"),
+     (5, "Chroma Shift"),
+ ]
+ 
+diff --git a/server.py b/server.py
+index 381a349..db4fc18 100644
+--- a/server.py
++++ b/server.py
+@@ -188,20 +188,58 @@ FRAME_W = 640
+ # SCALABLE GLITCH MATRIX CONSTANTS
+ # ==============================================================================
+ 
+-DATAMOSH_BLOCK_H = 32  # [320x240: 16] [480x360: 24] [640x480: 32]
+-DATAMOSH_BLOCK_W = 24  # [320x240: 12] [480x360: 18] [640x480: 24]
++# PHASE 2 TUNABLES: EFFECT WIRING, DATA MOSH, PACKET CORRUPTION (readme R7)
++# ==============================================================================
++# --- wiring: which knob (0-5) drives which effect, or None = not connected -------
++DATAMOSH_KNOB = 2
++PACKET_CORRUPTION_KNOB = None  # standalone effect, ready: set to a knob index to connect it
++
++# --- Data Mosh -------------------------------------------------------------------
++# Where in the pipeline it runs:
++#   "before_drift"               today's position (after chroma, before Signal Drift)
++#   "after_melt_own_motion"      after Melt, motion measured on its own input
++#   "after_melt_pre_melt_motion" after Melt, motion measured on the picture before Melt
++MOSH_STAGE_POSITION = "before_drift"
++MOSH_DORMANT_BELOW = 0.02  # strength = (knob/1023)**2 below this cancels everything at once
++MOSH_THRESH_BASE = 18  # motion threshold = BASE + (1 - strength) * SPAN   (18 .. 58)
++MOSH_THRESH_SPAN = 40
++MOSH_HOLD_MIN_FRAMES = 6  # hold time rises from MIN to MAX with strength (1-60)
++MOSH_HOLD_MAX_FRAMES = 16
++MOSH_VECTOR_PX = 4  # horizontal drag per frame (1-8)
++MOSH_DRAG_NEW_WEIGHT = 161 / 256  # share of the dragged picture per frame (as the old effect)
++MOSH_EDGE_ERODE_MAX_PX = 2  # random edge erosion 0..N px on held cells (as before)
++MOSH_RELEASE_FRAMES = 3  # edges dissolve over the last N frames of a hold
++MOSH_RELEASE_ERODE_PX = 4  # extra erosion per release frame
++# Colour-plane bleed inside held cells: "shape_live_colour_held", "shape_held_colour_live", "off"
++MOSH_BLEED_MODE = "shape_live_colour_held"
++MOSH_BLEED_MAX = 0.8  # bleed mix = MAX * strength (0-1)
++MOSH_RNG_SEED = None  # None = fresh entropy each start; tests reseed via seed_private_rngs()
++MOSH_CELL_H = 32  # [320x240: 16] [480x360: 24] [640x480: 32]
++MOSH_CELL_W = 24  # [320x240: 12] [480x360: 18] [640x480: 24]
++
++# --- Packet Corruption (values are exactly the old inline stage) ------------------
++CORRUPTION_CELL_H = 32
++CORRUPTION_CELL_W = 24
++CORRUPTION_GRID_H = FRAME_H // CORRUPTION_CELL_H
++CORRUPTION_GRID_W = FRAME_W // CORRUPTION_CELL_W
++CORRUPTION_CLEAR_BELOW = 0.01  # below this strength all damage is cleared
++CORRUPTION_SPAWN_ABOVE = 0.02  # new damage only spawns above this strength
++CORRUPTION_SPAWN_RATE = 0.33  # spawn chance per frame = strength * RATE
++CORRUPTION_SQUARE_PROB = 0.80  # square block (else a full-height column)
++CORRUPTION_SQUARE_MAX_CELLS = 3  # square block is 1..N cells each way
++CORRUPTION_THIN_COLUMN_PROB = 0.9  # column is 1 cell wide (else 2)
++CORRUPTION_COLUMN_NOISE_PROB = 0.60  # column kind: noise below this roll
++CORRUPTION_COLUMN_BLACK_PROB_END = 0.90  # black up to this roll, white above
++CORRUPTION_DECAY = 0.9  # energy multiplier per frame
++CORRUPTION_CLEAR_ENERGY = 0.005  # damage at or below this energy disappears
++CORRUPTION_BLEND_BELOW = 0.95  # below this energy the damage is blended, not solid
+ 
+ STATIC_BLOCK_BUFFER = np.empty(
+-    (DATAMOSH_BLOCK_H, DATAMOSH_BLOCK_W, 3), dtype=np.uint8, order="C"
++    (CORRUPTION_CELL_H, CORRUPTION_CELL_W, 3), dtype=np.uint8, order="C"
+ )
+ 
+-DATAMOSH_START_Y = DATAMOSH_BLOCK_H // 2
+-DATAMOSH_START_X = DATAMOSH_BLOCK_W // 2
+-DATAMOSH_STRIDE_Y = DATAMOSH_BLOCK_H
+-DATAMOSH_STRIDE_X = DATAMOSH_BLOCK_W
+-
+ GLOBAL_NOISE_BUFFER = np.empty(
+-    (DATAMOSH_BLOCK_H, DATAMOSH_BLOCK_W, 3), dtype=np.uint8, order="C"
++    (CORRUPTION_CELL_H, CORRUPTION_CELL_W, 3), dtype=np.uint8, order="C"
+ )
+ 
+ GLITCH_BOX_MIN = 16  # [320x240: 8 ] [480x360: 12] [640x480: 16]
+@@ -460,32 +498,22 @@ def initialize_crt_mask():
+     print("[SYSTEM SETUP] CRT Mask locked into contiguous C-memory.")
+ 
+ 
+-# ISOLATED DATAMOSH TEMPORAL MEMORY REGISTERS (ZERO RUNTIME HEAP CHURN)
++# TEMPORAL REGISTERS (WARM-UP, PURGE) AND PACKET CORRUPTION STATE
+ # =========================================================================
+ WARMUP_FRAMES = 10
+ WARMUP_COUNTER = 0
+ LAST_TEMPORAL_PURGE = time.time()
+ 
+-GRID_H = FRAME_H // DATAMOSH_BLOCK_H
+-GRID_W = FRAME_W // DATAMOSH_BLOCK_W
+-
+ PREV_FRAME_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
+-DATAMOSH_PREV_FRAME = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
+ SHARED_GRAY_BUFFER = np.empty((FRAME_H, FRAME_W), dtype=np.uint8, order="C")
+ 
+-DATAMOSH_WORK_BUFFER = np.zeros((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
+-DATAMOSH_DIFF_BUFFER = np.zeros((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
+-DATAMOSH_GRAY_DIFF = np.zeros((FRAME_H, FRAME_W), dtype=np.uint8, order="C")
+-
+-DATAMOSH_VX = np.zeros((GRID_H, GRID_W), dtype=np.int8, order="C")
+-
+-CORRUPTION_ENERGY = np.zeros((GRID_H, GRID_W), dtype=np.float32, order="C")
+-
+-CORRUPTION_MODE = np.zeros((GRID_H, GRID_W), dtype=np.uint8, order="C")
++CORRUPTION_ENERGY = np.zeros(
++    (CORRUPTION_GRID_H, CORRUPTION_GRID_W), dtype=np.float32, order="C"
++)
+ 
+-DATAMOSH_CYCLE_COUNTER = 0
+-RANDOM_SIGN_POOL = np.where(np.random.rand(4096) > 0.5, 4, -4).astype(np.int8)
+-RNG_PTR_SIGN = 0
++CORRUPTION_MODE = np.zeros(
++    (CORRUPTION_GRID_H, CORRUPTION_GRID_W), dtype=np.uint8, order="C"
++)
+ 
+ # ASCII ENGINE PRE-ALLOCATED STORAGE (PHASE 1 MVP)
+ # =========================================================================
+@@ -833,92 +861,406 @@ def update_knobs(ser):
+         raise e
+ 
+ 
+-# ISOLATED DATAMOSH ENGINE
++# =========================================================================
++# DATA MOSH v2 (PHASE 2) - INDEPENDENT EFFECT, DRIVEN BY ITS OWN KNOB ONLY
++# =========================================================================
++# Self-contained (readme R13). It owns its buffers, its timers and its own random
++# generator. It never reads, writes or calls anything that belongs to Packet
++# Corruption (or any other effect), and Packet Corruption never touches it.
++#
++# Per frame it makes a fixed, small number of large OpenCV/NumPy calls (no per-cell
++# Python loop), all inside preallocated buffers and restricted to the row band that
++# contains the held cells. OpenCV calls release the GIL, so the display thread is
++# not starved the way the old per-cell loop could starve it.
++#
++# Look (approved in P2-00): a cell that shows motion freezes the PREVIOUS picture,
++# drags it +-MOSH_VECTOR_PX per frame, holds it for MOSH_HOLD_*_FRAMES (rising with
++# strength), then dissolves from its edges. Inside held cells the brightness and the
++# colour can come from different pictures (colour-plane bleed).
++#
++# Cancel rule (protected behaviour): the moment the knob drops below the dormancy
++# threshold every hold is cancelled at once and nothing is left over.
+ # =========================================================================
+ 
++MOSH_GRID_H = FRAME_H // MOSH_CELL_H
++MOSH_GRID_W = FRAME_W // MOSH_CELL_W
++MOSH_GRID_PX_W = MOSH_GRID_W * MOSH_CELL_W  # columns beyond this are never touched
++
++_MOSH_GRAY_WEIGHTS = np.array([0.114, 0.587, 0.299], dtype=np.float32)  # B, G, R
++_MOSH_SAMPLE_Y0 = MOSH_CELL_H // 2
++_MOSH_SAMPLE_X0 = MOSH_CELL_W // 2
++
++
++class DataMoshEngine:
++    """Temporal memory and scratch buffers of Data Mosh (about 10 MiB, allocated once)."""
++
++    def __init__(self, seed=None):
++        H, W = FRAME_H, FRAME_W
++        gh, gw = MOSH_GRID_H, MOSH_GRID_W
++        z3 = lambda: np.zeros((H, W, 3), dtype=np.uint8, order="C")
++        z1 = lambda: np.zeros((H, W), dtype=np.uint8, order="C")
++        # picture memory: `hold` is the PREVIOUS picture everywhere except inside held cells,
++        # where it is the frozen, dragged picture. It is always a complete picture, so the
++        # drag never pulls stale or empty pixels in from a neighbouring cell.
++        self.hold, self.cur = z3(), z3()
++        # scratch (each used only inside one step)
++        self.sh_right, self.sh_left, self.blend = z3(), z3(), z3()
++        self.comp, self.pos3, self.neg3 = z3(), z3(), z3()
++        self.m_keep, self.m_act, self.m_neg = z1(), z1(), z1()
++        self.m_inset, self.m_tmp, self.m_fin = z1(), z1(), z1()
++        self.y_live, self.y_hold, self.y_pos, self.y_neg = z1(), z1(), z1(), z1()
++        # distance of every pixel from its cell border (for edge erosion)
++        yy, xx = np.mgrid[0:H, 0:W]
++        iy, ix = yy % MOSH_CELL_H, xx % MOSH_CELL_W
++        self.edge_dist = np.minimum(
++            np.minimum(iy, MOSH_CELL_H - 1 - iy), np.minimum(ix, MOSH_CELL_W - 1 - ix)
++        ).astype(np.uint8)
++        # per-cell state
++        self.timer = np.zeros((gh, gw), dtype=np.int16)
++        self.vx = np.zeros((gh, gw), dtype=np.int8)
++        self.samp = np.zeros((gh, gw, 3), dtype=np.int16)
++        self.prev_samp = np.zeros((gh, gw, 3), dtype=np.int16)
++        self.have_prev = False
++        self.rng = np.random.default_rng(seed)
++
++    def reseed(self, seed):
++        self.rng = np.random.default_rng(seed)
++
++    def is_dirty(self):
++        return self.have_prev or bool(self.timer.any())
++
++    def reset(self):
++        """Forget everything: no hold, no vector, no remembered picture."""
++        self.timer[:] = 0
++        self.vx[:] = 0
++        self.have_prev = False
++
++    @staticmethod
++    def _cells_to_pixels(cells_u8, row0, row1, dst):
++        """Exact cell-grid upsample of cell rows row0..row1 into dst (pixel rows of those cells)."""
++        rows = row1 - row0 + 1
++        cv2.resize(
++            cells_u8[row0 : row1 + 1],
++            (MOSH_GRID_PX_W, rows * MOSH_CELL_H),
++            dst=dst[row0 * MOSH_CELL_H : (row1 + 1) * MOSH_CELL_H, :MOSH_GRID_PX_W],
++            interpolation=cv2.INTER_NEAREST,
++        )
++
++    def step(self, frame, strength, motion_samples=None):
++        """Apply one frame of Data Mosh to `frame` (modified in place)."""
++        gh, gw, W = MOSH_GRID_H, MOSH_GRID_W, FRAME_W
++        vec = MOSH_VECTOR_PX
++
++        if motion_samples is None:
++            motion_samples = frame[
++                _MOSH_SAMPLE_Y0 :: MOSH_CELL_H, _MOSH_SAMPLE_X0 :: MOSH_CELL_W
++            ][:gh, :gw]
++        np.copyto(self.samp, motion_samples, casting="unsafe")
++
++        if not self.have_prev:  # first frame after start / cancel: only remember
++            np.copyto(self.hold, frame)
++            np.copyto(self.prev_samp, self.samp)
++            self.have_prev = True
++            return
++
++        # ---- 1. which cells show motion (same metric and threshold as before) ----
++        threshold = int(MOSH_THRESH_BASE + (1.0 - strength) * MOSH_THRESH_SPAN)
++        if np.array_equal(self.samp, self.prev_samp):
++            motion = np.zeros((gh, gw), dtype=bool)  # duplicate camera frame
++        else:
++            motion = (
++                np.abs(self.samp - self.prev_samp) * _MOSH_GRAY_WEIGHTS
++            ).sum(-1) > threshold
++        hold_frames = int(
++            round(
++                MOSH_HOLD_MIN_FRAMES
++                + (MOSH_HOLD_MAX_FRAMES - MOSH_HOLD_MIN_FRAMES) * strength
++            )
++        )
++        new_cells = motion & (self.timer == 0)
++
++        # ---- 2. newly held cells start from the picture of just before the motion ----
++        # (`hold` already is that picture; each new cell only needs a drag direction)
++        if new_cells.any():
++            count = int(new_cells.sum())
++            self.vx[new_cells] = np.where(self.rng.random(count) > 0.5, vec, -vec)
++        self.timer[motion] = hold_frames
++        active = self.timer > 0
++        band = None
++
++        # ---- 3. drag, erode, composite - only inside the band of rows with held cells ----
++        if active.any():
++            np.copyto(self.cur, frame)  # this stage's INPUT (frame is modified below)
++            rows = np.flatnonzero(active.any(axis=1))
++            r0, r1 = int(rows[0]), int(rows[-1])
++            band = slice(r0 * MOSH_CELL_H, (r1 + 1) * MOSH_CELL_H)
++            self._cells_to_pixels(active.view(np.uint8), r0, r1, self.m_act)
++            self._cells_to_pixels((self.vx < 0).view(np.uint8), r0, r1, self.m_neg)
++
++            hold_band = self.hold[band]
++            # +-vec px horizontal shift with edge clamp, picked per cell by its vector sign
++            self.sh_right[band, : W - vec] = hold_band[:, vec:]
++            self.sh_right[band, W - vec :] = hold_band[:, W - 1 : W]
++            self.sh_left[band, vec:] = hold_band[:, : W - vec]
++            self.sh_left[band, :vec] = hold_band[:, 0:1]
++            cv2.copyTo(self.sh_left[band], self.m_neg[band], self.sh_right[band])
++            cv2.addWeighted(
++                self.sh_right[band],
++                MOSH_DRAG_NEW_WEIGHT,
++                hold_band,
++                1.0 - MOSH_DRAG_NEW_WEIGHT,
++                0,
++                dst=self.blend[band],
++            )
++            cv2.copyTo(self.blend[band], self.m_act[band], hold_band)
++
++            # edges erode a little always, and progressively during the last frames
++            inset = self.rng.integers(
++                0, MOSH_EDGE_ERODE_MAX_PX + 1, (gh, gw), dtype=np.int16
++            ) + (
++                np.clip(MOSH_RELEASE_FRAMES - self.timer, 0, MOSH_RELEASE_FRAMES)
++                * MOSH_RELEASE_ERODE_PX
++            )
++            inset = np.clip(inset, 0, 255).astype(np.uint8)
++            self._cells_to_pixels(inset, r0, r1, self.m_inset)
++            cv2.compare(
++                self.edge_dist[band], self.m_inset[band], cv2.CMP_GE, dst=self.m_tmp[band]
++            )
++            cv2.bitwise_and(self.m_tmp[band], self.m_act[band], dst=self.m_fin[band])
++
++            if MOSH_BLEED_MODE == "off":
++                cv2.copyTo(hold_band, self.m_fin[band], frame[band])
++            else:
++                bleed = MOSH_BLEED_MAX * strength
++                cv2.cvtColor(self.cur[band], cv2.COLOR_BGR2GRAY, dst=self.y_live[band])
++                cv2.cvtColor(hold_band, cv2.COLOR_BGR2GRAY, dst=self.y_hold[band])
++                if MOSH_BLEED_MODE == "shape_live_colour_held":
++                    luma_a, luma_b, base = self.y_live, self.y_hold, hold_band
++                else:  # "shape_held_colour_live"
++                    luma_a, luma_b, base = self.y_hold, self.y_live, self.cur[band]
++                cv2.subtract(luma_a[band], luma_b[band], dst=self.y_pos[band])
++                cv2.subtract(luma_b[band], luma_a[band], dst=self.y_neg[band])
++                cv2.convertScaleAbs(self.y_pos[band], dst=self.y_pos[band], alpha=bleed)
++                cv2.convertScaleAbs(self.y_neg[band], dst=self.y_neg[band], alpha=bleed)
++                cv2.merge([self.y_pos[band]] * 3, dst=self.pos3[band])
++                cv2.merge([self.y_neg[band]] * 3, dst=self.neg3[band])
++                cv2.add(base, self.pos3[band], dst=self.comp[band])
++                cv2.subtract(self.comp[band], self.neg3[band], dst=self.comp[band])
++                cv2.copyTo(self.comp[band], self.m_fin[band], frame[band])
++
++        # ---- 4. time moves on; the memory follows this frame outside the cells still held ----
++        self.timer[self.timer > 0] -= 1
++        self.vx[self.timer == 0] = 0
++        still_held = self.timer > 0
++        if band is None:  # nothing was held: the frame is unchanged, remember it directly
++            np.copyto(self.hold, frame)
++        elif not still_held.any():
++            np.copyto(self.hold, self.cur)
++        else:
++            y0, y1 = band.start, band.stop
++            np.copyto(self.hold[:y0], self.cur[:y0])
++            np.copyto(self.hold[y1:], self.cur[y1:])
++            self._cells_to_pixels(still_held.view(np.uint8), r0, r1, self.m_keep)
++            cv2.compare(self.m_keep[band], 0, cv2.CMP_EQ, dst=self.m_tmp[band])  # 255 outside held cells
++            cv2.copyTo(self.cur[band], self.m_tmp[band], self.hold[band])
++        np.copyto(self.prev_samp, self.samp)
++
++
++_MOSH = DataMoshEngine(MOSH_RNG_SEED)
++
++
++def data_mosh_reset():
++    """Cancel every hold and forget the remembered picture."""
++    _MOSH.reset()
+ 
+-def apply_datamosh(effect_val, current_time):
+-    global DATAMOSH_CYCLE_COUNTER, RNG_PTR_SIGN, WARMUP_COUNTER
+ 
+-    if WARMUP_COUNTER < WARMUP_FRAMES:
+-        DATAMOSH_PREV_FRAME[:] = MUTABLE_PROCESSING_BUFFER
+-        DATAMOSH_VX[:] = 0
++def data_mosh_take_samples(frame):
++    """Snapshot of the per-cell motion sample points (for MOSH_STAGE_POSITION C)."""
++    return frame[_MOSH_SAMPLE_Y0 :: MOSH_CELL_H, _MOSH_SAMPLE_X0 :: MOSH_CELL_W][
++        :MOSH_GRID_H, :MOSH_GRID_W
++    ].copy()
++
++
++def apply_data_mosh(raw_knob, current_time, motion_samples=None):
++    """Data Mosh entry point. raw_knob 0-1023. Modifies MUTABLE_PROCESSING_BUFFER in place."""
++    strength = n(raw_knob) ** 2  # response curve unchanged from the old effect
++    if strength < MOSH_DORMANT_BELOW:
++        if _MOSH.is_dirty():  # lowering the knob cancels all moshing at once
++            _MOSH.reset()
+         return
++    _MOSH.step(MUTABLE_PROCESSING_BUFFER, strength, motion_samples)
+ 
+-    BLOCK_X = FRAME_W // GRID_W
+-    BLOCK_Y = FRAME_H // GRID_H
+ 
+-    if effect_val < 0.02:
+-        DATAMOSH_VX[:] = 0
+-        cv2.addWeighted(
+-            MUTABLE_PROCESSING_BUFFER,
+-            0.8,  # 80% clean active frame
+-            DATAMOSH_PREV_FRAME,
+-            0.2,  # 20% residual history
+-            0,
+-            dst=DATAMOSH_PREV_FRAME,
+-        )
++# =========================================================================
++# PACKET CORRUPTION - STANDALONE EFFECT (PHASE 2: EXTRACTED, LOOK UNCHANGED)
++# =========================================================================
++# Unwired by default (PACKET_CORRUPTION_KNOB = None) and ready to be connected to
++# any knob. It has no connection to Data Mosh. Same random draws, in the same order,
++# as the old inline stage, so its look is unchanged.
++#   corruption_update(strength)  - spawn new damage, age the existing damage
++#   corruption_render(frame)     - paint the current damage onto `frame`
++# Both helpers take the strength as an argument and read no knobs, so the later
++# Packet Corruption + Pixellation fusion can call them directly.
++# =========================================================================
++
++
++def corruption_reset():
++    CORRUPTION_ENERGY[:] = 0.0
++    CORRUPTION_MODE[:] = 0
++
++
++def corruption_update(strength):
++    global CORRUPTION_ENERGY, CORRUPTION_MODE
++    gh, gw = CORRUPTION_GRID_H, CORRUPTION_GRID_W
++
++    if strength < CORRUPTION_CLEAR_BELOW:
++        CORRUPTION_ENERGY[:] = 0.0
++        CORRUPTION_MODE[:] = 0
++
++    if strength > CORRUPTION_SPAWN_ABOVE and np.random.rand() < (
++        strength * CORRUPTION_SPAWN_RATE
++    ):
++        if np.random.rand() < CORRUPTION_SQUARE_PROB:
++            gy = np.random.randint(0, gh)
++            gx = np.random.randint(0, gw)
++
++            block_size_y = np.random.randint(1, CORRUPTION_SQUARE_MAX_CELLS + 1)
++            block_size_x = np.random.randint(1, CORRUPTION_SQUARE_MAX_CELLS + 1)
++
++            gy_end = min(gh, gy + block_size_y)
++            gx_end = min(gw, gx + block_size_x)
++
++            CORRUPTION_ENERGY[gy:gy_end, gx:gx_end] = 1.0
++            CORRUPTION_MODE[gy:gy_end, gx:gx_end] = 1
++
++        else:
++            col_width = 1 if np.random.rand() < CORRUPTION_THIN_COLUMN_PROB else 2
++            gx = np.random.randint(0, max(1, gw - col_width))
++            gx_end = gx + col_width
++
++            col_roll = np.random.rand()
++            if col_roll < CORRUPTION_COLUMN_NOISE_PROB:
++                mode_selection = 2  # Noise Column
++            elif col_roll < CORRUPTION_COLUMN_BLACK_PROB_END:
++                mode_selection = 3  # Black Column
++            else:
++                mode_selection = 4  # White Column
++
++            CORRUPTION_ENERGY[:, gx:gx_end] = 1.0
++            CORRUPTION_MODE[:, gx:gx_end] = mode_selection
++
++    CORRUPTION_ENERGY *= CORRUPTION_DECAY
++    np.clip(CORRUPTION_ENERGY, 0.0, 1.0, out=CORRUPTION_ENERGY)
++
++    CORRUPTION_MODE[CORRUPTION_ENERGY <= CORRUPTION_CLEAR_ENERGY] = 0
++
++
++def corruption_render(frame):
++    if np.any(CORRUPTION_MODE):
++        active_gy, active_gx = np.nonzero(CORRUPTION_MODE)
++        bh = CORRUPTION_CELL_H
++        bw = CORRUPTION_CELL_W
++
++        if np.any((CORRUPTION_MODE == 1) | (CORRUPTION_MODE == 2)):
++            cv2.randu(GLOBAL_NOISE_BUFFER, (0, 0, 0), (255, 255, 255))
++
++        for gy, gx in zip(active_gy, active_gx):
++            y1, y2 = gy * bh, (gy + 1) * bh
++            x1, x2 = gx * bw, (gx + 1) * bw
++
++            energy = float(CORRUPTION_ENERGY[gy, gx])
++            mode = CORRUPTION_MODE[gy, gx]
++
++            block_view = frame[y1:y2, x1:x2]
++
++            need_blend = energy < CORRUPTION_BLEND_BELOW
++            if need_blend:
++                scratch = STATIC_BLOCK_BUFFER[: (y2 - y1), : (x2 - x1)]
++                scratch[:] = block_view
++
++            # Values: 0 = Clean, 1 = Square Noise Block, 2 = Noise Column, 3 = Black Column, 4 = White Column
++            if mode == 1 or mode == 2:
++                block_view[:] = GLOBAL_NOISE_BUFFER[: (y2 - y1), : (x2 - x1)]
++            elif mode == 3:
++                block_view[:] = 0
++            elif mode == 4:
++                block_view[:] = 255
++
++            if need_blend:
++                cv2.addWeighted(
++                    block_view, energy, scratch, 1.0 - energy, 0, dst=block_view
++                )
++
++
++def apply_packet_corruption(raw_knob, current_time=0.0):
++    """Packet Corruption entry point. raw_knob 0-1023. Modifies MUTABLE_PROCESSING_BUFFER in place."""
++    strength = n(raw_knob)
++    if strength < CORRUPTION_CLEAR_BELOW:
++        # dormant: identical to the old stage (everything cleared, nothing drawn, no random draws)
++        if CORRUPTION_MODE.any() or CORRUPTION_ENERGY.any():
++            corruption_reset()
+         return
++    corruption_update(strength)
++    corruption_render(MUTABLE_PROCESSING_BUFFER)
++
++
++# =========================================================================
++# PRIVATE RANDOM GENERATORS AND WIRING CHECK
++# =========================================================================
+ 
+-    DATAMOSH_CYCLE_COUNTER += 1
+-    vx = DATAMOSH_VX
+ 
+-    if DATAMOSH_CYCLE_COUNTER & 1:
+-        cv2.absdiff(
+-            MUTABLE_PROCESSING_BUFFER, DATAMOSH_PREV_FRAME, dst=DATAMOSH_DIFF_BUFFER
++def seed_private_rngs(seed):
++    """Reseed every effect that owns a private random generator (tests / A-B harness)."""
++    _MOSH.reseed(seed)
++
++
++def _validate_effect_wiring():
++    """Check the Phase 2 tunables. Never raises: a bad value is reported and replaced by
++    its safe default so the booth keeps running (readme R14). Returns the messages."""
++    global DATAMOSH_KNOB, PACKET_CORRUPTION_KNOB, MOSH_STAGE_POSITION, MOSH_BLEED_MODE
++    global MOSH_HOLD_MIN_FRAMES, MOSH_HOLD_MAX_FRAMES, MOSH_VECTOR_PX
++    notes = []
++
++    def knob_ok(v):
++        return v is None or (isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 5)
++
++    if not knob_ok(DATAMOSH_KNOB):
++        notes.append(f"DATAMOSH_KNOB={DATAMOSH_KNOB!r} invalid, using 2")
++        DATAMOSH_KNOB = 2
++    if not knob_ok(PACKET_CORRUPTION_KNOB):
++        notes.append(f"PACKET_CORRUPTION_KNOB={PACKET_CORRUPTION_KNOB!r} invalid, using None")
++        PACKET_CORRUPTION_KNOB = None
++    if MOSH_STAGE_POSITION not in (
++        "before_drift",
++        "after_melt_own_motion",
++        "after_melt_pre_melt_motion",
++    ):
++        notes.append(f"MOSH_STAGE_POSITION={MOSH_STAGE_POSITION!r} invalid, using 'before_drift'")
++        MOSH_STAGE_POSITION = "before_drift"
++    if MOSH_BLEED_MODE not in ("shape_live_colour_held", "shape_held_colour_live", "off"):
++        notes.append(f"MOSH_BLEED_MODE={MOSH_BLEED_MODE!r} invalid, using 'shape_live_colour_held'")
++        MOSH_BLEED_MODE = "shape_live_colour_held"
++    if not (1 <= MOSH_VECTOR_PX <= 8):
++        notes.append(f"MOSH_VECTOR_PX={MOSH_VECTOR_PX} outside 1-8, using 4")
++        MOSH_VECTOR_PX = 4
++    if not (1 <= MOSH_HOLD_MIN_FRAMES <= MOSH_HOLD_MAX_FRAMES <= 60):
++        notes.append("MOSH_HOLD_*_FRAMES must satisfy 1 <= min <= max <= 60, using 6 and 16")
++        MOSH_HOLD_MIN_FRAMES, MOSH_HOLD_MAX_FRAMES = 6, 16
++
++    if (
++        DATAMOSH_KNOB is not None
++        and PACKET_CORRUPTION_KNOB is not None
++        and DATAMOSH_KNOB == PACKET_CORRUPTION_KNOB
++    ):
++        notes.append(
++            f"NOTE: Data Mosh and Packet Corruption both listen to knob {DATAMOSH_KNOB}"
+         )
+-        cv2.cvtColor(DATAMOSH_DIFF_BUFFER, cv2.COLOR_BGR2GRAY, dst=DATAMOSH_GRAY_DIFF)
+-
+-        motion_thresh = int(18 + (1.0 - effect_val) * 40)
+-        center_diffs = DATAMOSH_GRAY_DIFF[
+-            DATAMOSH_START_Y::DATAMOSH_STRIDE_Y, DATAMOSH_START_X::DATAMOSH_STRIDE_X
+-        ][:GRID_H, :GRID_W]
+-        motion_mask = center_diffs > motion_thresh
+-        new_motion_trigger = (vx == 0) & motion_mask
+-
+-        if np.any(new_motion_trigger):
+-            ys, xs = np.nonzero(new_motion_trigger)
+-            count = len(ys)
+-            pool_len = len(RANDOM_SIGN_POOL)
+-            for idx in range(count):
+-                vx[ys[idx], xs[idx]] = RANDOM_SIGN_POOL[(RNG_PTR_SIGN + idx) % pool_len]
+-            RNG_PTR_SIGN = (RNG_PTR_SIGN + count) % pool_len
+-
+-        decay_eligible = ~motion_mask
+-        np.subtract(vx, 1, out=vx, where=(vx > 0) & decay_eligible)
+-        np.add(vx, 1, out=vx, where=(vx < 0) & decay_eligible)
+-
+-    DATAMOSH_WORK_BUFFER[:] = MUTABLE_PROCESSING_BUFFER
+-    active_y, active_x = np.nonzero(vx)
+-
+-    for gy, gx in zip(active_y, active_x):
+-        block_v = vx[gy, gx]
+-        by = gy * BLOCK_Y
+-        bx = gx * BLOCK_X
+-        shift_bx = max(0, min(FRAME_W - BLOCK_X, bx + block_v))
+-        target_block = DATAMOSH_WORK_BUFFER[by : by + BLOCK_Y, bx : bx + BLOCK_X]
+-        history_source = DATAMOSH_PREV_FRAME[
+-            by : by + BLOCK_Y, shift_bx : shift_bx + BLOCK_X
+-        ]
+-        history_dest = DATAMOSH_PREV_FRAME[by : by + BLOCK_Y, bx : bx + BLOCK_X]
+-        erosion_seed = gy ^ gx ^ DATAMOSH_CYCLE_COUNTER
+-        top_e = erosion_seed % 3 if (erosion_seed & 1) else 0
+-        bottom_e = (erosion_seed >> 1) % 3 if (erosion_seed & 2) else 0
+-        left_e = (erosion_seed >> 2) % 3 if (erosion_seed & 4) else 0
+-        right_e = (erosion_seed >> 3) % 3 if (erosion_seed & 8) else 0
+-        target_interior = target_block[
+-            top_e : BLOCK_Y - bottom_e, left_e : BLOCK_X - right_e
+-        ]
+-        source_interior = history_source[
+-            top_e : BLOCK_Y - bottom_e, left_e : BLOCK_X - right_e
+-        ]
+-        target_interior[:] = source_interior
+-        history_dest[:] = (
+-            (target_block.astype(np.uint16) * 161 + history_dest.astype(np.uint16) * 95)
+-            >> 8
+-        ).astype(np.uint8)
++    for msg in notes:
++        print(f"[EFFECT WIRING] {msg}")
++    return notes
++
+ 
+-    MUTABLE_PROCESSING_BUFFER[:] = DATAMOSH_WORK_BUFFER
++_validate_effect_wiring()
+ 
+ 
+ # =========================================================================
+@@ -2020,7 +2362,7 @@ def n(val):
+ 
+ 
+ def apply_glitch_pipeline(current_time, control_packet):
+-    global WARMUP_COUNTER, LAST_TEMPORAL_PURGE, CORRUPTION_ENERGY, CORRUPTION_MODE
++    global WARMUP_COUNTER, LAST_TEMPORAL_PURGE
+     global \
+         ASCII_LOWRES_GRAY, \
+         ASCII_UPRES_GRAY, \
+@@ -2034,88 +2376,12 @@ def apply_glitch_pipeline(current_time, control_packet):
+     pkt_knobs = control_packet.knobs
+     is_warming_up = WARMUP_COUNTER < WARMUP_FRAMES
+ 
+-    # DIGITAL CORRUPTION GRID STATE EVALUATION ENGINE (DRIVEN BY KNOB 2)
++    # PACKET CORRUPTION (STANDALONE; UNWIRED UNLESS PACKET_CORRUPTION_KNOB IS SET)
+     # =========================================================================
+-    knob2_val = n(pkt_knobs[2])
+-
+-    if knob2_val < 0.01:
+-        CORRUPTION_ENERGY[:] = 0.0
+-        CORRUPTION_MODE[:] = 0
+-
+-    if not is_warming_up:
+-        CORRUPTION_ENERGY[DATAMOSH_VX != 0] += 0.1
+-
+-    if knob2_val > 0.02 and np.random.rand() < (knob2_val * 0.33):
+-        if np.random.rand() < 0.80:
+-            gy = np.random.randint(0, GRID_H)
+-            gx = np.random.randint(0, GRID_W)
+-
+-            block_size_y = np.random.randint(1, 4)
+-            block_size_x = np.random.randint(1, 4)
+-
+-            gy_end = min(GRID_H, gy + block_size_y)
+-            gx_end = min(GRID_W, gx + block_size_x)
+-
+-            CORRUPTION_ENERGY[gy:gy_end, gx:gx_end] = 1.0
+-            CORRUPTION_MODE[gy:gy_end, gx:gx_end] = 1
+-
+-        else:
+-            col_width = 1 if np.random.rand() < 0.9 else 2
+-            gx = np.random.randint(0, max(1, GRID_W - col_width))
+-            gx_end = gx + col_width
+-
+-            col_roll = np.random.rand()
+-            if col_roll < 0.60:
+-                mode_selection = 2  # Noise Column
+-            elif col_roll < 0.90:
+-                mode_selection = 3  # Black Column
+-            else:
+-                mode_selection = 4  # White Column
+-
+-            CORRUPTION_ENERGY[:, gx:gx_end] = 1.0
+-            CORRUPTION_MODE[:, gx:gx_end] = mode_selection
+-
+-    CORRUPTION_ENERGY *= 0.9
+-    np.clip(CORRUPTION_ENERGY, 0.0, 1.0, out=CORRUPTION_ENERGY)
+-
+-    CORRUPTION_MODE[CORRUPTION_ENERGY <= 0.005] = 0
+-
+-    # SPATIAL METADATA RENDERING ENGINE (DRIVEN BY KNOB 2)
+-    # =========================================================================
+-    if np.any(CORRUPTION_MODE):
+-        active_gy, active_gx = np.nonzero(CORRUPTION_MODE)
+-        bh = DATAMOSH_BLOCK_H
+-        bw = DATAMOSH_BLOCK_W
+-
+-        if np.any((CORRUPTION_MODE == 1) | (CORRUPTION_MODE == 2)):
+-            cv2.randu(GLOBAL_NOISE_BUFFER, (0, 0, 0), (255, 255, 255))
+-
+-        for gy, gx in zip(active_gy, active_gx):
+-            y1, y2 = gy * bh, (gy + 1) * bh
+-            x1, x2 = gx * bw, (gx + 1) * bw
+-
+-            energy = float(CORRUPTION_ENERGY[gy, gx])
+-            mode = CORRUPTION_MODE[gy, gx]
+-
+-            block_view = MUTABLE_PROCESSING_BUFFER[y1:y2, x1:x2]
+-
+-            need_blend = energy < 0.95
+-            if need_blend:
+-                scratch = STATIC_BLOCK_BUFFER[: (y2 - y1), : (x2 - x1)]
+-                scratch[:] = block_view
+-
+-            # Values: 0 = Clean, 1 = Square Noise Block, 2 = Noise Column, 3 = Black Column, 4 = White Column
+-            if mode == 1 or mode == 2:
+-                block_view[:] = GLOBAL_NOISE_BUFFER[: (y2 - y1), : (x2 - x1)]
+-            elif mode == 3:
+-                block_view[:] = 0
+-            elif mode == 4:
+-                block_view[:] = 255
+-
+-            if need_blend:
+-                cv2.addWeighted(
+-                    block_view, energy, scratch, 1.0 - energy, 0, dst=block_view
+-                )
++    apply_packet_corruption(
++        pkt_knobs[PACKET_CORRUPTION_KNOB] if PACKET_CORRUPTION_KNOB is not None else 0,
++        current_time,
++    )
+ 
+     # PIXEL DAMAGE (KNOB 3)
+     # =========================================================================
+@@ -2200,27 +2466,27 @@ def apply_glitch_pipeline(current_time, control_packet):
+                             scratch[:, -s_s:] = slice_view[:, :s_s]
+                             slice_view[:] = scratch
+ 
+-    # TEMPORAL ISOLATION & DATAMOSH MODULE (RELATED TO KNOB 2)
++    # TEMPORAL REGISTERS (WARM-UP / PURGE)
+     # =========================================================================
+     cv2.cvtColor(MUTABLE_PROCESSING_BUFFER, cv2.COLOR_BGR2GRAY, dst=SHARED_GRAY_BUFFER)
+ 
+     if is_warming_up:
+         PREV_FRAME_BUFFER[:] = MUTABLE_PROCESSING_BUFFER
+-        DATAMOSH_PREV_FRAME[:] = MUTABLE_PROCESSING_BUFFER
+         WARMUP_COUNTER += 1
+ 
+     if (current_time - LAST_TEMPORAL_PURGE) > 90.0:
+-        DATAMOSH_VX[:] = 0
+-        DATAMOSH_PREV_FRAME[:] = MUTABLE_PROCESSING_BUFFER
+         PREV_FRAME_BUFFER[:] = MUTABLE_PROCESSING_BUFFER
+         LAST_TEMPORAL_PURGE = current_time
+ 
+-    # === ISOLATED KNOB 2 ROUTING BLOCK ===
++    # === DATA MOSH (KNOB = DATAMOSH_KNOB), POSITION "before_drift" ===
+     # =========================================================================
+ 
+-    if not is_warming_up:
+-        datamosh_intensity = n(pkt_knobs[2]) ** 2
+-        apply_datamosh(datamosh_intensity, current_time)
++    if (
++        not is_warming_up
++        and DATAMOSH_KNOB is not None
++        and MOSH_STAGE_POSITION == "before_drift"
++    ):
++        apply_data_mosh(pkt_knobs[DATAMOSH_KNOB], current_time)
+ 
+     # HORIZONTAL SIGNAL DRIFT (KNOB 1)
+     # =========================================================================
+@@ -2284,8 +2550,27 @@ def apply_glitch_pipeline(current_time, control_packet):
+ 
+     # STAGE 6: GRAVITATIONAL MELT DEFORMATION (KNOB 4)
+     # =========================================================================
++    mosh_samples = None
++    if (
++        not is_warming_up
++        and DATAMOSH_KNOB is not None
++        and MOSH_STAGE_POSITION == "after_melt_pre_melt_motion"
++        and n(pkt_knobs[DATAMOSH_KNOB]) ** 2 >= MOSH_DORMANT_BELOW
++    ):
++        mosh_samples = data_mosh_take_samples(MUTABLE_PROCESSING_BUFFER)
++
+     apply_melt_pass(n(pkt_knobs[4]), current_time)
+ 
++    # === DATA MOSH, POSITIONS "after_melt_*" ===
++    # =========================================================================
++    if (
++        not is_warming_up
++        and DATAMOSH_KNOB is not None
++        and MOSH_STAGE_POSITION
++        in ("after_melt_own_motion", "after_melt_pre_melt_motion")
++    ):
++        apply_data_mosh(pkt_knobs[DATAMOSH_KNOB], current_time, mosh_samples)
++
+     # HIGH-DENSITY ASCII LAYER ENGINE (KNOB 0)
+     # =========================================================================
+     ascii_val = n(pkt_knobs[0])
+diff --git a/test_mosh_benchmark.py b/test_mosh_benchmark.py
+new file mode 100644
+index 0000000..ccae341
+--- /dev/null
++++ b/test_mosh_benchmark.py
+@@ -0,0 +1,168 @@
++#!/usr/bin/env python3
++"""
++Phase 2 benchmark: test_mosh_benchmark.py   (advisory: prints numbers, no pass/fail)
++
++Run on the Pi with the kiosk STOPPED (otherwise the numbers include its load):
++    python3 test_mosh_benchmark.py                      # OLD = git tag pre-phase2
++    python3 test_mosh_benchmark.py --old-file path/to/old_server.py --frames 120
++
++For every scene and knob position it times ONE call of the Data Mosh stage, OLD
++(apply_datamosh) against NEW (apply_data_mosh), and reports
++
++    cost       median / p95 / max milliseconds per call
++    GIL stretch  the longest time one call keeps working without any OpenCV call in
++               between. OpenCV calls release the GIL, so this is an UPPER BOUND on
++               how long the display thread can be kept waiting (NumPy's large copies
++               also release it, so the real figure for NEW is lower still).
++               The default thread-switch interval is 5 ms: a stretch longer than that
++               is how the old Melt made the display's frame copy stall.
++    held       average number of held cells (a sanity check that the scenes are busy)
++
++Scenes are synthetic (coloured shapes on a textured background; "chaos" = every cell
++moves every frame). Real camera frames behave differently: use the booth to judge.
++Optional: --max-p95-ms X makes the script exit 1 when NEW exceeds X ms (p95) anywhere.
++"""
++import argparse
++import importlib.util
++import os
++import subprocess
++import sys
++import tempfile
++import time
++
++import cv2
++import numpy as np
++
++os.environ.setdefault("IK_URL_ENDPOINT", "https://ik.imagekit.io/mock")
++os.environ.setdefault("IK_PRIVATE_KEY", "mock_key")
++sys.path.insert(0, os.getcwd())
++
++CV_NAMES = ["resize", "copyTo", "addWeighted", "cvtColor", "absdiff", "subtract", "add",
++            "merge", "convertScaleAbs", "compare", "bitwise_and", "bitwise_not"]
++BASE_TIME = 5000.0
++
++
++def scene(kind, n, seed=3):
++    rng = np.random.default_rng(seed)
++    bg = cv2.GaussianBlur(rng.integers(0, 256, (480, 640, 3), np.uint8), (0, 0), 9)
++    out = []
++    for t in range(n):
++        if kind == "chaos":
++            out.append(rng.integers(0, 256, (480, 640, 3), np.uint8))
++            continue
++        f = bg.copy()
++        if kind == "busy":
++            x = 40 + (t * 11) % 480
++            cv2.rectangle(f, (x, 120), (x + 110, 300), (30, 120, 255), -1)
++            cv2.circle(f, (600 - (t * 9) % 560, 80 + (t * 5) % 330), 55, (255, 200, 0), -1)
++        else:
++            cv2.circle(f, (200 + (t * 6) % 260, 240), 60, (30, 120, 255), -1)
++        out.append(f)
++    return out
++
++
++def load_old(ref, old_file):
++    if old_file:
++        path = old_file
++    else:
++        res = subprocess.run(["git", "show", f"{ref}:server.py"], capture_output=True)
++        if res.returncode != 0:
++            return None
++        path = os.path.join(tempfile.mkdtemp(prefix="bench_old_"), "server_old.py")
++        with open(path, "wb") as fh:
++            fh.write(res.stdout)
++    spec = importlib.util.spec_from_file_location("server_old", path)
++    mod = importlib.util.module_from_spec(spec)
++    sys.modules["server_old"] = mod
++    spec.loader.exec_module(mod)
++    return mod
++
++
++def measure(call, buf, frames, warm):
++    """Time call(i) per frame; also the longest stretch between OpenCV calls."""
++    orig = {n: getattr(cv2, n) for n in CV_NAMES}
++    marks = []
++
++    def wrap(fn):
++        def w(*a, **k):
++            t0 = time.perf_counter()
++            r = fn(*a, **k)
++            marks.append((t0, time.perf_counter()))
++            return r
++        return w
++
++    times, stretches = [], []
++    for i, f in enumerate(frames):
++        buf[:] = f
++        for n in CV_NAMES:
++            setattr(cv2, n, wrap(orig[n]))
++        marks.clear()
++        t0 = time.perf_counter()
++        call(i)
++        t1 = time.perf_counter()
++        for n in CV_NAMES:
++            setattr(cv2, n, orig[n])
++        if i < warm:
++            continue
++        pts = [t0] + [x for m in marks for x in m] + [t1]
++        stretches.append(max(pts[j + 1] - pts[j] for j in range(0, len(pts) - 1, 2)) * 1000)
++        times.append((t1 - t0) * 1000)
++    return np.array(times), np.array(stretches)
++
++
++def main():
++    ap = argparse.ArgumentParser(description="Data Mosh benchmark (advisory)")
++    ap.add_argument("--ref", default="pre-phase2")
++    ap.add_argument("--old-file")
++    ap.add_argument("--frames", type=int, default=80)
++    ap.add_argument("--max-p95-ms", type=float, default=None)
++    args = ap.parse_args()
++    warm = min(20, args.frames // 3)
++
++    import server as S  # noqa: E402
++
++    old = load_old(args.ref, args.old_file)
++    print("=" * 96)
++    print(" DATA MOSH BENCHMARK (advisory)   kiosk must be stopped")
++    print("=" * 96)
++    print(f" numpy {np.__version__}, opencv {cv2.__version__}, python {sys.version.split()[0]}, cv2 threads {cv2.getNumThreads()}")
++    print(f" OLD = {'git ref ' + args.ref if old is not None and not args.old_file else (args.old_file or 'not available')}")
++    print(" cost = ms per call (median / p95 / max)   stretch = longest run without an OpenCV call (ms, mean / worst)")
++    print("-" * 96)
++    print(f" {'scene':7s} {'knob':>4s} | {'version':7s} | {'cost':>22s} | {'GIL stretch':>16s} | held cells")
++
++    worst_p95 = 0.0
++    scenes = {"busy": scene("busy", args.frames), "sparse": scene("sparse", args.frames), "chaos": scene("chaos", args.frames, seed=5)}
++    for sname, frames in scenes.items():
++        for raw in (300, 600, 1023):
++            rows = []
++            if old is not None:
++                old.WARMUP_COUNTER = old.WARMUP_FRAMES
++                old.DATAMOSH_PREV_FRAME[:] = frames[0]
++                old.DATAMOSH_VX[:] = 0
++                held_o = []
++                strength = (raw / 1023.0) ** 2
++                t, st = measure(lambda i: (old.apply_datamosh(strength, BASE_TIME + i * 0.07), held_o.append(int(np.count_nonzero(old.DATAMOSH_VX)))),
++                                old.MUTABLE_PROCESSING_BUFFER, frames, warm)
++                rows.append(("OLD", t, st, np.mean(held_o[warm:])))
++            S.data_mosh_reset()
++            S.seed_private_rngs(1)
++            held_n = []
++            t, st = measure(lambda i: (S.apply_data_mosh(raw, BASE_TIME + i * 0.07), held_n.append(int((S._MOSH.timer > 0).sum()))),
++                            S.MUTABLE_PROCESSING_BUFFER, frames, warm)
++            rows.append(("NEW", t, st, np.mean(held_n[warm:])))
++            S.data_mosh_reset()
++            for label, t, st, held in rows:
++                worst_p95 = max(worst_p95, np.percentile(t, 95)) if label == "NEW" else worst_p95
++                print(f" {sname:7s} {raw:4d} | {label:7s} | {np.median(t):6.2f} / {np.percentile(t, 95):6.2f} / {t.max():6.2f} | {st.mean():6.2f} / {st.max():6.2f} | {held:6.1f}")
++    print("-" * 96)
++    print(" Reading it: NEW should show a much shorter GIL stretch than OLD, especially in 'chaos'.")
++    print(" A larger NEW cost at low strength is expected (fixed set of large operations).")
++    if args.max_p95_ms is not None and worst_p95 > args.max_p95_ms:
++        print(f" BUDGET EXCEEDED: NEW p95 {worst_p95:.2f} ms > {args.max_p95_ms} ms")
++        return 1
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/test_mosh_phase2.py b/test_mosh_phase2.py
+new file mode 100644
+index 0000000..33a9583
+--- /dev/null
++++ b/test_mosh_phase2.py
+@@ -0,0 +1,635 @@
++#!/usr/bin/env python3
++"""
++Phase 2 tests: test_mosh_phase2.py   (Data Mosh v2 + standalone Packet Corruption)
++
++Run from the repo root with the kiosk stopped:
++    python3 test_mosh_phase2.py                     # OLD = git tag pre-phase2
++    python3 test_mosh_phase2.py --old-file path/to/old_server.py
++    python3 test_mosh_phase2.py --quick             # fewer frames (use this on the Pi)
++
++What it proves
++    T1  Independence: Data Mosh and Packet Corruption share no state, no random draws,
++        and no code (functional test + a source-level cross-reference check).
++    T2  Packet Corruption extraction is look-identical to the old inline stage
++        (byte for byte, same seeds, coupling to Data Mosh switched off in OLD).
++    T3  The optimised Data Mosh equals a plain, slow reference implementation
++        (byte for byte; all bleed modes; busy / sparse / every-cell-moving scenes).
++    T4  reset() leaves no residue.
++    T5  The first frame after start / cancel is never modified.
++    T6  Duplicate camera frames create no new holds.
++    T7  Sweep of every knob range: no exception, right-most 16 px never touched.
++    T8  No frame-sized allocation per frame.
++    T9  Lowering the knob below the dormancy threshold cancels all moshing at once.
++    T10 Wiring: Packet Corruption can be connected to ANY knob; the three Data Mosh
++        positions agree when drift and melt are off; bad settings fall back safely.
++Exit code 0 = every test passed (a SKIP is reported loudly and does not count as a pass).
++"""
++import argparse
++import importlib.util
++import inspect
++import os
++import random
++import re
++import subprocess
++import sys
++import tempfile
++import tracemalloc
++
++import cv2
++import numpy as np
++
++os.environ.setdefault("IK_URL_ENDPOINT", "https://ik.imagekit.io/mock")
++os.environ.setdefault("IK_PRIVATE_KEY", "mock_key")
++sys.path.insert(0, os.getcwd())
++
++BASE_TIME = 5000.0
++RESULTS = []  # (name, status, detail)
++
++
++# --------------------------------------------------------------------------
++# helpers
++# --------------------------------------------------------------------------
++def scene(kind, n, seed=3):
++    """Synthetic frames (coloured shapes on a textured background; no people)."""
++    rng = np.random.default_rng(seed)
++    bg = cv2.GaussianBlur(rng.integers(0, 256, (480, 640, 3), np.uint8), (0, 0), 9)
++    out = []
++    for t in range(n):
++        if kind == "chaos":  # every cell moves every frame
++            out.append(rng.integers(0, 256, (480, 640, 3), np.uint8))
++            continue
++        f = bg.copy()
++        if kind == "busy":
++            x = 40 + (t * 11) % 480
++            cv2.rectangle(f, (x, 120), (x + 110, 300), (30, 120, 255), -1)
++            cv2.circle(f, (600 - (t * 9) % 560, 80 + (t * 5) % 330), 55, (255, 200, 0), -1)
++        else:  # sparse
++            cv2.circle(f, (200 + (t * 6) % 260, 240), 60, (30, 120, 255), -1)
++        out.append(f)
++    return out
++
++
++def load_old(ref, old_file):
++    if old_file:
++        path = old_file
++    else:
++        res = subprocess.run(["git", "show", f"{ref}:server.py"], capture_output=True)
++        if res.returncode != 0:
++            return None, f"cannot read server.py at git ref '{ref}'"
++        tmp = tempfile.mkdtemp(prefix="p2_old_")
++        path = os.path.join(tmp, "server_old.py")
++        with open(path, "wb") as fh:
++            fh.write(res.stdout)
++    spec = importlib.util.spec_from_file_location("server_old", path)
++    mod = importlib.util.module_from_spec(spec)
++    sys.modules["server_old"] = mod
++    spec.loader.exec_module(mod)
++    return mod, path
++
++
++class Ctx:
++    """Temporarily change server tunables; always restored."""
++
++    def __init__(self, mod, **kv):
++        self.mod, self.kv, self.saved = mod, kv, {}
++
++    def __enter__(self):
++        for k, v in self.kv.items():
++            self.saved[k] = getattr(self.mod, k)
++            setattr(self.mod, k, v)
++        return self
++
++    def __exit__(self, *a):
++        for k, v in self.saved.items():
++            setattr(self.mod, k, v)
++
++
++def record(name, ok, detail="", skip=False):
++    status = "SKIP" if skip else ("PASS" if ok else "FAIL")
++    RESULTS.append((name, status, detail))
++    print(f" [{status}] {name}" + (f" - {detail}" if detail else ""))
++
++
++# --------------------------------------------------------------------------
++# reference implementation (plain, slow, full-frame, allocation-heavy)
++# --------------------------------------------------------------------------
++class ReferenceMosh:
++    def __init__(self, S, seed):
++        self.S = S
++        H, W = S.FRAME_H, S.FRAME_W
++        self.gh, self.gw = S.MOSH_GRID_H, S.MOSH_GRID_W
++        self.rng = np.random.default_rng(seed)
++        self.hold = np.zeros((H, W, 3), np.uint8)  # previous picture, except inside held cells
++        self.timer = np.zeros((self.gh, self.gw), np.int16)
++        self.vx = np.zeros((self.gh, self.gw), np.int8)
++        self.prev_samp, self.have_prev = None, False
++        yy, xx = np.mgrid[0:H, 0:W]
++        iy, ix = yy % S.MOSH_CELL_H, xx % S.MOSH_CELL_W
++        self.edge = np.minimum(
++            np.minimum(iy, S.MOSH_CELL_H - 1 - iy), np.minimum(ix, S.MOSH_CELL_W - 1 - ix)
++        ).astype(np.uint8)
++
++    def up(self, c):
++        S = self.S
++        out = np.zeros((S.FRAME_H, S.FRAME_W), c.dtype)
++        out[:, : self.gw * S.MOSH_CELL_W] = np.repeat(np.repeat(c, S.MOSH_CELL_H, 0), S.MOSH_CELL_W, 1)
++        return out
++
++    def step(self, frame, strength):
++        S = self.S
++        H, W, vec = S.FRAME_H, S.FRAME_W, S.MOSH_VECTOR_PX
++        gh, gw = self.gh, self.gw
++        samp = frame[S.MOSH_CELL_H // 2 :: S.MOSH_CELL_H, S.MOSH_CELL_W // 2 :: S.MOSH_CELL_W][:gh, :gw].astype(np.int16)
++        out = frame.copy()
++        if not self.have_prev:
++            self.hold, self.prev_samp, self.have_prev = frame.copy(), samp.copy(), True
++            return out
++        thr = int(S.MOSH_THRESH_BASE + (1.0 - strength) * S.MOSH_THRESH_SPAN)
++        w3 = np.array([0.114, 0.587, 0.299], np.float32)
++        if np.array_equal(samp, self.prev_samp):
++            motion = np.zeros((gh, gw), bool)
++        else:
++            motion = (np.abs(samp - self.prev_samp) * w3).sum(-1) > thr
++        hold_n = int(round(S.MOSH_HOLD_MIN_FRAMES + (S.MOSH_HOLD_MAX_FRAMES - S.MOSH_HOLD_MIN_FRAMES) * strength))
++        new_cells = motion & (self.timer == 0)
++        cur = frame.copy()
++        if new_cells.any():
++            self.vx[new_cells] = np.where(self.rng.random(int(new_cells.sum())) > 0.5, vec, -vec)
++        self.timer[motion] = hold_n
++        active = self.timer > 0
++        if active.any():
++            act = self.up(active.astype(np.uint8)) > 0
++            neg = self.up((self.vx < 0).astype(np.uint8)) > 0
++            xs = np.arange(W)
++            right = self.hold[:, np.minimum(xs + vec, W - 1)]
++            left = self.hold[:, np.maximum(xs - vec, 0)]
++            shifted = np.where(neg[..., None], left, right)
++            blend = cv2.addWeighted(shifted, S.MOSH_DRAG_NEW_WEIGHT, self.hold, 1.0 - S.MOSH_DRAG_NEW_WEIGHT, 0)
++            self.hold[act] = blend[act]
++            inset = self.rng.integers(0, S.MOSH_EDGE_ERODE_MAX_PX + 1, (gh, gw), dtype=np.int16) + (
++                np.clip(S.MOSH_RELEASE_FRAMES - self.timer, 0, S.MOSH_RELEASE_FRAMES) * S.MOSH_RELEASE_ERODE_PX
++            )
++            inset = np.clip(inset, 0, 255).astype(np.uint8)
++            mask = (self.edge >= self.up(inset)) & act
++            if S.MOSH_BLEED_MODE == "off":
++                out[mask] = self.hold[mask]
++            else:
++                bleed = S.MOSH_BLEED_MAX * strength
++                yl = cv2.cvtColor(cur, cv2.COLOR_BGR2GRAY)
++                yh = cv2.cvtColor(self.hold, cv2.COLOR_BGR2GRAY)
++                if S.MOSH_BLEED_MODE == "shape_live_colour_held":
++                    a, b, base = yl, yh, self.hold
++                else:
++                    a, b, base = yh, yl, cur
++                pos = cv2.convertScaleAbs(cv2.subtract(a, b), alpha=bleed)
++                neg_ = cv2.convertScaleAbs(cv2.subtract(b, a), alpha=bleed)
++                comp = cv2.subtract(cv2.add(base, cv2.merge([pos] * 3)), cv2.merge([neg_] * 3))
++                out[mask] = comp[mask]
++        self.timer[self.timer > 0] -= 1
++        self.vx[self.timer == 0] = 0
++        keep = self.up((self.timer > 0).astype(np.uint8)) > 0
++        self.hold[~keep] = cur[~keep]  # memory follows this frame outside the cells still held
++        self.prev_samp = samp.copy()
++        return out
++
++
++# --------------------------------------------------------------------------
++# tests
++# --------------------------------------------------------------------------
++def t1_independence(S, quick):
++    n_frames = 25 if quick else 50
++    frames = scene("busy", n_frames)
++    dummy_src = scene("chaos", n_frames, seed=9)
++    ok, why = True, ""
++
++    # (a) Data Mosh identical with and without Packet Corruption running in between
++    a, b = S.DataMoshEngine(seed=11), S.DataMoshEngine(seed=11)
++    for i, f in enumerate(frames):
++        fa, fb = f.copy(), f.copy()
++        a.step(fa, 1.0)
++        np.random.seed(i)
++        cv2.setRNGSeed(i)
++        dummy = dummy_src[i].copy()
++        S.corruption_update(1.0)
++        S.corruption_render(dummy)
++        b.step(fb, 1.0)
++        same = (
++            np.array_equal(fa, fb)
++            and np.array_equal(a.timer, b.timer)
++            and np.array_equal(a.vx, b.vx)
++            and np.array_equal(a.hold, b.hold)
++        )
++        if not same:
++            ok, why = False, f"Data Mosh changed when corruption ran (frame {i})"
++            break
++    S.corruption_reset()
++
++    # (b) Packet Corruption identical with and without Data Mosh running in between
++    def run_corruption(with_mosh):
++        S.corruption_reset()
++        eng = S.DataMoshEngine(seed=4)
++        outs = []
++        for i in range(n_frames):
++            np.random.seed(100 + i)
++            cv2.setRNGSeed(100 + i)
++            if with_mosh:
++                eng.step(frames[i].copy(), 1.0)
++            fr = dummy_src[i].copy()
++            S.corruption_update(0.9)
++            S.corruption_render(fr)
++            outs.append((fr, S.CORRUPTION_ENERGY.copy(), S.CORRUPTION_MODE.copy()))
++        return outs
++
++    if ok:
++        r1, r2 = run_corruption(False), run_corruption(True)
++        for i, (x, y) in enumerate(zip(r1, r2)):
++            if not all(np.array_equal(p, q) for p, q in zip(x, y)):
++                ok, why = False, f"Packet Corruption changed when Data Mosh ran (frame {i})"
++                break
++    S.corruption_reset()
++
++    # (c) Data Mosh never touches the global random streams
++    if ok:
++        np.random.seed(5)
++        before = np.random.get_state()[1].copy()
++        cv2.setRNGSeed(5)
++        probe_a = np.zeros((4, 4, 3), np.uint8)
++        cv2.randu(probe_a, (0, 0, 0), (255, 255, 255))
++        eng = S.DataMoshEngine(seed=1)
++        np.random.seed(5)
++        cv2.setRNGSeed(5)
++        for f in frames[:15]:
++            eng.step(f.copy(), 1.0)
++        after = np.random.get_state()[1]
++        probe_b = np.zeros((4, 4, 3), np.uint8)
++        cv2.randu(probe_b, (0, 0, 0), (255, 255, 255))
++        if not np.array_equal(before, after):
++            ok, why = False, "Data Mosh consumed numpy global random numbers"
++        elif not np.array_equal(probe_a, probe_b):
++            ok, why = False, "Data Mosh consumed OpenCV random numbers"
++
++    # (d) source-level cross-reference check
++    if ok:
++        mosh_src = "\n".join(
++            inspect.getsource(o)
++            for o in (S.DataMoshEngine, S.apply_data_mosh, S.data_mosh_reset, S.data_mosh_take_samples)
++        )
++        corr_src = "\n".join(
++            inspect.getsource(o)
++            for o in (S.corruption_update, S.corruption_render, S.corruption_reset, S.apply_packet_corruption)
++        )
++        if re.search(r"corruption|packet", mosh_src, re.I):
++            ok, why = False, "Data Mosh source mentions corruption"
++        elif re.search(r"mosh", corr_src, re.I):
++            ok, why = False, "Packet Corruption source mentions Data Mosh"
++    record("T1 independence (state, random draws, source)", ok, why)
++
++
++def t2_corruption_identity(S, old, quick):
++    if old is None:
++        record("T2 corruption identical to old inline stage", False, "no OLD server available (use --ref/--old-file)", skip=True)
++        return
++    steps = 12 if quick else 25
++    ok, why, seen_cells = True, "", 0
++    real_old_mosh = old.apply_datamosh
++    old.apply_datamosh = lambda *a, **k: None  # switch the old Data Mosh -> corruption coupling off
++    try:
++        with Ctx(S, DATAMOSH_KNOB=None, PACKET_CORRUPTION_KNOB=2):
++            for mod in (old, S):
++                mod.WARMUP_COUNTER = mod.WARMUP_FRAMES
++                mod.LAST_TEMPORAL_PURGE = BASE_TIME - 1.0
++            bases = {"textured": scene("busy", steps, seed=21), "portrait": scene("sparse", steps, seed=22)}
++            for raw in (150, 400, 700, 1023):
++                for bname, frames in bases.items():
++                    for mod in (old, S):
++                        mod.CORRUPTION_ENERGY[:] = 0
++                        mod.CORRUPTION_MODE[:] = 0
++                    for i, fr in enumerate(frames):
++                        outs = []
++                        for mod in (old, S):
++                            np.random.seed(900 + i)
++                            random.seed(900 + i)
++                            cv2.setRNGSeed(900 + i)
++                            if hasattr(mod, "seed_private_rngs"):
++                                mod.seed_private_rngs(900 + i)
++                            mod.MUTABLE_PROCESSING_BUFFER[:] = fr
++                            mod.apply_glitch_pipeline(BASE_TIME + i * 0.1, mod.ControlPacket([0, 0, raw, 0, 0, 0], 0, "live"))
++                            outs.append(mod.MUTABLE_PROCESSING_BUFFER.copy())
++                        seen_cells += int(np.count_nonzero(S.CORRUPTION_MODE))
++                        if not (
++                            np.array_equal(outs[0], outs[1])
++                            and np.array_equal(old.CORRUPTION_ENERGY, S.CORRUPTION_ENERGY)
++                            and np.array_equal(old.CORRUPTION_MODE, S.CORRUPTION_MODE)
++                        ):
++                            ok, why = False, f"differs at knob {raw}, {bname}, step {i}"
++                            break
++                    if not ok:
++                        break
++                if not ok:
++                    break
++    finally:
++        old.apply_datamosh = real_old_mosh
++        S.corruption_reset()
++    if ok and seen_cells == 0:
++        ok, why = False, "vacuous: corruption never produced any damage"
++    record("T2 corruption identical to old inline stage", ok, why or f"{seen_cells} damaged-cell observations compared")
++
++
++def t3_mosh_identity(S, quick):
++    n_frames = 25 if quick else 60
++    seeds = (1, 2) if quick else (1, 2, 3)
++    ok, why, total = True, "", 0
++    scenes = {"busy": scene("busy", n_frames), "sparse": scene("sparse", n_frames), "chaos": scene("chaos", n_frames, seed=5)}
++    for mode in ("shape_live_colour_held", "shape_held_colour_live", "off"):
++        with Ctx(S, MOSH_BLEED_MODE=mode):
++            for sname, frames in scenes.items():
++                for knob in (0.2, 0.5, 0.8, 1.0):
++                    strength = knob * knob
++                    for seed in seeds:
++                        eng, ref = S.DataMoshEngine(seed), ReferenceMosh(S, seed)
++                        for i, f in enumerate(frames):
++                            got = f.copy()
++                            eng.step(got, strength)
++                            want = ref.step(f, strength)
++                            total += 1
++                            if not np.array_equal(got, want):
++                                ok, why = False, f"mode={mode} scene={sname} knob={knob} seed={seed} frame={i}"
++                                break
++                        if not ok:
++                            break
++                    if not ok:
++                        break
++                if not ok:
++                    break
++        if not ok:
++            break
++    record("T3 optimised Data Mosh == plain reference", ok, why or f"{total} frames compared")
++
++
++def t4_reset(S):
++    frames = scene("busy", 40)
++    tail = scene("busy", 25, seed=8)
++    e = S.DataMoshEngine(1)
++    for f in frames:
++        e.step(f.copy(), 1.0)
++    held_before = int((e.timer > 0).sum())
++    e.reset()
++    e.reseed(5)
++    f_new = S.DataMoshEngine(5)
++    ok, why = True, ""
++    if e.timer.any() or e.vx.any() or e.have_prev:
++        ok, why = False, "reset left timers/vectors/remembered picture"
++    for i, f in enumerate(tail):
++        a, b = f.copy(), f.copy()
++        e.step(a, 1.0)
++        f_new.step(b, 1.0)
++        if ok and not np.array_equal(a, b):
++            ok, why = False, f"residue visible at frame {i}"
++            break
++    record("T4 reset leaves no residue", ok and held_before > 0, why or f"{held_before} holds existed before reset")
++
++
++def t5_first_frame(S):
++    f = scene("busy", 1)[0]
++    e = S.DataMoshEngine(1)
++    out = f.copy()
++    e.step(out, 1.0)
++    ok = np.array_equal(out, f)
++    e.step(scene("busy", 2)[1].copy(), 1.0)
++    e.reset()
++    out2 = f.copy()
++    e.step(out2, 1.0)
++    ok = ok and np.array_equal(out2, f)
++    record("T5 first frame after start / reset is untouched", ok)
++
++
++def t6_duplicates(S):
++    frames = scene("busy", 30)
++    e = S.DataMoshEngine(2)
++    ok, why, dup_checked = True, "", 0
++    for i, f in enumerate(frames):
++        e.step(f.copy(), 1.0)
++        before = e.timer.copy()
++        e.step(f.copy(), 1.0)  # the same camera frame arrives again
++        dup_checked += 1
++        if np.any(e.timer > before):
++            ok, why = False, f"duplicate of frame {i} created or renewed a hold"
++            break
++    record("T6 duplicate camera frames create no holds", ok, why or f"{dup_checked} duplicates checked")
++
++
++def t7_sweep(S, quick):
++    ok, why, steps = True, "", 0
++    raws = sorted(set(list(range(0, 1024, 37 if quick else 13)) + [0, 1, 20, 21, 144, 145, 1022, 1023]))
++    chaos = scene("chaos", 6, seed=13)
++    right = slice(S.MOSH_GRID_PX_W, S.FRAME_W)
++    try:
++        for raw in raws:
++            S.data_mosh_reset()
++            S.corruption_reset()
++            for i, fr in enumerate(chaos):
++                for effect in ("mosh", "corruption"):
++                    S.MUTABLE_PROCESSING_BUFFER[:] = fr
++                    if effect == "mosh":
++                        S.apply_data_mosh(raw, BASE_TIME + i)
++                    else:
++                        S.apply_packet_corruption(raw, BASE_TIME + i)
++                    steps += 1
++                    if not np.array_equal(S.MUTABLE_PROCESSING_BUFFER[:, right], fr[:, right]):
++                        ok, why = False, f"{effect}: right-most columns modified (knob {raw})"
++                        break
++                if not ok:
++                    break
++            if not ok:
++                break
++    except Exception as exc:  # any exception would restart the service in a loop
++        ok, why = False, f"exception {type(exc).__name__}: {exc}"
++    finally:
++        S.data_mosh_reset()
++        S.corruption_reset()
++    record("T7 knob sweep: no exception, right edge untouched", ok, why or f"{len(raws)} knob values, {steps} calls")
++
++
++def t8_allocation(S):
++    frames = scene("busy", 50)
++    e = S.DataMoshEngine(1)
++    for f in frames[:30]:
++        e.step(f.copy(), 1.0)
++    worst = 0
++    tracemalloc.start()
++    for f in frames[30:]:
++        buf = f.copy()  # the test's own frame copy is not counted
++        tracemalloc.reset_peak()
++        base = tracemalloc.get_traced_memory()[0]
++        e.step(buf, 1.0)
++        worst = max(worst, tracemalloc.get_traced_memory()[1] - base)
++    tracemalloc.stop()
++    limit = 256 * 1024  # a single frame-sized buffer is 900 KiB
++    record("T8 no frame-sized allocation per frame", worst < limit, f"worst extra allocation {worst / 1024:.0f} KiB (limit {limit // 1024} KiB; one frame = 900 KiB)")
++
++
++def t9_cancel(S):
++    ok, why = True, ""
++    moving = scene("busy", 40)
++    S.data_mosh_reset()
++    for i, f in enumerate(moving):
++        S.MUTABLE_PROCESSING_BUFFER[:] = f
++        S.apply_data_mosh(1023, BASE_TIME + i)
++    held = int(S._MOSH.timer.any())
++    # boundary of the dormancy threshold (strength = (raw/1023)**2, active from 0.02)
++    b_lo, b_hi = (144 / 1023.0) ** 2 < S.MOSH_DORMANT_BELOW, (145 / 1023.0) ** 2 >= S.MOSH_DORMANT_BELOW
++    S.MUTABLE_PROCESSING_BUFFER[:] = moving[-1]
++    S.apply_data_mosh(100, BASE_TIME + 99)  # knob lowered
++    if S._MOSH.timer.any() or S._MOSH.vx.any() or S._MOSH.have_prev:
++        ok, why = False, "holds survived lowering the knob"
++    if not np.array_equal(S.MUTABLE_PROCESSING_BUFFER, moving[-1]):
++        ok, why = False, "frame modified while dormant"
++    # raising it again starts clean: untouched first frame, no instant holds
++    S.MUTABLE_PROCESSING_BUFFER[:] = moving[0]
++    S.apply_data_mosh(1023, BASE_TIME + 100)
++    if not np.array_equal(S.MUTABLE_PROCESSING_BUFFER, moving[0]) or S._MOSH.timer.any():
++        ok, why = False, "not clean after raising the knob again"
++    # same through the real pipeline
++    with Ctx(S, DATAMOSH_KNOB=2, PACKET_CORRUPTION_KNOB=None):
++        S.WARMUP_COUNTER = S.WARMUP_FRAMES
++        S.LAST_TEMPORAL_PURGE = BASE_TIME - 1.0
++        for i, f in enumerate(moving[:20]):
++            S.MUTABLE_PROCESSING_BUFFER[:] = f
++            S.apply_glitch_pipeline(BASE_TIME + i * 0.07, S.ControlPacket([0, 0, 1023, 0, 0, 0], 0, "live"))
++        active_in_pipeline = bool(S._MOSH.timer.any())
++        S.MUTABLE_PROCESSING_BUFFER[:] = moving[20]
++        S.apply_glitch_pipeline(BASE_TIME + 5, S.ControlPacket([0, 0, 0, 0, 0, 0], 0, "live"))
++        if S._MOSH.timer.any():
++            ok, why = False, "pipeline: holds survived knob 2 -> 0"
++    S.data_mosh_reset()
++    record(
++        "T9 lowering the knob cancels all moshing at once",
++        ok and held and b_lo and b_hi and active_in_pipeline,
++        why or "raw 144 dormant, raw 145 active; cancel is immediate and clean",
++    )
++
++
++def t10_wiring(S, quick):
++    ok, why = True, ""
++    frames = scene("busy", 20 if quick else 30)
++
++    def run(knobs, n=None, **tun):
++        with Ctx(S, **tun):
++            S.WARMUP_COUNTER = S.WARMUP_FRAMES
++            S.LAST_TEMPORAL_PURGE = BASE_TIME - 1.0
++            S.data_mosh_reset()
++            S.corruption_reset()
++            held = damaged = 0
++            outs = []
++            for i, f in enumerate(frames[:n]):
++                S.seed_private_rngs(7)
++                np.random.seed(i)
++                cv2.setRNGSeed(i)
++                S.MUTABLE_PROCESSING_BUFFER[:] = f
++                S.apply_glitch_pipeline(BASE_TIME + i * 0.07, S.ControlPacket(list(knobs), 0, "live"))
++                held += int(S._MOSH.timer.any())
++                damaged += int(np.count_nonzero(S.CORRUPTION_MODE))
++                outs.append(S.MUTABLE_PROCESSING_BUFFER.copy())
++            S.data_mosh_reset()
++            S.corruption_reset()
++            return held, damaged, outs
++
++    # default wiring: knob 2 = Data Mosh, corruption silent
++    held, damaged, _ = run([0, 0, 1023, 0, 0, 0])
++    if not (held > 0 and damaged == 0):
++        ok, why = False, f"default wiring wrong (held={held}, damage={damaged})"
++    # corruption connected to knob 2 (Data Mosh unmapped), then to another knob
++    if ok:
++        held, damaged, _ = run([0, 0, 1023, 0, 0, 0], PACKET_CORRUPTION_KNOB=2, DATAMOSH_KNOB=None)
++        if not (held == 0 and damaged > 0):
++            ok, why = False, f"corruption on knob 2 wrong (held={held}, damage={damaged})"
++    if ok:
++        held, damaged, _ = run([0, 0, 0, 1023, 0, 0], PACKET_CORRUPTION_KNOB=3, DATAMOSH_KNOB=None)
++        if not damaged > 0:
++            ok, why = False, "corruption did not respond on knob 3"
++    if ok:  # both on the same knob: both act, independently
++        held, damaged, _ = run([0, 0, 1023, 0, 0, 0], PACKET_CORRUPTION_KNOB=2)
++        if not (held > 0 and damaged > 0):
++            ok, why = False, f"shared knob: expected both to act (held={held}, damage={damaged})"
++    # three positions agree when drift and melt are off
++    if ok:
++        base = run([0, 0, 1023, 0, 0, 0], MOSH_STAGE_POSITION="before_drift")[2]
++        for pos in ("after_melt_own_motion", "after_melt_pre_melt_motion"):
++            other = run([0, 0, 1023, 0, 0, 0], MOSH_STAGE_POSITION=pos)[2]
++            if not all(np.array_equal(a, b) for a, b in zip(base, other)):
++                ok, why = False, f"position {pos} differs from before_drift with drift and melt off"
++                break
++    # positions all do something with melt on, without errors
++    if ok:
++        for pos in ("before_drift", "after_melt_own_motion", "after_melt_pre_melt_motion"):
++            held, _, outs = run([0, 0, 1023, 0, 1023, 0], n=15, MOSH_STAGE_POSITION=pos)
++            if held == 0:
++                ok, why = False, f"position {pos}: no holds with melt on"
++                break
++    # invalid settings fall back safely and never raise
++    if ok:
++        saved = (S.DATAMOSH_KNOB, S.PACKET_CORRUPTION_KNOB, S.MOSH_STAGE_POSITION, S.MOSH_BLEED_MODE)
++        try:
++            S.DATAMOSH_KNOB, S.PACKET_CORRUPTION_KNOB = 9, "x"
++            S.MOSH_STAGE_POSITION, S.MOSH_BLEED_MODE = "nowhere", "sideways"
++            notes = S._validate_effect_wiring()
++            good = (
++                len(notes) == 4
++                and S.DATAMOSH_KNOB == 2
++                and S.PACKET_CORRUPTION_KNOB is None
++                and S.MOSH_STAGE_POSITION == "before_drift"
++                and S.MOSH_BLEED_MODE == "shape_live_colour_held"
++            )
++            S.DATAMOSH_KNOB, S.PACKET_CORRUPTION_KNOB = 2, 2
++            notes2 = S._validate_effect_wiring()
++            good = good and any("both listen" in m for m in notes2)
++            if not good:
++                ok, why = False, "wiring validation did not behave as specified"
++        finally:
++            S.DATAMOSH_KNOB, S.PACKET_CORRUPTION_KNOB, S.MOSH_STAGE_POSITION, S.MOSH_BLEED_MODE = saved
++    record("T10 wiring: any-knob corruption, positions agree, safe fallbacks", ok, why)
++
++
++# --------------------------------------------------------------------------
++def main():
++    ap = argparse.ArgumentParser(description="Phase 2 tests")
++    ap.add_argument("--ref", default="pre-phase2", help="git ref holding the OLD server.py")
++    ap.add_argument("--old-file", help="path to an OLD server.py (instead of a git ref)")
++    ap.add_argument("--quick", action="store_true", help="fewer frames (Pi)")
++    args = ap.parse_args()
++
++    print("=" * 74)
++    print(" PHASE 2 TESTS: Data Mosh v2 + standalone Packet Corruption")
++    print("=" * 74)
++    print(f" numpy {np.__version__}, opencv {cv2.__version__}, python {sys.version.split()[0]}")
++    import server as S  # noqa: E402
++
++    old, where = load_old(args.ref, args.old_file)
++    print(f" OLD = {where if old is not None else 'not available (' + str(where) + ')'}")
++    print(f" NEW = {S.__file__}\n")
++
++    t1_independence(S, args.quick)
++    t2_corruption_identity(S, old, args.quick)
++    t3_mosh_identity(S, args.quick)
++    t4_reset(S)
++    t5_first_frame(S)
++    t6_duplicates(S)
++    t7_sweep(S, args.quick)
++    t8_allocation(S)
++    t9_cancel(S)
++    t10_wiring(S, args.quick)
++
++    n_pass = sum(1 for _, s, _ in RESULTS if s == "PASS")
++    n_fail = sum(1 for _, s, _ in RESULTS if s == "FAIL")
++    n_skip = sum(1 for _, s, _ in RESULTS if s == "SKIP")
++    print("\n" + "=" * 74)
++    print(f" passed {n_pass}, failed {n_fail}, skipped {n_skip}")
++    if n_skip:
++        print(" NOTE: a skipped test proves nothing. Provide the OLD server (--ref / --old-file).")
++    print(" RESULT: " + ("FAIL" if n_fail else ("INCOMPLETE (skips)" if n_skip else "PASS")))
++    print("=" * 74)
++    return 1 if (n_fail or n_skip) else 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
