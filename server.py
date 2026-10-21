@@ -201,7 +201,7 @@ PACKET_CORRUPTION_KNOB = (
 #   "before_drift"               today's position (after chroma, before Signal Drift)
 #   "after_melt_own_motion"      after Melt, motion measured on its own input
 #   "after_melt_pre_melt_motion" after Melt, motion measured on the picture before Melt
-MOSH_STAGE_POSITION = "before_drift"
+MOSH_STAGE_POSITION = "after_melt_own_motion"
 MOSH_DORMANT_BELOW = (
     0.02  # strength = (knob/1023)**2 below this cancels everything at once
 )
