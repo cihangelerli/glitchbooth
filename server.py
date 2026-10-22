@@ -205,8 +205,8 @@ MOSH_DORMANT_BELOW = (
 )
 MOSH_THRESH_BASE = 17  # motion threshold = BASE + (1 - strength) * SPAN   (18 .. 58)
 MOSH_THRESH_SPAN = 53
-MOSH_HOLD_MIN_FRAMES = 11  # hold time rises from MIN to MAX with strength (1-60)
-MOSH_HOLD_MAX_FRAMES = 121
+MOSH_HOLD_MIN_FRAMES = 11  # hold time rises from MIN to MAX with strength (1-111)
+MOSH_HOLD_MAX_FRAMES = 67
 # Per-frame drag distance in any of four directions: left, right, up, or down.
 MOSH_VECTOR_PX = 7  # pixels per frame (1-8)
 MOSH_DRAG_NEW_WEIGHT = (
@@ -1418,9 +1418,11 @@ def _validate_effect_wiring():
     if not (1 <= MOSH_VECTOR_PX <= 8):
         notes.append(f"MOSH_VECTOR_PX={MOSH_VECTOR_PX} outside 1-8, using 4")
         MOSH_VECTOR_PX = 4
-    if not (1 <= MOSH_HOLD_MIN_FRAMES <= MOSH_HOLD_MAX_FRAMES <= 300):
-        notes.append("MOSH_HOLD_*_FRAMES must satisfy 1 <= min <= max <= 300")
-        MOSH_HOLD_MIN_FRAMES, MOSH_HOLD_MAX_FRAMES = 6, 60
+    if not (1 <= MOSH_HOLD_MIN_FRAMES <= MOSH_HOLD_MAX_FRAMES <= 111):
+        notes.append(
+            "MOSH_HOLD_*_FRAMES must satisfy 1 <= min <= max <= 111, using 6, 33"
+        )
+        MOSH_HOLD_MIN_FRAMES, MOSH_HOLD_MAX_FRAMES = 6, 33
 
     if (
         DATAMOSH_KNOB is not None
