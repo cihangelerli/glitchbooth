@@ -1418,11 +1418,9 @@ def _validate_effect_wiring():
     if not (1 <= MOSH_VECTOR_PX <= 8):
         notes.append(f"MOSH_VECTOR_PX={MOSH_VECTOR_PX} outside 1-8, using 4")
         MOSH_VECTOR_PX = 4
-    if not (1 <= MOSH_HOLD_MIN_FRAMES <= MOSH_HOLD_MAX_FRAMES <= 60):
-        notes.append(
-            "MOSH_HOLD_*_FRAMES must satisfy 1 <= min <= max <= 60, using 6 and 16"
-        )
-        MOSH_HOLD_MIN_FRAMES, MOSH_HOLD_MAX_FRAMES = 6, 16
+    if not (1 <= MOSH_HOLD_MIN_FRAMES <= MOSH_HOLD_MAX_FRAMES <= 300):
+        notes.append("MOSH_HOLD_*_FRAMES must satisfy 1 <= min <= max <= 300")
+        MOSH_HOLD_MIN_FRAMES, MOSH_HOLD_MAX_FRAMES = 6, 60
 
     if (
         DATAMOSH_KNOB is not None
