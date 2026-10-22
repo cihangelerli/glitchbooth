@@ -205,15 +205,15 @@ MOSH_DORMANT_BELOW = (
 )
 MOSH_THRESH_BASE = 17  # motion threshold = BASE + (1 - strength) * SPAN   (18 .. 58)
 MOSH_THRESH_SPAN = 53
-MOSH_HOLD_MIN_FRAMES = 11  # hold time rises from MIN to MAX with strength (1-60)
-MOSH_HOLD_MAX_FRAMES = 89
+MOSH_HOLD_MIN_FRAMES = 31  # hold time rises from MIN to MAX with strength (1-60)
+MOSH_HOLD_MAX_FRAMES = 121
 MOSH_VECTOR_PX = 7  # horizontal drag per frame (1-8)
 MOSH_DRAG_NEW_WEIGHT = (
     161 / 256
 )  # share of the dragged picture per frame (as the old effect)
 MOSH_EDGE_ERODE_MAX_PX = 0  # random edge erosion 0..N px on held cells (as before)
 MOSH_RELEASE_FRAMES = 3  # edges dissolve over the last N frames of a hold
-MOSH_RELEASE_ERODE_PX = 1  # extra erosion per release frame
+MOSH_RELEASE_ERODE_PX = 0  # extra erosion per release frame
 # Colour-plane bleed inside held cells: "shape_live_colour_held", "shape_held_colour_live", "off"
 MOSH_BLEED_MODE = "shape_live_colour_held"
 MOSH_BLEED_MAX = 0.23  # bleed mix = MAX * strength (0-1)
