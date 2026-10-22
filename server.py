@@ -206,9 +206,9 @@ MOSH_DORMANT_BELOW = (
 MOSH_THRESH_BASE = 17  # motion threshold = BASE + (1 - strength) * SPAN   (18 .. 58)
 MOSH_THRESH_SPAN = 53
 MOSH_HOLD_MIN_FRAMES = 11  # hold time rises from MIN to MAX with strength (1-111)
-MOSH_HOLD_MAX_FRAMES = 67
+MOSH_HOLD_MAX_FRAMES = 37
 # Per-frame drag distance in any of four directions: left, right, up, or down.
-MOSH_VECTOR_PX = 7  # pixels per frame (1-8)
+MOSH_VECTOR_PX = 11  # pixels per frame (1-11)
 MOSH_DRAG_NEW_WEIGHT = (
     221 / 256
 )  # share of the dragged picture per frame (as the old effect)
@@ -1415,9 +1415,9 @@ def _validate_effect_wiring():
             f"MOSH_BLEED_MODE={MOSH_BLEED_MODE!r} invalid, using 'shape_live_colour_held'"
         )
         MOSH_BLEED_MODE = "shape_live_colour_held"
-    if not (1 <= MOSH_VECTOR_PX <= 8):
-        notes.append(f"MOSH_VECTOR_PX={MOSH_VECTOR_PX} outside 1-8, using 4")
-        MOSH_VECTOR_PX = 4
+    if not (1 <= MOSH_VECTOR_PX <= 11):
+        notes.append(f"MOSH_VECTOR_PX={MOSH_VECTOR_PX} outside 1-11, using 7")
+        MOSH_VECTOR_PX = 7
     if not (1 <= MOSH_HOLD_MIN_FRAMES <= MOSH_HOLD_MAX_FRAMES <= 111):
         notes.append(
             "MOSH_HOLD_*_FRAMES must satisfy 1 <= min <= max <= 111, using 6, 33"
