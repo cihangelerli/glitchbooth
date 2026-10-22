@@ -207,7 +207,8 @@ MOSH_THRESH_BASE = 17  # motion threshold = BASE + (1 - strength) * SPAN   (18 .
 MOSH_THRESH_SPAN = 53
 MOSH_HOLD_MIN_FRAMES = 11  # hold time rises from MIN to MAX with strength (1-60)
 MOSH_HOLD_MAX_FRAMES = 121
-MOSH_VECTOR_PX = 7  # horizontal drag per frame (1-8)
+# Per-frame drag distance in any of four directions: left, right, up, or down.
+MOSH_VECTOR_PX = 7  # pixels per frame (1-8)
 MOSH_DRAG_NEW_WEIGHT = (
     201 / 256
 )  # share of the dragged picture per frame (as the old effect)
@@ -912,11 +913,30 @@ class DataMoshEngine:
         # where it is the frozen, dragged picture. It is always a complete picture, so the
         # drag never pulls stale or empty pixels in from a neighbouring cell.
         self.hold, self.cur = z3(), z3()
+
+        # Start of change for vertical drag
+        """
         # scratch (each used only inside one step)
         self.sh_right, self.sh_left, self.blend = z3(), z3(), z3()
         self.comp, self.pos3, self.neg3 = z3(), z3(), z3()
         self.m_keep, self.m_act, self.m_neg = z1(), z1(), z1()
         self.m_inset, self.m_tmp, self.m_fin = z1(), z1(), z1()
+        """
+
+        # Scratch buffers.  The four shift buffers contain held content displaced
+        # in the four possible visual directions.
+        self.sh_left, self.sh_right = z3(), z3()
+        self.sh_up, self.sh_down = z3(), z3()
+        self.blend = z3()
+        self.comp, self.pos3, self.neg3 = z3(), z3(), z3()
+
+        # Pixel masks, expanded from the per-cell state when needed.
+        self.m_keep, self.m_act = z1(), z1()
+        self.m_left, self.m_right = z1(), z1()
+        self.m_up, self.m_down = z1(), z1()
+        self.m_inset, self.m_tmp, self.m_fin = z1(), z1(), z1()
+        # End of change for vertical drag
+
         self.y_live, self.y_hold, self.y_pos, self.y_neg = z1(), z1(), z1(), z1()
         # distance of every pixel from its cell border (for edge erosion)
         yy, xx = np.mgrid[0:H, 0:W]
@@ -925,8 +945,19 @@ class DataMoshEngine:
             np.minimum(iy, MOSH_CELL_H - 1 - iy), np.minimum(ix, MOSH_CELL_W - 1 - ix)
         ).astype(np.uint8)
         # per-cell state
+
+        # Start of change for vertical drag
+        """
         self.timer = np.zeros((gh, gw), dtype=np.int16)
         self.vx = np.zeros((gh, gw), dtype=np.int8)
+        """
+        self.timer = np.zeros((gh, gw), dtype=np.int16)
+
+        # Per-cell direction, meaningful only while timer > 0:
+        # 0 = left, 1 = right, 2 = up, 3 = down.
+        self.direction = np.zeros((gh, gw), dtype=np.uint8)
+        # End of change for vertical drag
+
         self.samp = np.zeros((gh, gw, 3), dtype=np.int16)
         self.prev_samp = np.zeros((gh, gw, 3), dtype=np.int16)
         self.have_prev = False
@@ -941,7 +972,14 @@ class DataMoshEngine:
     def reset(self):
         """Forget everything: no hold, no vector, no remembered picture."""
         self.timer[:] = 0
+
+        # Start of change for vertical drag
+        """
         self.vx[:] = 0
+        """
+        self.direction[:] = 0
+        # End of change for vertical drag
+
         self.have_prev = False
 
     @staticmethod
@@ -957,7 +995,14 @@ class DataMoshEngine:
 
     def step(self, frame, strength, motion_samples=None):
         """Apply one frame of Data Mosh to `frame` (modified in place)."""
+
+        # Start of change for vertical drag
+        """
         gh, gw, W = MOSH_GRID_H, MOSH_GRID_W, FRAME_W
+        """
+        gh, gw, H, W = MOSH_GRID_H, MOSH_GRID_W, FRAME_H, FRAME_W
+        # End of change for vertical drag
+
         vec = MOSH_VECTOR_PX
 
         if motion_samples is None:
@@ -996,12 +1041,30 @@ class DataMoshEngine:
             self.vx[new_cells] = np.where(self.rng.random(count) > 0.5, vec, -vec)
         self.timer[motion] = hold_frames
         """
+
+        # Start of change for vertical drag
+        """
         if new_cells.any():
             count = int(new_cells.sum())
             self.vx[new_cells] = np.where(self.rng.random(count) > 0.5, vec, -vec)
             self.timer[new_cells] = (
                 hold_frames  # Only new cells get the timer; active cells count down freely
             )
+        """
+        if new_cells.any():
+            count = int(new_cells.sum())
+
+            # Every new hold chooses one visual direction with equal probability:
+            # 0 = left, 1 = right, 2 = up, 3 = down.
+            self.direction[new_cells] = self.rng.integers(
+                0, 4, size=count, dtype=np.uint8
+            )
+
+            # Only newly held cells get a fresh timer. Existing holds continue
+            # toward release instead of being perpetually renewed.
+            self.timer[new_cells] = hold_frames
+        # End of change for vertical drag
+
         active = self.timer > 0
         band = None
 
@@ -1011,6 +1074,9 @@ class DataMoshEngine:
             rows = np.flatnonzero(active.any(axis=1))
             r0, r1 = int(rows[0]), int(rows[-1])
             band = slice(r0 * MOSH_CELL_H, (r1 + 1) * MOSH_CELL_H)
+
+            # Start of change for vertical drag
+            """
             self._cells_to_pixels(active.view(np.uint8), r0, r1, self.m_act)
             self._cells_to_pixels((self.vx < 0).view(np.uint8), r0, r1, self.m_neg)
 
@@ -1030,6 +1096,72 @@ class DataMoshEngine:
                 dst=self.blend[band],
             )
             cv2.copyTo(self.blend[band], self.m_act[band], hold_band)
+            """
+            self._cells_to_pixels(active.view(np.uint8), r0, r1, self.m_act)
+            self._cells_to_pixels(
+                (self.direction == 0).view(np.uint8), r0, r1, self.m_left
+            )
+            self._cells_to_pixels(
+                (self.direction == 1).view(np.uint8), r0, r1, self.m_right
+            )
+            self._cells_to_pixels(
+                (self.direction == 2).view(np.uint8), r0, r1, self.m_up
+            )
+            self._cells_to_pixels(
+                (self.direction == 3).view(np.uint8), r0, r1, self.m_down
+            )
+
+            hold_band = self.hold[band]
+            y0, y1 = band.start, band.stop
+
+            # Horizontal candidates. Pixels clamp at the frame's left/right edges.
+            # "Right" means the visible held content moves right.
+            self.sh_right[band, vec:] = hold_band[:, : W - vec]
+            self.sh_right[band, :vec] = hold_band[:, :1]
+
+            # "Left" means the visible held content moves left.
+            self.sh_left[band, : W - vec] = hold_band[:, vec:]
+            self.sh_left[band, W - vec :] = hold_band[:, W - 1 : W]
+
+            # Vertical candidates. These read from the full held frame, rather than
+            # hold_band, because an active row can pull pixels from just outside the
+            # active band. Pixels clamp at the top/bottom frame edges.
+
+            # "Up": visible content moves up, so each destination row reads below it.
+            src0 = min(y0 + vec, H - 1)
+            copy_rows = min(y1 - y0, H - src0)
+            if copy_rows:
+                self.sh_up[y0 : y0 + copy_rows] = self.hold[src0 : src0 + copy_rows]
+            if y0 + copy_rows < y1:
+                self.sh_up[y0 + copy_rows : y1] = self.hold[H - 1 : H]
+
+            # "Down": visible content moves down, so each destination row reads above it.
+            top_clamp_rows = max(0, vec - y0)
+            if top_clamp_rows:
+                self.sh_down[y0 : y0 + top_clamp_rows] = self.hold[0:1]
+            src0 = max(0, y0 - vec)
+            copy_rows = y1 - y0 - top_clamp_rows
+            if copy_rows:
+                self.sh_down[y0 + top_clamp_rows : y1] = self.hold[
+                    src0 : src0 + copy_rows
+                ]
+
+            # Start with the right-going candidate, then replace pixels belonging to
+            # left, up, and down cells. Direction masks are mutually exclusive.
+            cv2.copyTo(self.sh_left[band], self.m_left[band], self.sh_right[band])
+            cv2.copyTo(self.sh_up[band], self.m_up[band], self.sh_right[band])
+            cv2.copyTo(self.sh_down[band], self.m_down[band], self.sh_right[band])
+
+            cv2.addWeighted(
+                self.sh_right[band],
+                MOSH_DRAG_NEW_WEIGHT,
+                hold_band,
+                1.0 - MOSH_DRAG_NEW_WEIGHT,
+                0,
+                dst=self.blend[band],
+            )
+            cv2.copyTo(self.blend[band], self.m_act[band], hold_band)
+            # End of change for vertical drag
 
             # edges erode a little always, and progressively during the last frames
             inset = self.rng.integers(
@@ -1069,8 +1201,15 @@ class DataMoshEngine:
                 cv2.copyTo(self.comp[band], self.m_fin[band], frame[band])
 
         # ---- 4. time moves on; the memory follows this frame outside the cells still held ----
+        # Start of change for vertical drag
+        """
         self.timer[self.timer > 0] -= 1
         self.vx[self.timer == 0] = 0
+        """
+        self.timer[self.timer > 0] -= 1
+        self.direction[self.timer == 0] = 0
+        # End of change for vertical drag
+
         still_held = self.timer > 0
         if (
             band is None
