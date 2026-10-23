@@ -129,14 +129,10 @@ latest_mode_start_time = None  # Tracks 20-second auto-fallback window
 # Knob telemetry tracking registers & layout order mapping from index.html
 last_knob_values = [None] * 6
 knob_changed_times = [0.0] * 6
-KNOB_ROWS = [
-    (0, "ASCII Matrix"),
-    (1, "Signal Drift"),
-    (3, "Pixel Damage"),
-    (4, "Melt"),
-    (2, "Data Mosh"),
-    (5, "Chroma Shift"),
-]
+# Row order stays fixed; names follow the primary effect attached to each knob.
+KNOB_ROW_ORDER = [0, 1, 3, 4, 2, 5]
+_knob_names = server.get_knob_labels()
+KNOB_ROWS = [(k_id, _knob_names[k_id]) for k_id in KNOB_ROW_ORDER]
 
 # ==============================================================================
 # RUN-ONCE BOOT DRIVER ENCODING ANALYSIS

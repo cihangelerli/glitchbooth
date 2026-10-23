@@ -27,6 +27,7 @@ build/
 dist/
 coverage/
 .DS_Store
+captures_naked
 *.log
 !.env.example
 capture_log.jsonl

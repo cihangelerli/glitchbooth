@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+
+<meta charset="utf-8">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+
+<title>GLITCH BOOTH</title>
+
+<style>
+
+html,
+body{
+    margin:0;
+    padding:0;
+    width:100%;
+    height:100%;
+    background:#000;
+    color:#00ff00;
+    font-family:Courier, monospace;
+    overflow:hidden;
+}
+
+html, body, img, div{ -webkit-touch-callout:none; -webkit-user-select:none; user-select:none; }
+
+/* MAIN WRAPPER */
+.wrap{
+    width:90%;
+    max-width:700px;
+
+    margin-left:auto;
+    margin-right:auto;
+
+    padding-top:4vh;
+
+    box-sizing:border-box;
+}
+
+/* TITLE */
+.header{
+    margin-bottom:12px;
+    font-size:18px;
+}
+
+/* LIVE FEED */
+#feed{
+    display:block;
+
+    width:100%;
+    height:auto;
+
+    border:2px solid #00ff00;
+
+    box-sizing:border-box;
+
+    /* Mirror camera */
+    transform: scaleX(-1);
+}
+
+/* PANELS */
+.panel{
+    width:100%;
+
+    margin-top:14px;
+
+    border-top:1px solid #00ff00;
+
+    padding-top:10px;
+
+    box-sizing:border-box;
+}
+
+/* TELEMETRY ROWS */
+.row{
+    margin:4px 0;
+    overflow:hidden;
+
+    /* Safely handles the fade-out on iOS 9 Safari */
+    -webkit-transition: color 0.2s ease, text-shadow 0.2s ease;
+    transition: color 0.2s ease, text-shadow 0.2s ease;
+}
+
+/* NEW: Highlight target when value shifts */
+.row.changing {
+    color: #d1ffc9;
+    text-shadow: 0 0 8px #00ff00;
+}
+
+.row span{
+    float:right;
+}
+
+/* FULL SCREEN SHUTDOWN OVERLAY */
+#shutdownOverlay {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; width: 100%; height: 100%;
+    background: #000000;
+    text-align:center;
+    color: #aa0000; /* Dark crimson terminal text */
+    font-size:22px;
+    font-family: Courier, monospace;
+    padding: 40px;
+    box-sizing: border-box;
+    z-index: 9999;
+}
+
+/* FULL SCREEN RECOVERY OVERLAY */
+#recoveryOverlay {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; width: 100%; height: 100%;
+    background: #000000;
+    text-align:center;
+    color: #aa0000; /* Dark crimson terminal text */
+    font-size:22px;
+    font-family: Courier, monospace;
+    padding: 40px;
+    box-sizing: border-box;
+    z-index: 9998; /* Sits directly beneath shutdown layer */
+}
+
+/* CORNER COUNTDOWN (PRE-CAPTURE LIVE POSE) */
+#cornerCountdown {
+    display: none;
+    position: absolute;
+    font-size: 96px;
+    font-weight: bold;
+    color: #00ff00;
+    text-shadow: 0 0 14px #00ff00, 2px 2px 4px #000;
+    background: rgba(0, 0, 0, 0.65);
+    border: 3px solid #00ff00;
+    border-radius: 8px;
+    width: 108px;
+    height: 108px;
+    line-height: 102px;
+    text-align: center;
+    z-index: 20;
+    pointer-events: none;
+    box-sizing: border-box;
+}
+
+/* Configurable corner anchor classes */
+#cornerCountdown.corner-bottom-center,
+#cornerCountdown.corner-bottom-middle { bottom: 14px; left: 50%; transform: translateX(-50%); top: auto; right: auto; }
+#cornerCountdown.corner-top-right    { top: 14px;    right: 14px;  bottom: auto; left: auto; transform: none; }
+#cornerCountdown.corner-top-left     { top: 14px;    left: 14px;   bottom: auto; right: auto; transform: none; }
+#cornerCountdown.corner-bottom-right { bottom: 14px; right: 14px;  top: auto;    left: auto; transform: none; }
+#cornerCountdown.corner-bottom-left  { bottom: 14px; left: 14px;   top: auto;    right: auto; transform: none; }
+
+/* CAMERA FLASH OVERLAY */
+#flashOverlay {
+    display: none;
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: #ffffff;
+    z-index: 25;
+    pointer-events: none;
+}
+
+/* POST-CAPTURE FEED-SCOPED OVERLAY (High Contrast) */
+#feedOverlay {
+    display: none;
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.72); /* Dims captured image; text stays 100% opaque */
+    text-align: center;
+    z-index: 15;
+    box-sizing: border-box;
+    padding-top: 26%;
+}
+
+#countdownNumber {
+    font-size: 56px;
+    letter-spacing: 4px;
+    color: #00ff00;
+    text-shadow: 0 0 14px #00ff00;
+}
+
+#countdownStatus {
+    margin-top: 16px;
+    font-size: 18px;
+    color: #00ff00;
+    letter-spacing: 1px;
+}
+
+@media screen and (max-width: 600px) {
+    #cornerCountdown {
+        font-size: 72px;
+        width: 84px;
+        height: 84px;
+        line-height: 78px;
+    }
+    #cornerCountdown.corner-bottom-center,
+    #cornerCountdown.corner-bottom-middle { bottom: 10px; left: 50%; transform: translateX(-50%); }
+    #cornerCountdown.corner-top-right    { top: 10px;    right: 10px; }
+    #cornerCountdown.corner-top-left     { top: 10px;    left: 10px;  }
+    #cornerCountdown.corner-bottom-right { bottom: 10px; right: 10px; }
+    #cornerCountdown.corner-bottom-left  { bottom: 10px; left: 10px;  }
+
+    #feedOverlay    { padding-top: 22%; }
+    #countdownNumber { font-size: 38px; }
+    #countdownStatus { font-size: 14px; }
+    .header { font-size: 16px; }
+}
+
+/* ============================================================
+   QR PLACEMENT GUIDE INDICATOR CONFIGURATION
+   Edit --qr-* custom properties to adjust the overlay.
+   Set --qr-guide-display to "none" to disable entirely.
+   ============================================================ */
+:root {
+    --qr-guide-display:    flex;
+    --qr-guide-width-pct:  20.31%;   /* 130 / 640 = ~20.31% of feed width */
+    --qr-guide-max-size:   130px;    /* hard cap — matches Pygame QR_GUIDE_SIZE */
+    --qr-guide-margin:     2px;      /* gap from feed edges */
+}
+
+/* Wrapper so the absolute overlay can be positioned relative to the feed */
+.feed-container {
+    position: relative;
+    width: 100%;
+    line-height: 0;   /* removes phantom gap below <img> */
+}
+
+#qrOverlay {
+    position: absolute;
+    bottom:   var(--qr-guide-margin);
+    left:     var(--qr-guide-margin);
+    width:    var(--qr-guide-width-pct);
+    max-width: var(--qr-guide-max-size);
+    aspect-ratio: 1 / 1;
+    background: #00ff00;
+    color: #000000;
+    display: var(--qr-guide-display);
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    z-index: 10;
+    container-type: inline-size;   /* enables cqi units on children */
+}
+
+/* Font scales with the guide box — never overflows regardless of screen size */
+#qrOverlayText {
+    font-family: Arial, Helvetica, sans-serif;
+    font-weight: bold;
+    line-height: 1;
+    font-size: 58px;   /* px fallback for browsers without container-query support */
+    font-size: 45cqi;  /* scales proportionally with the guide box width */
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="wrap">
+
+    <div class="header">
+        > GLITCH BOOTH beta 3
+    </div>
+
+    <div class="feed-container">
+
+        <img
+            id="feed"
+            src="/video_feed"
+            draggable="false"
+        >
+
+        <div id="qrOverlay"><span id="qrOverlayText">QR</span></div>
+
+        <!-- Camera Flash Effect Overlay -->
+        <div id="flashOverlay"></div>
+
+        <!-- Pre-capture Corner Pose Countdown -->
+        <div id="cornerCountdown">3</div>
+
+        <!-- Post-capture Dimmed Overlay Scoped to Video Area -->
+        <div id="feedOverlay">
+            <div id="countdownNumber">PRINTING</div>
+            <div id="countdownStatus">SPOOLING TO PRINTER</div>
+        </div>
+
+    </div>
+
+    <div class="panel">
+
+        <div class="row">ASCII Matrix <span id="k0"></span></div>
+        <div class="row">Signal Drift <span id="k1"></span></div>
+        <div class="row">Pixel Damage <span id="k3"></span></div>
+        <div class="row">Melt <span id="k4"></span></div>
+        <div class="row">Data Mosh <span id="k2"></span></div>
+        <div class="row">Chroma Shift <span id="k5"></span></div>
+
+    </div>
+
+    <div class="panel">
+
+        <div>> TURN THE KNOBS</div>
+        <div>> COMBINE EFFECTS</div>
+        <div>> SET GLITCH STRENGTH</div>
+        <div>> PLAY WITH THE SIGNAL</div>
+        <div>> PRESS BUTTON TO CAPTURE</div>
+        <div>> PRINT READY ALMOST INSTANTLY :)</div>
+
+    </div>
+
+</div>
+
+
+
+<div id="recoveryOverlay">
+    <div id="recoveryMessage">> CONNECTION LOST... ATTEMPTING RECOVERY</div>
+</div>
+
+<div id="shutdownOverlay">
+    <div id="shutdownMessage">> SYSTEM OFFLINE</div>
+</div>
+
+<script>
+
+/* Global state tracking */
+var lastKnobValues = [];
+var stateFailures = 0;
+var lastFrameId = -1;
+var stalledCount = 0;
+var updateTimer = null; /* Enforces a singleton execution chain pattern */
+var lastMode = null;
+
+/* Recovery overlay helpers */
+function showRecoveryOverlay(message) {
+    var recEl = document.getElementById('recoveryOverlay');
+    var msgEl = document.getElementById('recoveryMessage');
+    if (recEl && msgEl) {
+        msgEl.innerHTML = "> " + message;
+        recEl.style.display = "block";
+    }
+}
+
+function hideRecoveryOverlay() {
+    var recEl = document.getElementById('recoveryOverlay');
+    if (recEl) {
+        recEl.style.display = "none";
+    }
+}
+
+/* Centralized MJPEG stream reconnection track */
+function reconnectFeed() {
+    var feed = document.getElementById('feed');
+    if (!feed) return;
+    feed.src = "";
+    feed.src = "/video_feed?t=" + Date.now();
+}
+
+/* Used ONLY for deliberate shutdown/restart */
+function killBoothLoop(message) {
+    var shutEl = document.getElementById('shutdownOverlay');
+    var msgEl = document.getElementById('shutdownMessage');
+    if (shutEl && msgEl) {
+        msgEl.innerHTML = "> " + message;
+        shutEl.style.display = "block";
+    }
+    console.log("BOOTH_LOOP_TERMINATED: " + message);
+
+    /* Wipe out any pending recovery/retry timeouts permanently */
+    if (updateTimer) {
+        clearTimeout(updateTimer);
+        updateTimer = null;
+    }
+}
+
+function update(){
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', '/state', true);
+    xhr.timeout = 3000; /* Give each request 3 seconds to answer before timing out */
+
+    /* Gatekeeper flag to ensure we only handle one outcome per request lifecycle */
+    var requestHandled = false;
+
+    function handleFailure(logMessage) {
+        if (requestHandled) return;
+        requestHandled = true;
+
+        stateFailures++;
+        console.log("POLL_FAIL (" + stateFailures + "/6): " + logMessage);
+
+        /* CRITICAL THRESHOLD: Handle failure state after 6 consecutive misses */
+        if (stateFailures >= 6) {
+            console.log("CONNECTION_LOST: ENTERING RECOVERY MODE");
+            showRecoveryOverlay("CONNECTION LOST... ATTEMPTING RECOVERY");
+
+            reconnectFeed();
+
+            stateFailures = 0;
+            clearTimeout(updateTimer);
+            updateTimer = setTimeout(update, 2000); /* 2-second recovery loop for fast local network restoration */
+        } else {
+            /* SELF-HEALING: Relax the polling rate to 1 second during a minor hiccup */
+            clearTimeout(updateTimer);
+            updateTimer = setTimeout(update, 1000);
+        }
+    }
+
+    xhr.onreadystatechange = function(){
+        if(xhr.readyState === 4){
+            if(xhr.status === 200){
+                try{
+                    var d = JSON.parse(xhr.responseText);
+                    
+                    /* SUCCESS! Instant reset of the failure chain and hide recovery window */
+                    stateFailures = 0;
+                    requestHandled = true;
+                    hideRecoveryOverlay();
+
+                    /* DELIBERATE REMOTE SHUTDOWN/RESTART (Triggered via gallery.html) */
+                    if(d.mode === "shutdown" || d.mode === "restart"){
+                        killBoothLoop("SERVER_SHUTDOWN_SEQUENCE... SAFE TO POWER OFF BOOTH");
+                        return;
+                    }
+
+                    /* HARDENED KNOB LOOP */
+                    if(d.knobs && d.knobs.length >= 6){
+                        for(var i=0; i<6; i++){
+                            var el = document.getElementById('k' + i);
+                            if(!el) continue;
+                            var currentVal = d.knobs[i];
+
+                            if(lastKnobValues[i] !== currentVal){
+                                el.textContent = currentVal;
+                                if(lastKnobValues[i] !== undefined){
+                                    el.parentNode.className = "row changing";
+                                }else{
+                                    el.parentNode.className = "row";
+                                }
+                                lastKnobValues[i] = currentVal;
+                            }else{
+                                el.parentNode.className = "row";
+                            }
+                        }
+                    }
+
+                    var validCorners = ["bottom-center", "bottom-middle", "top-right", "top-left", "bottom-right", "bottom-left"];
+                    var feedOverlay = document.getElementById('feedOverlay');
+                    var flashEl    = document.getElementById('flashOverlay');
+                    var cornerCd   = document.getElementById('cornerCountdown');
+                    var num        = document.getElementById('countdownNumber');
+                    var status     = document.getElementById('countdownStatus');
+                    var qrOverlay  = document.getElementById('qrOverlay');
+
+                    /* Edge detection: trigger web visual flash immediately on transition to countdown */
+                    if(lastMode === "pre-capture-countdown" && d.mode === "countdown"){
+                        if(flashEl){
+                            flashEl.style.display = "block";
+                            setTimeout(function(){
+                                flashEl.style.display = "none";
+                                if(feedOverlay && d.mode === "countdown"){
+                                    feedOverlay.style.display = "block";
+                                }
+                            }, 300);
+                        }
+                    }
+
+                    /* 1. PRE-CAPTURE POSE COUNTDOWN */
+                    if(d.mode === "pre-capture-countdown"){
+                        if(flashEl)     flashEl.style.display     = "none";
+                        if(feedOverlay) feedOverlay.style.display = "none";
+                        if(qrOverlay)   qrOverlay.style.display   = "flex";  /* QR guide visible on live feed */
+                        if(cornerCd){
+                            var corner = validCorners.indexOf(d.countdown_corner) !== -1 ? d.countdown_corner : "bottom-center";
+                            cornerCd.className    = "corner-" + corner;
+                            cornerCd.style.display = "block";
+                            cornerCd.innerHTML    = d.countdown_seconds;
+                        }
+                    }
+                    /* 2. POST-CAPTURE FLASH & PRINTING OVERLAY */
+                    else if(d.mode === "countdown"){
+                        if(cornerCd)    cornerCd.style.display    = "none";
+                        if(qrOverlay)   qrOverlay.style.display   = "none";  /* QR guide hidden on frozen frame */
+                        if(d.is_flash){
+                            if(flashEl)     flashEl.style.display     = "block";
+                            if(feedOverlay) feedOverlay.style.display = "none";
+                        } else {
+                            if(flashEl && flashEl.style.display !== "block"){
+                                flashEl.style.display = "none";
+                            }
+                            if(feedOverlay){
+                                feedOverlay.style.display = "block";
+                                num.innerHTML    = "PRINTING";
+                                status.innerHTML = "SPOOLING TO PRINTER";
+                            }
+                        }
+                    }
+                    /* 3. GLITCH NOISE PROCESSING */
+                    else if(d.mode === "processing"){
+                        if(flashEl)     flashEl.style.display     = "none";
+                        if(cornerCd)    cornerCd.style.display    = "none";
+                        if(qrOverlay)   qrOverlay.style.display   = "none";
+                        if(feedOverlay){
+                            feedOverlay.style.display = "block";
+                            num.innerHTML    = "::";
+                            status.innerHTML = "FINALIZING PRINT";
+                        }
+                    }
+                    /* 4. REVIEW LATEST */
+                    else if(d.mode === "latest"){
+                        if(flashEl)     flashEl.style.display     = "none";
+                        if(cornerCd)    cornerCd.style.display    = "none";
+                        if(feedOverlay) feedOverlay.style.display = "none";
+                        if(qrOverlay)   qrOverlay.style.display   = "none";
+                        window.location.href = "/latest?id=" + d.session_id;
+                        return;
+                    }
+                    /* 5. LIVE / IDLE FEED */
+                    else{
+                        if(flashEl)     flashEl.style.display     = "none";
+                        if(cornerCd)    cornerCd.style.display    = "none";
+                        if(feedOverlay) feedOverlay.style.display = "none";
+                        if(qrOverlay)   qrOverlay.style.display   = "flex";  /* QR guide visible on live feed */
+                    }
+
+                    lastMode = d.mode;
+
+                    /* MJPEG STALL DETECTION */
+                    if(d.frame_id === lastFrameId){ stalledCount++; }
+                    else { stalledCount = 0; }
+                    lastFrameId = d.frame_id;
+
+                    if(stalledCount >= 5){
+                        console.log("MJPEG_STALLED_RECONNECT");
+                        reconnectFeed();
+                        stalledCount = 0;
+                    }
+
+                    /* Schedule the next normal fast poll */
+                    clearTimeout(updateTimer);
+                    updateTimer = setTimeout(update, 500);
+
+                }
+                catch(err){
+                    handleFailure("PARSE_ERROR: " + err.message);
+                }
+            } else {
+                /* Triggers if server returns 500/404, or status 0 (network down) */
+                handleFailure("SERVER_STATUS_" + xhr.status);
+            }
+        }
+    };
+
+    /* Handle brief physical network drops */
+    xhr.onerror = function(){
+        handleFailure("NETWORK_ERROR");
+    };
+
+    /* Handle lag spikes where server takes > 3 seconds to reply */
+    xhr.ontimeout = function(){
+        handleFailure("TIMEOUT_ERROR");
+    };
+
+    xhr.send();
+}
+
+/* START INITIAL POLL */
+update();
+
+</script>
+
+<script src="/static/audio.js"></script>
+
+</body>
+</html>

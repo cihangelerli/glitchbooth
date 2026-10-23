@@ -95,6 +95,10 @@ html, body, img, div{ -webkit-touch-callout:none; -webkit-user-select:none; user
     float:right;
 }
 
+.row .nm{
+    float:none;
+}
+
 /* FULL SCREEN SHUTDOWN OVERLAY */
 #shutdownOverlay {
     display: none;
@@ -298,12 +302,12 @@ html, body, img, div{ -webkit-touch-callout:none; -webkit-user-select:none; user
 
     <div class="panel">
 
-        <div class="row">ASCII Matrix <span id="k0"></span></div>
-        <div class="row">Signal Drift <span id="k1"></span></div>
-        <div class="row">Pixel Damage <span id="k3"></span></div>
-        <div class="row">Melt <span id="k4"></span></div>
-        <div class="row">Data Mosh <span id="k2"></span></div>
-        <div class="row">Chroma Shift <span id="k5"></span></div>
+        <div class="row"><span class="nm" id="n0">ASCII Matrix</span> <span id="k0"></span></div>
+        <div class="row"><span class="nm" id="n1">Signal Drift</span> <span id="k1"></span></div>
+        <div class="row"><span class="nm" id="n3">Pixel Damage</span> <span id="k3"></span></div>
+        <div class="row"><span class="nm" id="n4">Melt</span> <span id="k4"></span></div>
+        <div class="row"><span class="nm" id="n2">Data Mosh</span> <span id="k2"></span></div>
+        <div class="row"><span class="nm" id="n5">Chroma Shift</span> <span id="k5"></span></div>
 
     </div>
 
@@ -429,6 +433,16 @@ function update(){
                     if(d.mode === "shutdown" || d.mode === "restart"){
                         killBoothLoop("SERVER_SHUTDOWN_SEQUENCE... SAFE TO POWER OFF BOOTH");
                         return;
+                    }
+
+                    /* KNOB NAMES: primary effect of each knob, from the server */
+                    if(d.labels && d.labels.length >= 6){
+                        for(var j=0; j<6; j++){
+                            var nameEl = document.getElementById('n' + j);
+                            if(nameEl && nameEl.textContent !== d.labels[j]){
+                                nameEl.textContent = d.labels[j];
+                            }
+                        }
                     }
 
                     /* HARDENED KNOB LOOP */

@@ -64,6 +64,10 @@ os.makedirs(SAVED_DIR, exist_ok=True)
 ARCHIVE_DIR = "captures_archive"
 os.makedirs(ARCHIVE_DIR, exist_ok=True)
 
+# Device-only, unprocessed source frame captured alongside a processed capture.
+NAKED_DIR = "captures_naked"
+os.makedirs(NAKED_DIR, exist_ok=True)
+
 IK_URL_ENDPOINT = os.getenv("IK_URL_ENDPOINT")
 IK_PRIVATE_KEY = os.getenv("IK_PRIVATE_KEY")
 
@@ -188,18 +192,66 @@ FRAME_W = 640
 # SCALABLE GLITCH MATRIX CONSTANTS
 # ==============================================================================
 
-# PHASE 2 TUNABLES: EFFECT WIRING, DATA MOSH, PACKET CORRUPTION (readme R7)
+# PHASE 3 TUNABLES: EFFECT ORDER, KNOB ATTACHMENTS, WINDOWS, COST WEIGHTS, LABELS
 # ==============================================================================
-# --- wiring: which knob (0-5) drives which effect, or None = not connected -------
-DATAMOSH_KNOB = 2
-PACKET_CORRUPTION_KNOB = 5  # standalone effect, ready: set to a knob index to connect it, "None" if not connected, 0-5 to connect to a knob
+# Every effect is a handler. EFFECT_ORDER is the processing order, top to bottom:
+# an effect works on the result of the effects above it, so LATER = ON TOP.
+# An effect that is not attached to any knob is skipped and costs nothing.
+# The CRT scanline overlay always runs last and is not part of this list.
+EFFECT_ORDER = [
+    "pixellation",
+    "chroma_shift",
+    "signal_drift",
+    "melt",
+    "data_mosh",
+    "packet_corruption",
+    "ascii_matrix",
+]
+
+# Knob (0-5) -> effects. The FIRST effect is its visible primary name; remaining
+# effects are secondary and react to the same knob without appearing in the UI.
+KNOB_ATTACHMENTS = {
+    0: ["ascii_matrix"],
+    1: ["signal_drift"],
+    2: ["data_mosh"],
+    3: ["pixellation"],
+    4: ["melt"],
+    5: ["chroma_shift", "packet_corruption"],
+}
+
+# Optional active ranges as fractions of knob travel. Empty means full range.
+EFFECT_KNOB_WINDOW = {}
+
+# Cost weights follow effects when they move between knobs.
+EFFECT_COST_WEIGHT = {
+    "ascii_matrix": 0.10,
+    "signal_drift": 0.07,
+    "data_mosh": 0.27,
+    "pixellation": 0.07,
+    "melt": 0.42,
+    "chroma_shift": 0.07,
+    "packet_corruption": 0.0,
+}
+
+EFFECT_SKIP_DURING_WARMUP = ("data_mosh",)
+
+EFFECT_LABELS = {
+    "ascii_matrix": "ASCII Matrix",
+    "signal_drift": "Signal Drift",
+    "data_mosh": "Data Mosh",
+    "pixellation": "Pixel Damage",
+    "melt": "Melt",
+    "chroma_shift": "Chroma Shift",
+    "packet_corruption": "Packet Corruption",
+}
+KNOB_EMPTY_LABEL = "-"
+
+NAKED_CAPTURE_ENABLED = True
+
+# PHASE 2 TUNABLES: DATA MOSH, PACKET CORRUPTION (readme R7)
+# ==============================================================================
 
 # --- Data Mosh -------------------------------------------------------------------
-# Where in the pipeline it runs:
-#   "before_drift"               today's position (after chroma, before Signal Drift)
-#   "after_melt_own_motion"      after Melt, motion measured on its own input
-#   "after_melt_pre_melt_motion" after Melt, motion measured on the picture before Melt
-MOSH_STAGE_POSITION = "after_melt_own_motion"
 MOSH_DORMANT_BELOW = (
     0.02  # strength = (knob/1023)**2 below this cancels everything at once
 )
@@ -430,6 +482,7 @@ PREVIEW_DOWNSCALE_WIDTH = (
 LATEST_CAMERA_FRAME = np.zeros((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
 MUTABLE_PROCESSING_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
 UI_DISPLAY_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
+NAKED_FRAME_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
 
 
 SHARED_JPEG_STREAM_BUFFER = memoryview(b"")
@@ -1377,35 +1430,11 @@ def seed_private_rngs(seed):
     _MOSH.reseed(seed)
 
 
-def _validate_effect_wiring():
-    """Check the Phase 2 tunables. Never raises: a bad value is reported and replaced by
-    its safe default so the booth keeps running (readme R14). Returns the messages."""
-    global DATAMOSH_KNOB, PACKET_CORRUPTION_KNOB, MOSH_STAGE_POSITION, MOSH_BLEED_MODE
+def _validate_mosh_settings():
+    """Check Data Mosh tunables without changing the owner's tuned safe limits."""
+    global MOSH_BLEED_MODE
     global MOSH_HOLD_MIN_FRAMES, MOSH_HOLD_MAX_FRAMES, MOSH_VECTOR_PX
     notes = []
-
-    def knob_ok(v):
-        return v is None or (
-            isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 5
-        )
-
-    if not knob_ok(DATAMOSH_KNOB):
-        notes.append(f"DATAMOSH_KNOB={DATAMOSH_KNOB!r} invalid, using 2")
-        DATAMOSH_KNOB = 2
-    if not knob_ok(PACKET_CORRUPTION_KNOB):
-        notes.append(
-            f"PACKET_CORRUPTION_KNOB={PACKET_CORRUPTION_KNOB!r} invalid, using None"
-        )
-        PACKET_CORRUPTION_KNOB = None
-    if MOSH_STAGE_POSITION not in (
-        "before_drift",
-        "after_melt_own_motion",
-        "after_melt_pre_melt_motion",
-    ):
-        notes.append(
-            f"MOSH_STAGE_POSITION={MOSH_STAGE_POSITION!r} invalid, using 'before_drift'"
-        )
-        MOSH_STAGE_POSITION = "before_drift"
     if MOSH_BLEED_MODE not in (
         "shape_live_colour_held",
         "shape_held_colour_live",
@@ -1424,21 +1453,12 @@ def _validate_effect_wiring():
         )
         MOSH_HOLD_MIN_FRAMES, MOSH_HOLD_MAX_FRAMES = 6, 33
 
-    if (
-        DATAMOSH_KNOB is not None
-        and PACKET_CORRUPTION_KNOB is not None
-        and DATAMOSH_KNOB == PACKET_CORRUPTION_KNOB
-    ):
-        notes.append(
-            f"NOTE: Data Mosh and Packet Corruption both listen to knob {DATAMOSH_KNOB}"
-        )
-
     for msg in notes:
-        print(f"[EFFECT WIRING] {msg}")
+        print(f"[MOSH SETTINGS] {msg}")
     return notes
 
 
-_validate_effect_wiring()
+_validate_mosh_settings()
 
 
 # =========================================================================
@@ -2539,7 +2559,11 @@ def n(val):
     return val / 1023.0
 
 
-def apply_glitch_pipeline(current_time, control_packet):
+'''Removed Phase 2 pipeline retained temporarily as migration reference.
+
+The active implementation begins at the Phase 3 handler block below.  Keeping this
+code as Python made static analysis resolve names intentionally removed by Phase 3.
+def _phase2_pipeline_reference(current_time, control_packet):
     global WARMUP_COUNTER, LAST_TEMPORAL_PURGE
     global \
         ASCII_LOWRES_GRAY, \
@@ -2850,8 +2874,242 @@ def apply_glitch_pipeline(current_time, control_packet):
         )
 
 
+'''
+
+# =========================================================================
+# PHASE 3: EFFECT HANDLERS, ATTACHMENTS, ORDER AND PER-EFFECT KNOB WINDOWS
+# =========================================================================
+def apply_pixellation(raw_knob, current_time):
+    comp = n(raw_knob)
+    if comp > 0:
+        tile = int(COMPRESSION_TILE_BASE + comp * COMPRESSION_TILE_SCALE)
+        tw, th = max(1, FRAME_W // tile), max(1, FRAME_H // tile)
+        sub = COMPRESSION_STAGE_BUFFER[:th, :tw]
+        cv2.resize(MUTABLE_PROCESSING_BUFFER, (tw, th), dst=sub, interpolation=cv2.INTER_NEAREST)
+        cv2.resize(sub, (FRAME_W, FRAME_H), dst=MUTABLE_PROCESSING_BUFFER, interpolation=cv2.INTER_NEAREST)
+
+
+def apply_chroma_shift(raw_knob, current_time):
+    ana_val = n(raw_knob)
+    if ana_val <= 0.05:
+        return
+    h, w = FRAME_H, FRAME_W
+    shift = int(ana_val * ANA_SHIFT_MAX)
+    red = MUTABLE_PROCESSING_BUFFER[:, :, 2]
+    if shift > 0:
+        s = shift % w
+        if s:
+            CHANNEL_SHIFT_BUFFER[:, :-s], CHANNEL_SHIFT_BUFFER[:, -s:] = red[:, s:], red[:, :s]
+            red[:] = CHANNEL_SHIFT_BUFFER
+    elif shift < 0:
+        s = (-shift) % w
+        if s:
+            CHANNEL_SHIFT_BUFFER[:, :s], CHANNEL_SHIFT_BUFFER[:, s:] = red[:, -s:], red[:, :-s]
+            red[:] = CHANNEL_SHIFT_BUFFER
+    s_ghost = ANA_GHOST_OFFSET % w
+    if s_ghost:
+        GHOST_FRAME_BUFFER[:, :s_ghost], GHOST_FRAME_BUFFER[:, s_ghost:] = MUTABLE_PROCESSING_BUFFER[:, -s_ghost:], MUTABLE_PROCESSING_BUFFER[:, :-s_ghost]
+        cv2.addWeighted(MUTABLE_PROCESSING_BUFFER, .80, GHOST_FRAME_BUFFER, .20, 0, dst=MUTABLE_PROCESSING_BUFFER)
+    if int(current_time * 15) % 3 == 0:
+        for _ in range(int(ana_val * 3)):
+            y, height, shift = np.random.randint(0, h - SLICE_MAX_H), np.random.randint(SLICE_MIN_H, SLICE_MAX_H), np.random.randint(-SLICE_MAX_SHIFT, SLICE_MAX_SHIFT)
+            if shift:
+                view = MUTABLE_PROCESSING_BUFFER[y:y + height]
+                s = abs(shift) % w
+                if s:
+                    scratch = SLICE_SHIFT_BUFFER[:height, :w]
+                    if shift > 0:
+                        scratch[:, :s], scratch[:, s:] = view[:, -s:], view[:, :-s]
+                    else:
+                        scratch[:, :-s], scratch[:, -s:] = view[:, s:], view[:, :s]
+                    view[:] = scratch
+
+
+def apply_signal_drift(raw_knob, current_time):
+    global STATIC_V_BUFFER
+    drift = n(raw_knob)
+    if drift <= 0:
+        return
+    h, w = MUTABLE_PROCESSING_BUFFER.shape[:2]
+    if STATIC_V_BUFFER is None:
+        STATIC_V_BUFFER = np.zeros((h // 2, w) + MUTABLE_PROCESSING_BUFFER.shape[2:], dtype=MUTABLE_PROCESSING_BUFFER.dtype)
+    if drift > .85:
+        v_shift = int(((drift - .85) / .15) * (h // 2))
+        if v_shift:
+            STATIC_V_BUFFER[:v_shift] = MUTABLE_PROCESSING_BUFFER[:v_shift]
+            MUTABLE_PROCESSING_BUFFER[:-v_shift] = MUTABLE_PROCESSING_BUFFER[v_shift:]
+            MUTABLE_PROCESSING_BUFFER[-v_shift:] = STATIC_V_BUFFER[:v_shift]
+            seam, thickness = h - v_shift, int(h * .04)
+            MUTABLE_PROCESSING_BUFFER[max(0, seam - thickness // 2):min(h, seam + thickness // 2)] = 0
+    amount = int(drift * DRIFT_MAX_AMOUNT * .6)
+    for i in range(h):
+        shift = int(math.sin(i * .05 + current_time * .15) * amount)
+        if shift > 0:
+            s = shift % w
+            if s:
+                row = MUTABLE_PROCESSING_BUFFER[i]
+                STATIC_ROW_BUFFER[:s], STATIC_ROW_BUFFER[s:] = row[-s:], row[:-s]
+                row[:] = STATIC_ROW_BUFFER
+        elif shift < 0:
+            s = (-shift) % w
+            if s:
+                row = MUTABLE_PROCESSING_BUFFER[i]
+                STATIC_ROW_BUFFER[:-s], STATIC_ROW_BUFFER[-s:] = row[s:], row[:s]
+                row[:] = STATIC_ROW_BUFFER
+
+
+def apply_melt(raw_knob, current_time):
+    apply_melt_pass(n(raw_knob), current_time)
+
+
+def apply_ascii_matrix(raw_knob, current_time):
+    global SPARK_COUNTER, SPARK_INTERVAL
+    ascii_val = n(raw_knob)
+    if ascii_val <= .02:
+        return
+    cv2.cvtColor(MUTABLE_PROCESSING_BUFFER, cv2.COLOR_BGR2GRAY, dst=ASCII_UPRES_GRAY)
+    ASCII_UPRES_GRAY[:] = clahe.apply(ASCII_UPRES_GRAY)
+    cv2.resize(ASCII_UPRES_GRAY, (ASCII_GRID_W, ASCII_GRID_H), dst=ASCII_LOWRES_GRAY, interpolation=cv2.INTER_NEAREST)
+    cv2.normalize(ASCII_LOWRES_GRAY, ASCII_LOWRES_GRAY, 0, 255, cv2.NORM_MINMAX)
+    np.right_shift(ASCII_LOWRES_GRAY, 4, out=ASCII_LOWRES_GRAY)
+    np.take(ASCII_TILES, ASCII_LOWRES_GRAY, axis=0, out=ASCII_BLOCK_BUFFER)
+    ASCII_UPRES_GRAY[:] = ASCII_BLOCK_BUFFER.transpose(0, 2, 1, 3).reshape(FRAME_H, FRAME_W)
+    ASCII_GREEN_BUFFER[:, :, 0], ASCII_GREEN_BUFFER[:, :, 1], ASCII_GREEN_BUFFER[:, :, 2] = 0, ASCII_UPRES_GRAY, 0
+    SPARK_COUNTER += 1
+    if SPARK_COUNTER >= SPARK_INTERVAL:
+        cv2.randu(ASCII_NOISE_LOW, 0, 255)
+        threshold = max(240, min(254, 254 - int(ascii_val * 3)))
+        cv2.threshold(ASCII_NOISE_LOW, threshold, 255, cv2.THRESH_BINARY, dst=ASCII_NOISE_LOW)
+        ASCII_NOISE_LOW[ASCII_LOWRES_GRAY == 0] = 0
+        cv2.dilate(ASCII_NOISE_LOW, np.ones((np.random.randint(1, 7), 1), dtype=np.uint8), dst=ASCII_NOISE_LOW)
+        SPARK_COUNTER, SPARK_INTERVAL = 0, np.random.randint(7, 17)
+    cv2.resize(ASCII_NOISE_LOW, (FRAME_W, FRAME_H), dst=ASCII_NOISE_UP, interpolation=cv2.INTER_NEAREST)
+    ASCII_GREEN_BUFFER[(ASCII_NOISE_UP > 0) & (ASCII_UPRES_GRAY > 0)] = [31, 255, 31]
+    bloom = cv2.resize(ASCII_GREEN_BUFFER, (ASCII_GRID_W, ASCII_GRID_H), interpolation=cv2.INTER_LINEAR)
+    bloom = cv2.resize(cv2.GaussianBlur(bloom, (3, 3), 0), (FRAME_W, FRAME_H), interpolation=cv2.INTER_LINEAR)
+    cv2.addWeighted(ASCII_GREEN_BUFFER, .8, bloom, .4, 0, dst=ASCII_GREEN_BUFFER)
+    cv2.addWeighted(ASCII_GREEN_BUFFER, ascii_val, MUTABLE_PROCESSING_BUFFER, 1.0 - ascii_val, 0, dst=MUTABLE_PROCESSING_BUFFER)
+
+
+def apply_crt_overlay():
+    if CRT_ENABLED:
+        cv2.multiply(MUTABLE_PROCESSING_BUFFER, CRT_MASK, MUTABLE_PROCESSING_BUFFER, scale=1.0 / 255.0)
+
+
+EFFECT_HANDLERS = {
+    "pixellation": apply_pixellation, "chroma_shift": apply_chroma_shift,
+    "signal_drift": apply_signal_drift, "melt": apply_melt,
+    "data_mosh": apply_data_mosh, "packet_corruption": apply_packet_corruption,
+    "ascii_matrix": apply_ascii_matrix,
+}
+_EFFECT_PLAN = []
+_KNOB_LABELS = [KNOB_EMPTY_LABEL] * 6
+
+
+def rebuild_effect_plan():
+    global _EFFECT_PLAN, _KNOB_LABELS
+    notes, order, knob_of = [], [], {}
+    for effect in EFFECT_ORDER:
+        if effect not in EFFECT_HANDLERS:
+            notes.append(f"EFFECT_ORDER: unknown effect {effect!r} ignored")
+        elif effect in order:
+            notes.append(f"EFFECT_ORDER: {effect!r} listed twice, first entry kept")
+        else:
+            order.append(effect)
+    by_knob = {k: [] for k in range(6)}
+    valid_knobs = sorted(
+        knob for knob in KNOB_ATTACHMENTS
+        if isinstance(knob, int) and not isinstance(knob, bool) and 0 <= knob <= 5
+    )
+    for knob in KNOB_ATTACHMENTS:
+        if knob not in valid_knobs:
+            notes.append(f"KNOB_ATTACHMENTS: knob {knob!r} is not 0-5, ignored")
+    for knob in valid_knobs:
+        for effect in KNOB_ATTACHMENTS[knob]:
+            if effect not in order:
+                notes.append(f"knob {knob}: {effect!r} is unknown or missing from EFFECT_ORDER, ignored")
+            elif effect in knob_of:
+                notes.append(f"knob {knob}: {effect!r} is already attached to knob {knob_of[effect]}, ignored")
+            else:
+                knob_of[effect] = knob
+                by_knob[knob].append(effect)
+    windows = {}
+    for effect, window in EFFECT_KNOB_WINDOW.items():
+        try:
+            lo, hi = float(window[0]), float(window[1])
+            valid = 0 <= lo < hi <= 1 and effect in order
+        except Exception:
+            valid = False
+        if valid:
+            windows[effect] = (lo, hi)
+        else:
+            notes.append(f"EFFECT_KNOB_WINDOW: {effect!r}: {window!r} needs 0 <= low < high <= 1 and a known effect, ignored")
+    _EFFECT_PLAN = [(effect, EFFECT_HANDLERS[effect], knob_of[effect], windows.get(effect, (0., 1.)), effect in EFFECT_SKIP_DURING_WARMUP) for effect in order if effect in knob_of]
+    _KNOB_LABELS = [EFFECT_LABELS.get(by_knob[k][0], by_knob[k][0]) if by_knob[k] else KNOB_EMPTY_LABEL for k in range(6)]
+    for note in notes:
+        print(f"[EFFECT CONFIG] {note}")
+    return notes
+
+
+def set_effect_config(order=None, attachments=None, windows=None, weights=None):
+    global EFFECT_ORDER, KNOB_ATTACHMENTS, EFFECT_KNOB_WINDOW, EFFECT_COST_WEIGHT
+    if order is not None: EFFECT_ORDER = list(order)
+    if attachments is not None: KNOB_ATTACHMENTS = {k: list(v) for k, v in attachments.items()}
+    if windows is not None: EFFECT_KNOB_WINDOW = dict(windows)
+    if weights is not None: EFFECT_COST_WEIGHT = dict(weights)
+    return rebuild_effect_plan()
+
+
+def get_knob_labels():
+    return list(_KNOB_LABELS)
+
+
+def _windowed_raw(raw_knob, window):
+    lo, hi = window
+    if lo <= 0 and hi >= 1: return raw_knob
+    x = (raw_knob / 1023.0 - lo) / (hi - lo)
+    return 0 if x <= 0 else 1023 if x >= 1 else x * 1023.0
+
+
+def compute_effect_intensity(knobs):
+    return max(0., min(1., sum(EFFECT_COST_WEIGHT.get(effect, 0.) * n(_windowed_raw(knobs[knob], window)) for effect, _handler, knob, window, _skip in _EFFECT_PLAN)))
+
+
+rebuild_effect_plan()
+
+
+def apply_glitch_pipeline(current_time, control_packet):
+    global WARMUP_COUNTER, LAST_TEMPORAL_PURGE
+    is_warming_up = WARMUP_COUNTER < WARMUP_FRAMES
+    cv2.cvtColor(MUTABLE_PROCESSING_BUFFER, cv2.COLOR_BGR2GRAY, dst=SHARED_GRAY_BUFFER)
+    if is_warming_up:
+        PREV_FRAME_BUFFER[:] = MUTABLE_PROCESSING_BUFFER
+        WARMUP_COUNTER += 1
+    if current_time - LAST_TEMPORAL_PURGE > 90.0:
+        PREV_FRAME_BUFFER[:] = MUTABLE_PROCESSING_BUFFER
+        LAST_TEMPORAL_PURGE = current_time
+    for _effect, handler, knob, window, skip in _EFFECT_PLAN:
+        if not (skip and is_warming_up):
+            handler(_windowed_raw(control_packet.knobs[knob], window), current_time)
+    apply_crt_overlay()
+
+
 # HARDWARE OUTPUT EXECUTION STATIONS
 # ==================================================
+
+
+def _write_naked_capture(disk_id, frame):
+    """Write a device-only naked capture without affecting capture success."""
+    if frame is None:
+        return False
+    try:
+        ok = cv2.imwrite(os.path.join(NAKED_DIR, f"{disk_id}_naked.jpg"), frame)
+        if not ok:
+            logger.error("[NAKED] could not write naked capture for session %s", disk_id)
+        return bool(ok)
+    except Exception as exc:
+        logger.error("[NAKED] naked capture failed for session %s: %s", disk_id, exc)
+        return False
 
 
 def cleanup_sessions(limit=100):
@@ -3411,21 +3669,13 @@ def background_loop():
                             dst=MUTABLE_PROCESSING_BUFFER,
                         )
 
+            if NAKED_CAPTURE_ENABLED and loop_mode == "pre-capture-countdown":
+                NAKED_FRAME_BUFFER[:] = MUTABLE_PROCESSING_BUFFER
+
             apply_glitch_pipeline(loop_execution_time, packet)
 
-            # OPTIMIZATION: Convert knobs to 0.0 - 1.0 scale once per frame
-            norm_knobs = [k / 1023.0 for k in packet.knobs]
-
             try:
-                effect_intensity = (
-                    norm_knobs[0] * 0.10
-                    + norm_knobs[1] * 0.07
-                    + norm_knobs[2] * 0.27
-                    + norm_knobs[4] * 0.42
-                    + norm_knobs[3] * 0.07
-                    + norm_knobs[5] * 0.07
-                )
-                effect_intensity = max(0.0, min(1.0, effect_intensity))
+                effect_intensity = compute_effect_intensity(packet.knobs)
             except Exception:
                 effect_intensity = 0.5
 
@@ -3506,7 +3756,10 @@ def background_loop():
             # ------------------------------------------------------------------
 
             # Reusable Storage Worker (Scoped inside state_machine_loop)
-            def async_storage_worker(disk_id, color_mat, bw_mat, active_knobs):
+            def async_storage_worker(
+                disk_id, color_mat, bw_mat, active_knobs, naked_mat=None
+            ):
+                _write_naked_capture(disk_id, naked_mat)
                 color_ok = cv2.imwrite(
                     os.path.join(CAPTURE_DIR, f"{disk_id}_color.jpg"), color_mat
                 )
@@ -3630,6 +3883,7 @@ def background_loop():
                             FROZEN_DISPLAY_BUFFER.copy(),
                             FROZEN_PRINT_BUFFER.copy(),
                             captured_knobs,
+                            NAKED_FRAME_BUFFER.copy() if NAKED_CAPTURE_ENABLED else None,
                         ),
                         daemon=True,
                     ).start()
@@ -4062,6 +4316,7 @@ def state():
     return jsonify(
         {
             "knobs": list(GLOBAL_KNOBS),
+            "labels": get_knob_labels(),
             "ip": SYSTEM_TELEMETRY["ip"],
             "last_frame_time": last_frame_time,
             "camera_fail_count": camera_fail_count,
