@@ -201,8 +201,8 @@ FRAME_W = 640
 EFFECT_ORDER = [
     "pixellation",
     "signal_drift",
-    "melt",
     "data_mosh",
+    "melt",
     "chroma_shift",
     "packet_corruption",
     "ascii_matrix",
@@ -215,8 +215,8 @@ KNOB_ATTACHMENTS = {
     1: ["signal_drift"],
     2: ["data_mosh"],
     3: ["pixellation"],
-    4: ["melt", "packet_corruption"],
-    5: ["chroma_shift"],
+    4: ["melt"],
+    5: ["chroma_shift", "packet_corruption"],
 }
 
 # Optional active ranges as fractions of knob travel. Empty means full range.
@@ -289,7 +289,7 @@ CORRUPTION_SQUARE_PROB = 0.60  # square block (else a full-height column)
 CORRUPTION_SQUARE_MAX_CELLS = 4  # square block is 1..N cells each way
 CORRUPTION_THIN_COLUMN_PROB = 0.9  # column is 1 cell wide (else 2)
 CORRUPTION_COLUMN_NOISE_PROB = 0.70  # column kind: noise below this roll
-CORRUPTION_COLUMN_BLACK_PROB_END = 0.90  # black up to this roll, white above
+CORRUPTION_COLUMN_BLACK_PROB_END = 0.95  # black up to this roll, white above
 CORRUPTION_DECAY = 0.9  # energy multiplier per frame
 CORRUPTION_CLEAR_ENERGY = 0.005  # damage at or below this energy disappears
 CORRUPTION_BLEND_BELOW = 0.95  # below this energy the damage is blended, not solid
