@@ -219,7 +219,9 @@ KNOB_ATTACHMENTS = {
     5: ["chroma_shift", "packet_corruption"],
 }
 
-# Optional active ranges as fractions of knob travel. Empty means full range.
+# Optional range of the knob in which an effect works, as fractions of the knob travel.
+# Inside its window the effect sees the full 0-1023 range; outside it is off.
+# Example: {"chroma_shift": (0.0, 0.7), "packet_corruption": (0.35, 1.0)}
 EFFECT_KNOB_WINDOW = {}
 
 # Cost weights follow effects when they move between knobs.
