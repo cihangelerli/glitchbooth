@@ -649,7 +649,7 @@ try:
                 "> AYARLARLA OYNA, KENDİ EFEKTİNİ YARAT,",
                 "> GLITCH ETKİSİNİ İSTEDİĞİN GİBİ AYARLA,",
                 "> DÜĞMEYE BAS, POZ VERMEK İÇİN 3 SANİYEN VAR!",
-                "> GLITCH FOTOGRAFININ HIZLICA BASILACAK  :)",
+                "> GLITCH FOTOGRAFIN HIZLICA BASILACAK. :)",
             ]
 
             for line in instructions:
