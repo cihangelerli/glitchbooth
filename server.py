@@ -201,8 +201,8 @@ FRAME_W = 640
 EFFECT_ORDER = [
     "pixellation",
     "signal_drift",
-    "data_mosh",
     "melt",
+    "data_mosh",
     "chroma_shift",
     "packet_corruption",
     "ascii_matrix",
@@ -2938,7 +2938,10 @@ def apply_chroma_shift(raw_knob, current_time):
             dst=MUTABLE_PROCESSING_BUFFER,
         )
     if int(current_time * 15) % 3 == 0:
-        for _ in range(int(ana_val * 3)):
+        # Gives a smoother curve where low values yield slices much sooner
+        num_slices = int((ana_val**0.5) * 4)
+
+        for _ in range(int(num_slices)):
             y, height, shift = (
                 np.random.randint(0, h - SLICE_MAX_H),
                 np.random.randint(SLICE_MIN_H, SLICE_MAX_H),
