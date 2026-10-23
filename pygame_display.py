@@ -646,10 +646,10 @@ try:
                 "> SOL <- DAHA ÇOK             DAHA AZ -> SAĞ",
                 ">  -     EFEKT                EFEKT       + ",
                 "---------------------------------------------",
-                "> KONTROLLERLE OYNA, KENDİ EFEKTİNİ YARAT,",
+                "> AYARLARLA OYNA, KENDİ EFEKTİNİ YARAT,",
                 "> GLITCH ETKİSİNİ İSTEDİĞİN GİBİ AYARLA,",
-                "> POZUNU VER, DÜĞMEYE BAS, GLITCH FOTONU ÇEK!",
-                "> FOTOĞRAFIN 3 SANİYEDE ELİNDE :)",
+                "> DÜĞMEYE BAS, POZ VERMEK İÇİN 3 SANİYEN VAR!",
+                "> GLITCH FOTOGRAFININ HIZLICA BASILACAK  :)",
             ]
 
             for line in instructions:

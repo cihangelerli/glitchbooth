@@ -215,8 +215,8 @@ KNOB_ATTACHMENTS = {
     1: ["signal_drift"],
     2: ["data_mosh"],
     3: ["pixellation"],
-    4: ["melt"],
-    5: ["chroma_shift", "packet_corruption"],
+    4: ["melt", "packet_corruption"],
+    5: ["chroma_shift"],
 }
 
 # Optional active ranges as fractions of knob travel. Empty means full range.
@@ -274,8 +274,8 @@ MOSH_BLEED_MAX = 0.23  # bleed mix = MAX * strength (0-1)
 MOSH_RNG_SEED = (
     None  # None = fresh entropy each start; tests reseed via seed_private_rngs()
 )
-MOSH_CELL_H = 16  # [320x240: 16] [480x360: 24] [640x480: 32]
-MOSH_CELL_W = 12  # [320x240: 12] [480x360: 18] [640x480: 24]
+MOSH_CELL_H = 16
+MOSH_CELL_W = 12
 
 
 CORRUPTION_CELL_H = 12
