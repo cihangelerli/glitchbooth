@@ -200,10 +200,10 @@ FRAME_W = 640
 # The CRT scanline overlay always runs last and is not part of this list.
 EFFECT_ORDER = [
     "pixellation",
-    "chroma_shift",
     "signal_drift",
-    "data_mosh",
     "melt",
+    "data_mosh",
+    "chroma_shift",
     "packet_corruption",
     "ascii_matrix",
 ]
