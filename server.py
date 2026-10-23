@@ -263,7 +263,7 @@ MOSH_HOLD_MIN_FRAMES = 17  # hold time rises from MIN to MAX with strength (1-11
 MOSH_HOLD_MAX_FRAMES = 43
 # Per-frame drag distance in any of four directions: left, right, up, or down.
 MOSH_VECTOR_PX = 9  # pixels per frame (1-11)
-MOSH_DRAG_NEW_WEIGHT = 221 / 256  # share of the dragged picture per frame
+MOSH_DRAG_NEW_WEIGHT = 128 / 256  # share of the dragged picture per frame
 MOSH_EDGE_ERODE_MAX_PX = 0  # random edge erosion 0..N px on held cells (as before)
 MOSH_RELEASE_FRAMES = 13  # edges dissolve over the last N frames of a hold
 MOSH_RELEASE_ERODE_PX = 1  # extra erosion per release frame
