@@ -202,8 +202,8 @@ EFFECT_ORDER = [
     "pixellation",
     "chroma_shift",
     "signal_drift",
-    "melt",
     "data_mosh",
+    "melt",
     "packet_corruption",
     "ascii_matrix",
 ]
@@ -2559,7 +2559,7 @@ def n(val):
     return val / 1023.0
 
 
-'''Removed Phase 2 pipeline retained temporarily as migration reference.
+"""Removed Phase 2 pipeline retained temporarily as migration reference.
 
 The active implementation begins at the Phase 3 handler block below.  Keeping this
 code as Python made static analysis resolve names intentionally removed by Phase 3.
@@ -2874,7 +2874,8 @@ def _phase2_pipeline_reference(current_time, control_packet):
         )
 
 
-'''
+"""
+
 
 # =========================================================================
 # PHASE 3: EFFECT HANDLERS, ATTACHMENTS, ORDER AND PER-EFFECT KNOB WINDOWS
@@ -2885,8 +2886,18 @@ def apply_pixellation(raw_knob, current_time):
         tile = int(COMPRESSION_TILE_BASE + comp * COMPRESSION_TILE_SCALE)
         tw, th = max(1, FRAME_W // tile), max(1, FRAME_H // tile)
         sub = COMPRESSION_STAGE_BUFFER[:th, :tw]
-        cv2.resize(MUTABLE_PROCESSING_BUFFER, (tw, th), dst=sub, interpolation=cv2.INTER_NEAREST)
-        cv2.resize(sub, (FRAME_W, FRAME_H), dst=MUTABLE_PROCESSING_BUFFER, interpolation=cv2.INTER_NEAREST)
+        cv2.resize(
+            MUTABLE_PROCESSING_BUFFER,
+            (tw, th),
+            dst=sub,
+            interpolation=cv2.INTER_NEAREST,
+        )
+        cv2.resize(
+            sub,
+            (FRAME_W, FRAME_H),
+            dst=MUTABLE_PROCESSING_BUFFER,
+            interpolation=cv2.INTER_NEAREST,
+        )
 
 
 def apply_chroma_shift(raw_knob, current_time):
@@ -2899,22 +2910,42 @@ def apply_chroma_shift(raw_knob, current_time):
     if shift > 0:
         s = shift % w
         if s:
-            CHANNEL_SHIFT_BUFFER[:, :-s], CHANNEL_SHIFT_BUFFER[:, -s:] = red[:, s:], red[:, :s]
+            CHANNEL_SHIFT_BUFFER[:, :-s], CHANNEL_SHIFT_BUFFER[:, -s:] = (
+                red[:, s:],
+                red[:, :s],
+            )
             red[:] = CHANNEL_SHIFT_BUFFER
     elif shift < 0:
         s = (-shift) % w
         if s:
-            CHANNEL_SHIFT_BUFFER[:, :s], CHANNEL_SHIFT_BUFFER[:, s:] = red[:, -s:], red[:, :-s]
+            CHANNEL_SHIFT_BUFFER[:, :s], CHANNEL_SHIFT_BUFFER[:, s:] = (
+                red[:, -s:],
+                red[:, :-s],
+            )
             red[:] = CHANNEL_SHIFT_BUFFER
     s_ghost = ANA_GHOST_OFFSET % w
     if s_ghost:
-        GHOST_FRAME_BUFFER[:, :s_ghost], GHOST_FRAME_BUFFER[:, s_ghost:] = MUTABLE_PROCESSING_BUFFER[:, -s_ghost:], MUTABLE_PROCESSING_BUFFER[:, :-s_ghost]
-        cv2.addWeighted(MUTABLE_PROCESSING_BUFFER, .80, GHOST_FRAME_BUFFER, .20, 0, dst=MUTABLE_PROCESSING_BUFFER)
+        GHOST_FRAME_BUFFER[:, :s_ghost], GHOST_FRAME_BUFFER[:, s_ghost:] = (
+            MUTABLE_PROCESSING_BUFFER[:, -s_ghost:],
+            MUTABLE_PROCESSING_BUFFER[:, :-s_ghost],
+        )
+        cv2.addWeighted(
+            MUTABLE_PROCESSING_BUFFER,
+            0.80,
+            GHOST_FRAME_BUFFER,
+            0.20,
+            0,
+            dst=MUTABLE_PROCESSING_BUFFER,
+        )
     if int(current_time * 15) % 3 == 0:
         for _ in range(int(ana_val * 3)):
-            y, height, shift = np.random.randint(0, h - SLICE_MAX_H), np.random.randint(SLICE_MIN_H, SLICE_MAX_H), np.random.randint(-SLICE_MAX_SHIFT, SLICE_MAX_SHIFT)
+            y, height, shift = (
+                np.random.randint(0, h - SLICE_MAX_H),
+                np.random.randint(SLICE_MIN_H, SLICE_MAX_H),
+                np.random.randint(-SLICE_MAX_SHIFT, SLICE_MAX_SHIFT),
+            )
             if shift:
-                view = MUTABLE_PROCESSING_BUFFER[y:y + height]
+                view = MUTABLE_PROCESSING_BUFFER[y : y + height]
                 s = abs(shift) % w
                 if s:
                     scratch = SLICE_SHIFT_BUFFER[:height, :w]
@@ -2932,18 +2963,23 @@ def apply_signal_drift(raw_knob, current_time):
         return
     h, w = MUTABLE_PROCESSING_BUFFER.shape[:2]
     if STATIC_V_BUFFER is None:
-        STATIC_V_BUFFER = np.zeros((h // 2, w) + MUTABLE_PROCESSING_BUFFER.shape[2:], dtype=MUTABLE_PROCESSING_BUFFER.dtype)
-    if drift > .85:
-        v_shift = int(((drift - .85) / .15) * (h // 2))
+        STATIC_V_BUFFER = np.zeros(
+            (h // 2, w) + MUTABLE_PROCESSING_BUFFER.shape[2:],
+            dtype=MUTABLE_PROCESSING_BUFFER.dtype,
+        )
+    if drift > 0.85:
+        v_shift = int(((drift - 0.85) / 0.15) * (h // 2))
         if v_shift:
             STATIC_V_BUFFER[:v_shift] = MUTABLE_PROCESSING_BUFFER[:v_shift]
             MUTABLE_PROCESSING_BUFFER[:-v_shift] = MUTABLE_PROCESSING_BUFFER[v_shift:]
             MUTABLE_PROCESSING_BUFFER[-v_shift:] = STATIC_V_BUFFER[:v_shift]
-            seam, thickness = h - v_shift, int(h * .04)
-            MUTABLE_PROCESSING_BUFFER[max(0, seam - thickness // 2):min(h, seam + thickness // 2)] = 0
-    amount = int(drift * DRIFT_MAX_AMOUNT * .6)
+            seam, thickness = h - v_shift, int(h * 0.04)
+            MUTABLE_PROCESSING_BUFFER[
+                max(0, seam - thickness // 2) : min(h, seam + thickness // 2)
+            ] = 0
+    amount = int(drift * DRIFT_MAX_AMOUNT * 0.6)
     for i in range(h):
-        shift = int(math.sin(i * .05 + current_time * .15) * amount)
+        shift = int(math.sin(i * 0.05 + current_time * 0.15) * amount)
         if shift > 0:
             s = shift % w
             if s:
@@ -2965,41 +3001,84 @@ def apply_melt(raw_knob, current_time):
 def apply_ascii_matrix(raw_knob, current_time):
     global SPARK_COUNTER, SPARK_INTERVAL
     ascii_val = n(raw_knob)
-    if ascii_val <= .02:
+    if ascii_val <= 0.02:
         return
     cv2.cvtColor(MUTABLE_PROCESSING_BUFFER, cv2.COLOR_BGR2GRAY, dst=ASCII_UPRES_GRAY)
     ASCII_UPRES_GRAY[:] = clahe.apply(ASCII_UPRES_GRAY)
-    cv2.resize(ASCII_UPRES_GRAY, (ASCII_GRID_W, ASCII_GRID_H), dst=ASCII_LOWRES_GRAY, interpolation=cv2.INTER_NEAREST)
+    cv2.resize(
+        ASCII_UPRES_GRAY,
+        (ASCII_GRID_W, ASCII_GRID_H),
+        dst=ASCII_LOWRES_GRAY,
+        interpolation=cv2.INTER_NEAREST,
+    )
     cv2.normalize(ASCII_LOWRES_GRAY, ASCII_LOWRES_GRAY, 0, 255, cv2.NORM_MINMAX)
     np.right_shift(ASCII_LOWRES_GRAY, 4, out=ASCII_LOWRES_GRAY)
     np.take(ASCII_TILES, ASCII_LOWRES_GRAY, axis=0, out=ASCII_BLOCK_BUFFER)
-    ASCII_UPRES_GRAY[:] = ASCII_BLOCK_BUFFER.transpose(0, 2, 1, 3).reshape(FRAME_H, FRAME_W)
-    ASCII_GREEN_BUFFER[:, :, 0], ASCII_GREEN_BUFFER[:, :, 1], ASCII_GREEN_BUFFER[:, :, 2] = 0, ASCII_UPRES_GRAY, 0
+    ASCII_UPRES_GRAY[:] = ASCII_BLOCK_BUFFER.transpose(0, 2, 1, 3).reshape(
+        FRAME_H, FRAME_W
+    )
+    (
+        ASCII_GREEN_BUFFER[:, :, 0],
+        ASCII_GREEN_BUFFER[:, :, 1],
+        ASCII_GREEN_BUFFER[:, :, 2],
+    ) = 0, ASCII_UPRES_GRAY, 0
     SPARK_COUNTER += 1
     if SPARK_COUNTER >= SPARK_INTERVAL:
         cv2.randu(ASCII_NOISE_LOW, 0, 255)
         threshold = max(240, min(254, 254 - int(ascii_val * 3)))
-        cv2.threshold(ASCII_NOISE_LOW, threshold, 255, cv2.THRESH_BINARY, dst=ASCII_NOISE_LOW)
+        cv2.threshold(
+            ASCII_NOISE_LOW, threshold, 255, cv2.THRESH_BINARY, dst=ASCII_NOISE_LOW
+        )
         ASCII_NOISE_LOW[ASCII_LOWRES_GRAY == 0] = 0
-        cv2.dilate(ASCII_NOISE_LOW, np.ones((np.random.randint(1, 7), 1), dtype=np.uint8), dst=ASCII_NOISE_LOW)
+        cv2.dilate(
+            ASCII_NOISE_LOW,
+            np.ones((np.random.randint(1, 7), 1), dtype=np.uint8),
+            dst=ASCII_NOISE_LOW,
+        )
         SPARK_COUNTER, SPARK_INTERVAL = 0, np.random.randint(7, 17)
-    cv2.resize(ASCII_NOISE_LOW, (FRAME_W, FRAME_H), dst=ASCII_NOISE_UP, interpolation=cv2.INTER_NEAREST)
+    cv2.resize(
+        ASCII_NOISE_LOW,
+        (FRAME_W, FRAME_H),
+        dst=ASCII_NOISE_UP,
+        interpolation=cv2.INTER_NEAREST,
+    )
     ASCII_GREEN_BUFFER[(ASCII_NOISE_UP > 0) & (ASCII_UPRES_GRAY > 0)] = [31, 255, 31]
-    bloom = cv2.resize(ASCII_GREEN_BUFFER, (ASCII_GRID_W, ASCII_GRID_H), interpolation=cv2.INTER_LINEAR)
-    bloom = cv2.resize(cv2.GaussianBlur(bloom, (3, 3), 0), (FRAME_W, FRAME_H), interpolation=cv2.INTER_LINEAR)
-    cv2.addWeighted(ASCII_GREEN_BUFFER, .8, bloom, .4, 0, dst=ASCII_GREEN_BUFFER)
-    cv2.addWeighted(ASCII_GREEN_BUFFER, ascii_val, MUTABLE_PROCESSING_BUFFER, 1.0 - ascii_val, 0, dst=MUTABLE_PROCESSING_BUFFER)
+    bloom = cv2.resize(
+        ASCII_GREEN_BUFFER, (ASCII_GRID_W, ASCII_GRID_H), interpolation=cv2.INTER_LINEAR
+    )
+    bloom = cv2.resize(
+        cv2.GaussianBlur(bloom, (3, 3), 0),
+        (FRAME_W, FRAME_H),
+        interpolation=cv2.INTER_LINEAR,
+    )
+    cv2.addWeighted(ASCII_GREEN_BUFFER, 0.8, bloom, 0.4, 0, dst=ASCII_GREEN_BUFFER)
+    cv2.addWeighted(
+        ASCII_GREEN_BUFFER,
+        ascii_val,
+        MUTABLE_PROCESSING_BUFFER,
+        1.0 - ascii_val,
+        0,
+        dst=MUTABLE_PROCESSING_BUFFER,
+    )
 
 
 def apply_crt_overlay():
     if CRT_ENABLED:
-        cv2.multiply(MUTABLE_PROCESSING_BUFFER, CRT_MASK, MUTABLE_PROCESSING_BUFFER, scale=1.0 / 255.0)
+        cv2.multiply(
+            MUTABLE_PROCESSING_BUFFER,
+            CRT_MASK,
+            MUTABLE_PROCESSING_BUFFER,
+            scale=1.0 / 255.0,
+        )
 
 
 EFFECT_HANDLERS = {
-    "pixellation": apply_pixellation, "chroma_shift": apply_chroma_shift,
-    "signal_drift": apply_signal_drift, "melt": apply_melt,
-    "data_mosh": apply_data_mosh, "packet_corruption": apply_packet_corruption,
+    "pixellation": apply_pixellation,
+    "chroma_shift": apply_chroma_shift,
+    "signal_drift": apply_signal_drift,
+    "melt": apply_melt,
+    "data_mosh": apply_data_mosh,
+    "packet_corruption": apply_packet_corruption,
     "ascii_matrix": apply_ascii_matrix,
 }
 _EFFECT_PLAN = []
@@ -3018,7 +3097,8 @@ def rebuild_effect_plan():
             order.append(effect)
     by_knob = {k: [] for k in range(6)}
     valid_knobs = sorted(
-        knob for knob in KNOB_ATTACHMENTS
+        knob
+        for knob in KNOB_ATTACHMENTS
         if isinstance(knob, int) and not isinstance(knob, bool) and 0 <= knob <= 5
     )
     for knob in KNOB_ATTACHMENTS:
@@ -3027,9 +3107,13 @@ def rebuild_effect_plan():
     for knob in valid_knobs:
         for effect in KNOB_ATTACHMENTS[knob]:
             if effect not in order:
-                notes.append(f"knob {knob}: {effect!r} is unknown or missing from EFFECT_ORDER, ignored")
+                notes.append(
+                    f"knob {knob}: {effect!r} is unknown or missing from EFFECT_ORDER, ignored"
+                )
             elif effect in knob_of:
-                notes.append(f"knob {knob}: {effect!r} is already attached to knob {knob_of[effect]}, ignored")
+                notes.append(
+                    f"knob {knob}: {effect!r} is already attached to knob {knob_of[effect]}, ignored"
+                )
             else:
                 knob_of[effect] = knob
                 by_knob[knob].append(effect)
@@ -3043,9 +3127,26 @@ def rebuild_effect_plan():
         if valid:
             windows[effect] = (lo, hi)
         else:
-            notes.append(f"EFFECT_KNOB_WINDOW: {effect!r}: {window!r} needs 0 <= low < high <= 1 and a known effect, ignored")
-    _EFFECT_PLAN = [(effect, EFFECT_HANDLERS[effect], knob_of[effect], windows.get(effect, (0., 1.)), effect in EFFECT_SKIP_DURING_WARMUP) for effect in order if effect in knob_of]
-    _KNOB_LABELS = [EFFECT_LABELS.get(by_knob[k][0], by_knob[k][0]) if by_knob[k] else KNOB_EMPTY_LABEL for k in range(6)]
+            notes.append(
+                f"EFFECT_KNOB_WINDOW: {effect!r}: {window!r} needs 0 <= low < high <= 1 and a known effect, ignored"
+            )
+    _EFFECT_PLAN = [
+        (
+            effect,
+            EFFECT_HANDLERS[effect],
+            knob_of[effect],
+            windows.get(effect, (0.0, 1.0)),
+            effect in EFFECT_SKIP_DURING_WARMUP,
+        )
+        for effect in order
+        if effect in knob_of
+    ]
+    _KNOB_LABELS = [
+        EFFECT_LABELS.get(by_knob[k][0], by_knob[k][0])
+        if by_knob[k]
+        else KNOB_EMPTY_LABEL
+        for k in range(6)
+    ]
     for note in notes:
         print(f"[EFFECT CONFIG] {note}")
     return notes
@@ -3053,10 +3154,14 @@ def rebuild_effect_plan():
 
 def set_effect_config(order=None, attachments=None, windows=None, weights=None):
     global EFFECT_ORDER, KNOB_ATTACHMENTS, EFFECT_KNOB_WINDOW, EFFECT_COST_WEIGHT
-    if order is not None: EFFECT_ORDER = list(order)
-    if attachments is not None: KNOB_ATTACHMENTS = {k: list(v) for k, v in attachments.items()}
-    if windows is not None: EFFECT_KNOB_WINDOW = dict(windows)
-    if weights is not None: EFFECT_COST_WEIGHT = dict(weights)
+    if order is not None:
+        EFFECT_ORDER = list(order)
+    if attachments is not None:
+        KNOB_ATTACHMENTS = {k: list(v) for k, v in attachments.items()}
+    if windows is not None:
+        EFFECT_KNOB_WINDOW = dict(windows)
+    if weights is not None:
+        EFFECT_COST_WEIGHT = dict(weights)
     return rebuild_effect_plan()
 
 
@@ -3066,13 +3171,24 @@ def get_knob_labels():
 
 def _windowed_raw(raw_knob, window):
     lo, hi = window
-    if lo <= 0 and hi >= 1: return raw_knob
+    if lo <= 0 and hi >= 1:
+        return raw_knob
     x = (raw_knob / 1023.0 - lo) / (hi - lo)
     return 0 if x <= 0 else 1023 if x >= 1 else x * 1023.0
 
 
 def compute_effect_intensity(knobs):
-    return max(0., min(1., sum(EFFECT_COST_WEIGHT.get(effect, 0.) * n(_windowed_raw(knobs[knob], window)) for effect, _handler, knob, window, _skip in _EFFECT_PLAN)))
+    return max(
+        0.0,
+        min(
+            1.0,
+            sum(
+                EFFECT_COST_WEIGHT.get(effect, 0.0)
+                * n(_windowed_raw(knobs[knob], window))
+                for effect, _handler, knob, window, _skip in _EFFECT_PLAN
+            ),
+        ),
+    )
 
 
 rebuild_effect_plan()
@@ -3105,7 +3221,9 @@ def _write_naked_capture(disk_id, frame):
     try:
         ok = cv2.imwrite(os.path.join(NAKED_DIR, f"{disk_id}_naked.jpg"), frame)
         if not ok:
-            logger.error("[NAKED] could not write naked capture for session %s", disk_id)
+            logger.error(
+                "[NAKED] could not write naked capture for session %s", disk_id
+            )
         return bool(ok)
     except Exception as exc:
         logger.error("[NAKED] naked capture failed for session %s: %s", disk_id, exc)
@@ -3883,7 +4001,9 @@ def background_loop():
                             FROZEN_DISPLAY_BUFFER.copy(),
                             FROZEN_PRINT_BUFFER.copy(),
                             captured_knobs,
-                            NAKED_FRAME_BUFFER.copy() if NAKED_CAPTURE_ENABLED else None,
+                            NAKED_FRAME_BUFFER.copy()
+                            if NAKED_CAPTURE_ENABLED
+                            else None,
                         ),
                         daemon=True,
                     ).start()
