@@ -226,9 +226,9 @@ EFFECT_KNOB_WINDOW = {}
 EFFECT_COST_WEIGHT = {
     "ascii_matrix": 0.10,
     "signal_drift": 0.07,
-    "data_mosh": 0.27,
+    "data_mosh": 0.35,
     "pixellation": 0.07,
-    "melt": 0.42,
+    "melt": 0.34,
     "chroma_shift": 0.07,
     "packet_corruption": 0.0,
 }
@@ -278,14 +278,14 @@ MOSH_CELL_H = 16  # [320x240: 16] [480x360: 24] [640x480: 32]
 MOSH_CELL_W = 12  # [320x240: 12] [480x360: 18] [640x480: 24]
 
 
-CORRUPTION_CELL_H = 32
-CORRUPTION_CELL_W = 24
+CORRUPTION_CELL_H = 12
+CORRUPTION_CELL_W = 16
 CORRUPTION_GRID_H = FRAME_H // CORRUPTION_CELL_H
 CORRUPTION_GRID_W = FRAME_W // CORRUPTION_CELL_W
 CORRUPTION_CLEAR_BELOW = 0.01  # below this strength all damage is cleared
 CORRUPTION_SPAWN_ABOVE = 0.012  # new damage only spawns above this strength
-CORRUPTION_SPAWN_RATE = 0.43  # spawn chance per frame = strength * RATE
-CORRUPTION_SQUARE_PROB = 0.80  # square block (else a full-height column)
+CORRUPTION_SPAWN_RATE = 0.23  # spawn chance per frame = strength * RATE
+CORRUPTION_SQUARE_PROB = 0.60  # square block (else a full-height column)
 CORRUPTION_SQUARE_MAX_CELLS = 4  # square block is 1..N cells each way
 CORRUPTION_THIN_COLUMN_PROB = 0.9  # column is 1 cell wide (else 2)
 CORRUPTION_COLUMN_NOISE_PROB = 0.70  # column kind: noise below this roll
