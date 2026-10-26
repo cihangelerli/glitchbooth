@@ -249,6 +249,38 @@ EFFECT_LABELS = {
 KNOB_EMPTY_LABEL = "-"
 
 NAKED_CAPTURE_ENABLED = True
+TELEMETRY_ENABLED = (
+    True  # Set False to disable all capture logging and telemetry threads
+)
+
+# PHASE 4 TUNABLES: STATISTICS
+# ==============================================================================
+# Every capture is counted by effect NAME (all attached effects, primary and hidden).
+# Name under which each effect is counted in stats.json and in the capture ledger.
+# Keep these stable: renaming one splits its history. Pixellation keeps its historical key.
+EFFECT_STATS_NAME = {
+    "ascii_matrix": "ascii_matrix",
+    "signal_drift": "signal_drift",
+    "data_mosh": "data_mosh",
+    "pixellation": "pixel_damage",
+    "melt": "melt",
+    "chroma_shift": "chroma_shift",
+    "packet_corruption": "packet_corruption",
+}
+
+# From which strength (0-1023, after the effect's knob window) an effect counts as "used".
+# The values are where each effect really starts to act (its own dormancy threshold), so the
+# statistics reflect what the visitor could actually see. Set them all to 10 to count like the
+# old statistics did (knob at 10 or more). If you change a threshold inside an effect, change it here.
+EFFECT_STATS_ACTIVE_FROM = {
+    "pixellation": 11,  # acts above 0
+    "signal_drift": 11,  # acts above 0
+    "melt": 31,  # acts above 0.03
+    "data_mosh": 101,  # acts from strength (knob/1023)**2 >= MOSH_DORMANT_BELOW (0.02)
+    "chroma_shift": 11,  # acts above 0.05
+    "packet_corruption": 11,  # first damage appears above CORRUPTION_SPAWN_ABOVE (0.012)
+    "ascii_matrix": 21,  # acts above 0.02
+}
 
 # PHASE 2 TUNABLES: DATA MOSH, PACKET CORRUPTION
 # ==============================================================================
@@ -523,7 +555,8 @@ SHUTDOWN_EVENT = threading.Event()
 CRITICAL_WORKERS = []
 
 # 1. Initialize telemetry and inject the global event object
-telemetry.init_telemetry(SHUTDOWN_EVENT)
+if TELEMETRY_ENABLED:
+    telemetry.init_telemetry(SHUTDOWN_EVENT)
 
 STREAM_SEMAPHORE = threading.Semaphore(4)
 ACTIVE_STREAM_VIEWERS = 0
@@ -1883,6 +1916,39 @@ def compute_effect_intensity(knobs):
 rebuild_effect_plan()
 
 
+def get_active_effects(knobs):
+    """Statistics names of the attached effects that really act at these knob values
+    (after their knob windows), in processing order. Hidden (secondary) effects count too."""
+    names = []
+    for effect, _handler, knob, window, _skip in _EFFECT_PLAN:
+        raw = knobs[knob] if knob < len(knobs) else 0
+        if _windowed_raw(raw, window) >= EFFECT_STATS_ACTIVE_FROM.get(effect, 10):
+            names.append(EFFECT_STATS_NAME.get(effect, effect))
+    return names
+
+
+def get_wiring_label():
+    """Compact text of the current attachments (primary first) and windows, stored with every
+    capture, e.g. 0:ascii_matrix|1:signal_drift|...|5:chroma_shift+packet_corruption|w:packet_corruption=0.35-1"""
+    knob_of = {effect: knob for effect, _h, knob, _w, _s in _EFFECT_PLAN}
+    parts = []
+    for knob in range(6):
+        names = [
+            EFFECT_STATS_NAME.get(effect, effect)
+            for effect in KNOB_ATTACHMENTS.get(knob, [])
+            if knob_of.get(effect) == knob
+        ]
+        parts.append(f"{knob}:" + ("+".join(names) if names else "-"))
+    windows = [
+        f"{EFFECT_STATS_NAME.get(effect, effect)}={lo:g}-{hi:g}"
+        for effect, _h, _k, (lo, hi), _s in _EFFECT_PLAN
+        if (lo, hi) != (0.0, 1.0)
+    ]
+    if windows:
+        parts.append("w:" + ",".join(windows))
+    return "|".join(parts)
+
+
 def apply_glitch_pipeline(current_time, control_packet):
     global WARMUP_COUNTER, LAST_TEMPORAL_PURGE
     is_warming_up = WARMUP_COUNTER < WARMUP_FRAMES
@@ -2615,18 +2681,21 @@ def background_loop():
                     with mode_lock:
                         ACTIVE_SESSION["upload_failed"] = True
 
-                try:
-                    print(
-                        f"[TELEMETRY ENGINE] Executing core capture ledger entry for session: {disk_id}"
-                    )
-                    telemetry.record_capture(
-                        session_id=disk_id,
-                        knobs=active_knobs,
-                    )
-                except Exception as telemetry_fault:
-                    print(
-                        f"[TELEMETRY HOOK ERROR] Non-fatal capture entry failure: {telemetry_fault}"
-                    )
+                if TELEMETRY_ENABLED:
+                    try:
+                        print(
+                            f"[TELEMETRY ENGINE] Executing core capture ledger entry for session: {disk_id}"
+                        )
+                        telemetry.record_capture(
+                            session_id=disk_id,
+                            knobs=active_knobs,
+                            effects=get_active_effects(active_knobs),
+                            wiring=get_wiring_label(),
+                        )
+                    except Exception as telemetry_fault:
+                        print(
+                            f"[TELEMETRY HOOK ERROR] Non-fatal capture entry failure: {telemetry_fault}"
+                        )
 
             # STATE 1: LIVE VIEWER - Initiates pre-capture countdown
             if loop_mode == "live":
@@ -2844,10 +2913,11 @@ def graceful_shutdown_handler(signum, frame):
     print("\n\n[SHUTDOWN] Signal intercepted! Initiating formal teardown...")
     SHUTDOWN_EVENT.set()
 
-    try:
-        telemetry.request_shutdown()
-    except Exception as e:
-        print(f"  [WARNING] Failed to request telemetry shutdown boundary: {e}")
+    if TELEMETRY_ENABLED:
+        try:
+            telemetry.request_shutdown()
+        except Exception as e:
+            print(f"  [WARNING] Failed to request telemetry shutdown boundary: {e}")
 
     try:
         import subprocess
@@ -2898,7 +2968,8 @@ def start_backend_engine(blocking=True):
     if CRT_ENABLED:
         initialize_crt_mask()
 
-    telemetry.compile_summary_stats()
+    if TELEMETRY_ENABLED:
+        telemetry.compile_summary_stats()
 
     worker_configs = [
         ("UploadWorker", upload_queue_worker),
@@ -2906,17 +2977,26 @@ def start_backend_engine(blocking=True):
             "TelemetryWorker",
             telemetry_worker,
         ),  # telemetry worker from server.py for state route
-        (
-            "TelemetryQueueConsumer",
-            telemetry.telemetry_consumer_worker,
-        ),  # telemetry worker from telemetry.py
-        (
-            "TelemetryCloudSyncWorker",
-            lambda: telemetry.telemetry_sync_worker(interval_seconds=120),
-        ),  # telemetry worker from telemetry.py
-        ("IdleSyncWorker", idle_sync_worker),
-        ("BackgroundLoop", background_loop),
     ]
+    if TELEMETRY_ENABLED:
+        worker_configs.extend(
+            [
+                (
+                    "TelemetryQueueConsumer",
+                    telemetry.telemetry_consumer_worker,
+                ),  # telemetry worker from telemetry.py
+                (
+                    "TelemetryCloudSyncWorker",
+                    lambda: telemetry.telemetry_sync_worker(interval_seconds=120),
+                ),  # telemetry worker from telemetry.py
+            ]
+        )
+    worker_configs.extend(
+        [
+            ("IdleSyncWorker", idle_sync_worker),
+            ("BackgroundLoop", background_loop),
+        ]
+    )
 
     for name, target_func in worker_configs:
         t = threading.Thread(target=target_func, name=name, daemon=True)

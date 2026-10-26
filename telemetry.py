@@ -24,13 +24,23 @@ STATS_JSON_PATH = TELEMETRY_DIR / "stats.json"
 
 KNOB_ACTIVATION_THRESHOLD = 10
 
-ALL_EFFECTS = [
+# Statistics names of the six knobs as they were counted before Phase 4. Ledger rows without an
+# "effects" list (everything recorded before Phase 4) are still read through this table, so the
+# old history does not change. "data_corruption" is the old fused Data Mosh + corruption knob.
+LEGACY_KNOB_EFFECTS = [
     "ascii_matrix",
     "signal_drift",
     "data_corruption",
     "pixel_damage",
     "melt",
     "chroma_shift",
+]
+
+# Names that always appear in stats.json (the website draws one bar per name, in this order).
+# Names not listed here that show up in the ledger are added automatically.
+ALL_EFFECTS = LEGACY_KNOB_EFFECTS + [
+    "data_mosh",
+    "packet_corruption",
     "no_glitch",
 ]
 
@@ -55,8 +65,11 @@ LIVE_STATS = {
 }
 
 
-def _increment_ram_metrics_internal(knobs: list, ts_epoch: int):
-    """Surgically mutates running statistics in RAM with O(1) constant complexity."""
+def _increment_ram_metrics_internal(knobs: list, ts_epoch: int, effects=None):
+    """Surgically mutates running statistics in RAM with O(1) constant complexity.
+    `effects` (Phase 4): the statistics names of the effects that were really acting at
+    capture time, hidden ones included. Without it (old ledger rows, old callers) the names
+    are derived from the knob numbers exactly as before."""
     global LIVE_STATS
     LIVE_STATS["total_captures"] += 1
 
@@ -65,15 +78,20 @@ def _increment_ram_metrics_internal(knobs: list, ts_epoch: int):
         LIVE_STATS["first_capture_iso"] = ts_iso
     LIVE_STATS["last_capture_iso"] = ts_iso
 
-    chosen_effects = []
-    for idx, val in enumerate(knobs):
-        if idx < 6 and val >= KNOB_ACTIVATION_THRESHOLD:
-            eff_name = ALL_EFFECTS[idx]
-            LIVE_STATS["effect_counts"][eff_name] += 1
-            chosen_effects.append(eff_name)
+    if effects is None:
+        chosen_effects = []
+        for idx, val in enumerate(knobs):
+            if idx < 6 and val >= KNOB_ACTIVATION_THRESHOLD:
+                chosen_effects.append(LEGACY_KNOB_EFFECTS[idx])
+    else:
+        chosen_effects = list(dict.fromkeys(e for e in effects if isinstance(e, str) and e))
+
+    counts = LIVE_STATS["effect_counts"]
+    for eff_name in chosen_effects:
+        counts[eff_name] = counts.get(eff_name, 0) + 1
 
     if not chosen_effects:
-        LIVE_STATS["effect_counts"]["no_glitch"] += 1
+        counts["no_glitch"] = counts.get("no_glitch", 0) + 1
         chosen_effects.append("no_glitch")
 
     combo_key = tuple(sorted(chosen_effects))
@@ -125,7 +143,10 @@ def init_telemetry(shutdown_event=None):
                         rec = json.loads(line)
                         knobs = rec.get("knobs", [0] * 6)
                         ts_epoch = rec.get("ts", int(time.time()))
-                        _increment_ram_metrics_internal(knobs, ts_epoch)
+                        effects = rec.get("effects")  # present from Phase 4 on
+                        if not isinstance(effects, list):
+                            effects = None
+                        _increment_ram_metrics_internal(knobs, ts_epoch, effects)
                     except Exception:
                         continue
             print(
@@ -150,7 +171,7 @@ def request_shutdown():
         print("[TELEMETRY CRITICAL] Failed to inject shutdown sentinel; queue remained full.")
 
 
-def record_capture(session_id: str, knobs: list, *args, **kwargs):
+def record_capture(session_id: str, knobs: list, effects=None, wiring=None, *args, **kwargs):
     """
     Asynchronous entry point for sessions. Instantly mutates memory arrays
     and streams the transaction frame down to the disk tracking worker thread.
@@ -163,9 +184,16 @@ def record_capture(session_id: str, knobs: list, *args, **kwargs):
         "session_id": session_id,
         "knobs": [int(k) for k in knobs],
     }
+    if effects is not None:  # Phase 4 row: names of the effects that were acting + wiring
+        payload["v"] = 2
+        payload["effects"] = [str(e) for e in effects]
+        if wiring:
+            payload["wiring"] = str(wiring)
 
     with _telemetry_io_lock:
-        _increment_ram_metrics_internal(payload["knobs"], payload["ts"])
+        _increment_ram_metrics_internal(
+            payload["knobs"], payload["ts"], payload.get("effects")
+        )
 
     try:
         _telemetry_queue.put(payload, block=False)
@@ -189,11 +217,17 @@ def compile_summary_stats():
     uptime_hours = round((time.time() - BOOT_TIMESTAMP) / 3600.0, 2)
     total_effect_invocations = sum(effect_counts_snapshot.values())
 
+    # every known name, then any extra name found in the ledger (a future effect)
+    stats_names = list(ALL_EFFECTS) + sorted(
+        name for name in effect_counts_snapshot if name not in ALL_EFFECTS
+    )
     effects_popularity = {}
-    for eff in ALL_EFFECTS:
+    for eff in stats_names:
         key_name = f"{eff}_usage_pct"
         if total_effect_invocations > 0:
-            percentage = (effect_counts_snapshot[eff] / total_effect_invocations) * 100
+            percentage = (
+                effect_counts_snapshot.get(eff, 0) / total_effect_invocations
+            ) * 100
             effects_popularity[key_name] = round(percentage, 1)
         else:
             effects_popularity[key_name] = 0.0
@@ -212,6 +246,11 @@ def compile_summary_stats():
         "first_capture_iso": first_capture_iso,
         "last_capture_iso": last_capture_iso,
         "effects_popularity": effects_popularity,
+        # absolute number of captures in which each effect acted (the percentages above are
+        # shares of all effect uses; divide by total_captures for "% of captures")
+        "effect_counts": {
+            eff: effect_counts_snapshot.get(eff, 0) for eff in stats_names
+        },
         "most_popular_combo": most_popular_combo,
     }
 
