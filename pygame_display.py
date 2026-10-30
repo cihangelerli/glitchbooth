@@ -582,7 +582,7 @@ try:
                     virtual_canvas.blit(PRINTING_SURF, PRINTING_RECT)
 
             # Draw Header Title above the video stream
-            header_surf = ui_font.render("> GLITCH BOOTH beta 03", True, (0, 255, 0))
+            header_surf = ui_font.render("> GLITCH BOOTH beta 04", True, (0, 255, 0))
             virtual_canvas.blit(header_surf, (PADDING_LEFT, CLEARANCE_MARGIN))
 
             # Draw Telemetry Panel (Knobs matched directly with index.html layouts)
