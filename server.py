@@ -341,7 +341,7 @@ POSTERIZE_SECTION_PX = (
 POSTERIZE_FRAGMENT_FROM = 0.85  # strength from which fine detail starts to break apart
 POSTERIZE_FRAGMENT_AMOUNT = 7  # grey levels of break-up noise at full strength
 POSTERIZE_ROTATE_SECONDS = (
-    0  # 0 = fixed colours; N = the colour assignment shifts every N seconds
+    2  # 0 = fixed colours; N = the colour assignment shifts every N seconds
 )
 POSTERIZE_RNG_SEED = (
     None  # None = fresh entropy each start; tests reseed via seed_private_rngs()
