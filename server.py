@@ -203,10 +203,10 @@ EFFECT_ORDER = [
     "signal_drift",
     "melt",
     "data_mosh",
-    "chroma_shift",
     "packet_corruption",
     "ascii_matrix",
     "posterize",
+    "chroma_shift",
 ]
 
 # Knob (0-5) -> effects. The FIRST effect is its visible primary name; remaining
