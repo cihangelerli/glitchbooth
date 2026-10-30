@@ -200,6 +200,7 @@ FRAME_W = 640
 # The CRT scanline overlay always runs last and is not part of this list.
 EFFECT_ORDER = [
     "pixellation",
+    "posterize",
     "signal_drift",
     "melt",
     "data_mosh",
@@ -213,7 +214,7 @@ EFFECT_ORDER = [
 KNOB_ATTACHMENTS = {
     0: ["ascii_matrix"],
     1: ["signal_drift"],
-    2: ["data_mosh"],
+    2: ["posterize"],
     3: ["pixellation"],
     4: ["melt"],
     5: ["chroma_shift", "packet_corruption"],
@@ -233,6 +234,7 @@ EFFECT_COST_WEIGHT = {
     "melt": 0.34,
     "chroma_shift": 0.07,
     "packet_corruption": 0.0,
+    "posterize": 0.15,
 }
 
 EFFECT_SKIP_DURING_WARMUP = ("data_mosh",)
@@ -245,6 +247,7 @@ EFFECT_LABELS = {
     "melt": "Melt",
     "chroma_shift": "Chroma Shift",
     "packet_corruption": "Packet Corruption",
+    "posterize": "Posterize",
 }
 KNOB_EMPTY_LABEL = "-"
 
@@ -266,6 +269,7 @@ EFFECT_STATS_NAME = {
     "melt": "melt",
     "chroma_shift": "chroma_shift",
     "packet_corruption": "packet_corruption",
+    "posterize": "posterize",
 }
 
 # From which strength (0-1023, after the effect's knob window) an effect counts as "used".
@@ -280,7 +284,54 @@ EFFECT_STATS_ACTIVE_FROM = {
     "chroma_shift": 11,  # acts above 0.05
     "packet_corruption": 11,  # first damage appears above CORRUPTION_SPAWN_ABOVE (0.012)
     "ascii_matrix": 21,  # acts above 0.02
+    "posterize": 13,  # acts above the first non-zero point of POSTERIZE_CURVE (knob 12)
 }
+
+# PHASE 5 TUNABLES: POSTERIZE (neon tone bands with glitchy outlines)
+# ==============================================================================
+# Posterize is in the pool but attached to no knob until you add "posterize" to
+# KNOB_ATTACHMENTS (for example 3: ["pixellation", "posterize"], or its own knob).
+POSTERIZE_CURVE = (
+    (0, 0.0),
+    (12, 0.0),
+    (150, 0.40),
+    (400, 0.65),
+    (700, 0.85),
+    (1023, 1.0),
+)
+POSTERIZE_BLACK_THRESHOLD = (
+    24  # grey level below which the original pixel is kept exactly
+)
+POSTERIZE_BLACK_RAMP = (
+    34  # between the two values the neon is mixed in at half strength
+)
+POSTERIZE_BANDS_LOW = 8  # tone bands at the weakest strength ...
+POSTERIZE_BANDS_HIGH = 3  # ... and at full strength
+POSTERIZE_DETAIL_LOW = (
+    0.35  # how much of the original brightness modulates the neon (weak) ...
+)
+POSTERIZE_DETAIL_HIGH = 0.15  # ... and at full strength (faces stay readable)
+POSTERIZE_MIX_START = 0.25  # neon share at the weakest strength ...
+POSTERIZE_MIX_FULL_AT = 0.8  # ... reaching 1.0 at this strength (0-1)
+POSTERIZE_OUTLINE_2PX_FROM = 0.40  # strength from which outlines are 2 px thick
+POSTERIZE_OUTLINE_3PX_FROM = 0.75  # strength from which outlines are 3 px thick
+POSTERIZE_DROPOUT_LOW = 0.10  # share of the outline that is missing (weak) ...
+POSTERIZE_DROPOUT_HIGH = 0.35  # ... and at full strength
+POSTERIZE_JITTER_MAX_PX = 3  # outline rows shift sideways by up to 1 .. this many px
+POSTERIZE_FLICKER_PROB = 0.20  # share of outline sections that flash white-hot
+# Outline colour: "glow" = the brightest neon next to the border (often near-white), "white", "black" (ink)
+POSTERIZE_OUTLINE_STYLE = "glow"
+POSTERIZE_SECTION_PX = (
+    8  # size of the dropout / flicker sections (must divide 640 and 480)
+)
+POSTERIZE_FRAGMENT_FROM = 0.6  # strength from which fine detail starts to break apart
+POSTERIZE_FRAGMENT_AMOUNT = 22  # grey levels of break-up noise at full strength
+POSTERIZE_ROTATE_SECONDS = (
+    0  # 0 = fixed colours; N = the colour assignment shifts every N seconds
+)
+POSTERIZE_RNG_SEED = (
+    None  # None = fresh entropy each start; tests reseed via seed_private_rngs()
+)
 
 # PHASE 2 TUNABLES: DATA MOSH, PACKET CORRUPTION
 # ==============================================================================
@@ -1333,6 +1384,7 @@ def apply_packet_corruption(raw_knob, current_time=0.0):
 def seed_private_rngs(seed):
     """Reseed every effect that owns a private random generator (tests / A-B harness)."""
     _MOSH.reseed(seed)
+    _POSTER.reseed(seed)
 
 
 def _validate_mosh_settings():
@@ -1794,8 +1846,212 @@ def apply_crt_overlay():
         )
 
 
+# =========================================================================
+# POSTERIZE (PHASE 5): NEON TONE BANDS WITH GLITCHY OUTLINES
+# =========================================================================
+# Colour effect: it does not move pixels. Blacks stay untouched; every other tone becomes a
+# neon colour of the Melt palette (dark tones get the deep hues, bright tones the bright ones);
+# the borders between tone bands get a 1-3 px outline that is broken up, jittered and flickers,
+# so it looks like damaged video, not like pop art.
+#
+# Per frame it makes a fixed number of large OpenCV calls (about 35) in preallocated buffers,
+# no Python loop over pixels or rows. The tone map and the neon fill are computed at half
+# resolution (chunky, and four times cheaper); the outlines are drawn at full resolution.
+
+
+def _posterize_palette():
+    """Melt's neon palette ordered from the darkest hue to the brightest."""
+    luma = NEON_PALETTES.astype(np.float32) @ np.array(
+        [0.114, 0.587, 0.299], np.float32
+    )
+    return np.ascontiguousarray(NEON_PALETTES[np.argsort(luma)])
+
+
+class PosterizeEngine:
+    """Buffers (about 14 MiB, allocated once) and the per-frame work of Posterize."""
+
+    def __init__(self, seed=None):
+        H, W = FRAME_H, FRAME_W
+        hh, hw = H // 2, W // 2
+        sp = POSTERIZE_SECTION_PX
+        self.rng = np.random.default_rng(seed)
+        z = lambda h=H, w=W: np.zeros((h, w), dtype=np.uint8, order="C")
+        z3 = lambda h=H, w=W: np.zeros((h, w, 3), dtype=np.uint8, order="C")
+        self.gray, self.black, self.nonblack, self.ramp = z(), z(), z(), z()
+        self.band_full, self.edge, self.edge_tmp = z(), z(), z()
+        self.drop_full, self.flick_full, self.wmask = z(), z(), z()
+        self.g_half, self.band_half, self.scale_half = z(hh, hw), z(hh, hw), z(hh, hw)
+        self.pl_b, self.pl_g, self.pl_r = z(hh, hw), z(hh, hw), z(hh, hw)
+        self.neon_half, self.scale3 = z3(hh, hw), z3(hh, hw)
+        self.neon_full, self.poster, self.avg, self.edge_col = z3(), z3(), z3(), z3()
+        self.white = np.full((H, W, 3), 255, dtype=np.uint8)
+        self.ink = z3()
+        self.noise_bank = self.rng.integers(0, 256, (4, hh, hw), dtype=np.uint8)
+        self.xs = np.tile(np.arange(W, dtype=np.float32), (H, 1))
+        self.mapx = self.xs.copy()
+        self.mapy = np.tile(np.arange(H, dtype=np.float32)[:, None], (1, W))
+        self.kernels = {
+            px: np.ones((2 * px + 1, 2 * px + 1), dtype=np.uint8) for px in (1, 2, 3)
+        }
+        self.drop_small = z(H // sp, W // sp)
+        self.flick_small = z(H // sp, W // sp)
+        self.palette = _posterize_palette()
+        self.curve_x = np.array([p[0] for p in POSTERIZE_CURVE], dtype=np.float64)
+        self.curve_y = np.array([p[1] for p in POSTERIZE_CURVE], dtype=np.float64)
+        self._lut_key = None
+        self.band_lut = np.zeros((256, 1), np.uint8)
+        self.color_lut = np.zeros((3, 256, 1), np.uint8)
+
+    def reseed(self, seed):
+        """Restart the random sequence; the break-up noise is regenerated too, so the same
+        seed always gives the same picture."""
+        self.rng = np.random.default_rng(seed)
+        self.noise_bank[:] = self.rng.integers(
+            0, 256, self.noise_bank.shape, dtype=np.uint8
+        )
+
+    def strength(self, raw_knob):
+        """Knob value 0-1023 -> strength 0-1 through the response curve (0 = off)."""
+        return float(np.interp(raw_knob, self.curve_x, self.curve_y))
+
+    def _luts(self, bands, rotation):
+        key = (bands, rotation)
+        if key != self._lut_key:
+            self.band_lut[:, 0] = (np.arange(256) * bands // 256).astype(np.uint8)
+            n_pal = len(self.palette)
+            self.color_lut[:] = 0
+            for b in range(bands):
+                idx = (
+                    int(round(b * (n_pal - 1) / max(1, bands - 1))) + rotation
+                ) % n_pal
+                for ch in range(3):
+                    self.color_lut[ch, b, 0] = self.palette[idx, ch]
+            self._lut_key = key
+
+    def step(self, frame, raw_knob, current_time):
+        s = self.strength(raw_knob)
+        if s <= 0.0:
+            return
+        H, W = FRAME_H, FRAME_W
+        sp = POSTERIZE_SECTION_PX
+        bands = int(
+            round(
+                POSTERIZE_BANDS_LOW + (POSTERIZE_BANDS_HIGH - POSTERIZE_BANDS_LOW) * s
+            )
+        )
+        detail = (
+            POSTERIZE_DETAIL_LOW + (POSTERIZE_DETAIL_HIGH - POSTERIZE_DETAIL_LOW) * s
+        )
+        mix = POSTERIZE_MIX_START + (1.0 - POSTERIZE_MIX_START) * min(
+            1.0, s / POSTERIZE_MIX_FULL_AT
+        )
+        px = (
+            3
+            if s >= POSTERIZE_OUTLINE_3PX_FROM
+            else (2 if s >= POSTERIZE_OUTLINE_2PX_FROM else 1)
+        )
+        dropout = (
+            POSTERIZE_DROPOUT_LOW + (POSTERIZE_DROPOUT_HIGH - POSTERIZE_DROPOUT_LOW) * s
+        )
+        jitter = 1 + int(s * (POSTERIZE_JITTER_MAX_PX - 1) + 1e-9)
+        if POSTERIZE_ROTATE_SECONDS > 0 and len(self.palette) > 0:
+            rotation = int(current_time / POSTERIZE_ROTATE_SECONDS) % len(self.palette)
+        else:
+            rotation = 0
+        self._luts(bands, rotation)
+
+        # 1. tones at half resolution, with break-up noise at high strength
+        cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY, dst=self.gray)
+        cv2.resize(
+            self.gray, (W // 2, H // 2), dst=self.g_half, interpolation=cv2.INTER_AREA
+        )
+        if s > POSTERIZE_FRAGMENT_FROM:
+            amp = (
+                (s - POSTERIZE_FRAGMENT_FROM)
+                / (1.0 - POSTERIZE_FRAGMENT_FROM)
+                * POSTERIZE_FRAGMENT_AMOUNT
+            )
+            noise = self.noise_bank[int(self.rng.integers(0, 4))]
+            cv2.addWeighted(
+                self.g_half, 1.0, noise, amp / 255.0, -amp / 2.0, dst=self.g_half
+            )
+        cv2.LUT(self.g_half, self.band_lut, dst=self.band_half)
+
+        # 2. neon fill: band -> palette colour, modulated by the original brightness
+        cv2.LUT(self.band_half, self.color_lut[0], dst=self.pl_b)
+        cv2.LUT(self.band_half, self.color_lut[1], dst=self.pl_g)
+        cv2.LUT(self.band_half, self.color_lut[2], dst=self.pl_r)
+        cv2.merge([self.pl_b, self.pl_g, self.pl_r], dst=self.neon_half)
+        cv2.convertScaleAbs(
+            self.g_half, dst=self.scale_half, alpha=detail, beta=255.0 * (1.0 - detail)
+        )
+        cv2.merge([self.scale_half, self.scale_half, self.scale_half], dst=self.scale3)
+        cv2.multiply(self.neon_half, self.scale3, dst=self.neon_half, scale=1.0 / 255.0)
+        cv2.resize(
+            self.neon_half, (W, H), dst=self.neon_full, interpolation=cv2.INTER_NEAREST
+        )
+        cv2.resize(
+            self.band_half, (W, H), dst=self.band_full, interpolation=cv2.INTER_NEAREST
+        )
+
+        # 3. mix with the original; blacks untouched, a narrow ramp mixes half and half
+        cv2.addWeighted(frame, 1.0 - mix, self.neon_full, mix, 0, dst=self.poster)
+        cv2.compare(self.gray, POSTERIZE_BLACK_THRESHOLD, cv2.CMP_LT, dst=self.black)
+        cv2.compare(self.gray, POSTERIZE_BLACK_RAMP, cv2.CMP_LT, dst=self.ramp)
+        cv2.bitwise_xor(self.ramp, self.black, dst=self.ramp)
+        cv2.addWeighted(frame, 0.5, self.poster, 0.5, 0, dst=self.avg)
+        cv2.copyTo(self.avg, self.ramp, self.poster)
+        cv2.copyTo(frame, self.black, self.poster)
+        cv2.bitwise_not(self.black, dst=self.nonblack)
+
+        # 4. outlines on the tone borders: broken sections, sideways jitter, white-hot flicker
+        cv2.dilate(self.band_full, self.kernels[px], dst=self.edge_tmp)
+        cv2.compare(self.edge_tmp, self.band_full, cv2.CMP_NE, dst=self.edge)
+        self.drop_small[:] = (self.rng.random(self.drop_small.shape) >= dropout) * 255
+        cv2.resize(
+            self.drop_small, (W, H), dst=self.drop_full, interpolation=cv2.INTER_NEAREST
+        )
+        cv2.bitwise_and(self.edge, self.drop_full, dst=self.edge)
+        offsets = np.repeat(self.rng.integers(-jitter, jitter + 1, H // 4), 4).astype(
+            np.float32
+        )
+        np.add(self.xs, offsets[:, None], out=self.mapx)
+        cv2.remap(self.edge, self.mapx, self.mapy, cv2.INTER_NEAREST, dst=self.edge_tmp)
+        cv2.bitwise_and(self.edge_tmp, self.nonblack, dst=self.edge_tmp)
+        if POSTERIZE_OUTLINE_STYLE == "glow":
+            cv2.dilate(self.neon_full, self.kernels[px], dst=self.edge_col)
+            outline_colour = self.edge_col
+        elif POSTERIZE_OUTLINE_STYLE == "black":
+            outline_colour = self.ink
+        else:
+            outline_colour = self.white
+        cv2.copyTo(outline_colour, self.edge_tmp, self.poster)
+        self.flick_small[:] = (
+            self.rng.random(self.flick_small.shape) < POSTERIZE_FLICKER_PROB
+        ) * 255
+        cv2.resize(
+            self.flick_small,
+            (W, H),
+            dst=self.flick_full,
+            interpolation=cv2.INTER_NEAREST,
+        )
+        cv2.bitwise_and(self.edge_tmp, self.flick_full, dst=self.wmask)
+        cv2.copyTo(self.white, self.wmask, self.poster)
+
+        np.copyto(frame, self.poster)
+
+
+_POSTER = PosterizeEngine(POSTERIZE_RNG_SEED)
+
+
+def apply_posterize(raw_knob, current_time):
+    """Posterize entry point. raw_knob 0-1023. Modifies MUTABLE_PROCESSING_BUFFER in place."""
+    _POSTER.step(MUTABLE_PROCESSING_BUFFER, raw_knob, current_time)
+
+
 EFFECT_HANDLERS = {
     "pixellation": apply_pixellation,
+    "posterize": apply_posterize,
     "chroma_shift": apply_chroma_shift,
     "signal_drift": apply_signal_drift,
     "melt": apply_melt,

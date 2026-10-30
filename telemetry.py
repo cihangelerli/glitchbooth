@@ -6,13 +6,14 @@ Maintains an immutable append-only historical log file alongside thread-safe
 in-memory stats counters to eliminate line-by-line parsing overhead during sync loops.
 """
 
-import os
-import json
-import time
 import base64
-import threading
+import json
+import os
 import queue
+import threading
+import time
 from pathlib import Path
+
 import requests
 
 # Base Configuration & Directory Enforcement
@@ -41,6 +42,7 @@ LEGACY_KNOB_EFFECTS = [
 ALL_EFFECTS = LEGACY_KNOB_EFFECTS + [
     "data_mosh",
     "packet_corruption",
+    "posterize",
     "no_glitch",
 ]
 
@@ -84,7 +86,9 @@ def _increment_ram_metrics_internal(knobs: list, ts_epoch: int, effects=None):
             if idx < 6 and val >= KNOB_ACTIVATION_THRESHOLD:
                 chosen_effects.append(LEGACY_KNOB_EFFECTS[idx])
     else:
-        chosen_effects = list(dict.fromkeys(e for e in effects if isinstance(e, str) and e))
+        chosen_effects = list(
+            dict.fromkeys(e for e in effects if isinstance(e, str) and e)
+        )
 
     counts = LIVE_STATS["effect_counts"]
     for eff_name in chosen_effects:
@@ -164,14 +168,18 @@ def request_shutdown():
     """Exposed clean boundary function for server.py to trigger a graceful flush."""
     print("[TELEMETRY] Shutdown requested. Injecting sentinel token to flush queue...")
     try:
-        # Bounded wait: guarantees sentinel delivery if the consumer clears a slot 
+        # Bounded wait: guarantees sentinel delivery if the consumer clears a slot
         # within 2 seconds, but prevents an infinite hang if the thread is bricked.
         _telemetry_queue.put(None, timeout=2.0)
     except queue.Full:
-        print("[TELEMETRY CRITICAL] Failed to inject shutdown sentinel; queue remained full.")
+        print(
+            "[TELEMETRY CRITICAL] Failed to inject shutdown sentinel; queue remained full."
+        )
 
 
-def record_capture(session_id: str, knobs: list, effects=None, wiring=None, *args, **kwargs):
+def record_capture(
+    session_id: str, knobs: list, effects=None, wiring=None, *args, **kwargs
+):
     """
     Asynchronous entry point for sessions. Instantly mutates memory arrays
     and streams the transaction frame down to the disk tracking worker thread.
@@ -184,7 +192,9 @@ def record_capture(session_id: str, knobs: list, effects=None, wiring=None, *arg
         "session_id": session_id,
         "knobs": [int(k) for k in knobs],
     }
-    if effects is not None:  # Phase 4 row: names of the effects that were acting + wiring
+    if (
+        effects is not None
+    ):  # Phase 4 row: names of the effects that were acting + wiring
         payload["v"] = 2
         payload["effects"] = [str(e) for e in effects]
         if wiring:
@@ -322,7 +332,7 @@ def telemetry_sync_worker(interval_seconds: int = 120):
     print(
         f"[TELEMETRY ENGINE] Asynchronous tracking sync container activated. Intervals: {interval_seconds}s."
     )
-    
+
     while True:
         if _shutdown_event.wait(timeout=interval_seconds):
             break
@@ -338,11 +348,11 @@ def telemetry_sync_worker(interval_seconds: int = 120):
 def telemetry_consumer_worker():
     """CONSUMER NODE: Pulls log events from memory channel and writes to disk out-of-band."""
     print("[TELEMETRY ENGINE] Asynchronous tracking consumer backend initialized.")
-    
+
     while True:
         try:
             payload = _telemetry_queue.get()
-            
+
             if payload is None:
                 _telemetry_queue.task_done()
                 break
@@ -368,4 +378,3 @@ def telemetry_consumer_worker():
             time.sleep(1)
 
     print("[TELEMETRY] Storage consumer worker terminated gracefully.")
-
