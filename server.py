@@ -224,7 +224,7 @@ KNOB_ATTACHMENTS = {
 # Inside its window the effect sees the full 0-1023 range; outside it is off.
 # Example: {"chroma_shift": (0.0, 0.7), "packet_corruption": (0.35, 1.0)}
 # EFFECT_KNOB_WINDOW = {} # no window
-EFFECT_KNOB_WINDOW = {"melt": (0.0, 1.0), "data_mosh": (0.29, 1.0)}
+EFFECT_KNOB_WINDOW = {"melt": (0.0, 1.0), "data_mosh": (0.39, 1.0)}
 
 # Cost weights follow effects when they move between knobs.
 EFFECT_COST_WEIGHT = {
