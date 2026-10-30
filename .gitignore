@@ -5,6 +5,7 @@
 captures/
 saved/
 backup-files/
+captures_naked/
 
 # Python Virtual Environment
 venv/
