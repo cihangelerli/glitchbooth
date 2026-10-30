@@ -1943,7 +1943,7 @@ class PosterizeEngine:
                     self.color_lut[ch, b, 0] = self.palette[idx, ch]
             self._lut_key = key
 
-    def step(self, frame, raw_knob, current_time):
+    def step(self, frame, raw_knob, current_time, outline_style=None):
         s = self.strength(raw_knob)
         if s <= 0.0:
             return
@@ -2034,10 +2034,13 @@ class PosterizeEngine:
         np.add(self.xs, offsets[:, None], out=self.mapx)
         cv2.remap(self.edge, self.mapx, self.mapy, cv2.INTER_NEAREST, dst=self.edge_tmp)
         cv2.bitwise_and(self.edge_tmp, self.nonblack, dst=self.edge_tmp)
-        if POSTERIZE_OUTLINE_STYLE == "glow":
+
+        style = outline_style or POSTERIZE_OUTLINE_STYLE
+
+        if style == "glow":
             cv2.dilate(self.neon_full, self.kernels[px], dst=self.edge_col)
             outline_colour = self.edge_col
-        elif POSTERIZE_OUTLINE_STYLE == "black":
+        elif style == "black":
             outline_colour = self.ink
         else:
             outline_colour = self.white
@@ -2060,9 +2063,15 @@ class PosterizeEngine:
 _POSTER = PosterizeEngine(POSTERIZE_RNG_SEED)
 
 
-def apply_posterize(raw_knob, current_time):
-    """Posterize entry point. raw_knob 0-1023. Modifies MUTABLE_PROCESSING_BUFFER in place."""
-    _POSTER.step(MUTABLE_PROCESSING_BUFFER, raw_knob, current_time)
+def apply_posterize(raw_knob, current_time, ascii_active=False):
+    """Posterize entry point. raw_knob 0-1023."""
+    outline_style = "glow" if ascii_active else POSTERIZE_OUTLINE_STYLE
+    _POSTER.step(
+        MUTABLE_PROCESSING_BUFFER,
+        raw_knob,
+        current_time,
+        outline_style,
+    )
 
 
 EFFECT_HANDLERS = {
@@ -2233,7 +2242,18 @@ def apply_glitch_pipeline(current_time, control_packet):
         LAST_TEMPORAL_PURGE = current_time
     for _effect, handler, knob, window, skip in _EFFECT_PLAN:
         if not (skip and is_warming_up):
-            handler(_windowed_raw(control_packet.knobs[knob], window), current_time)
+            if _effect == "posterize":
+                ascii_active = n(control_packet.knobs[0]) > 0.02
+                handler(
+                    _windowed_raw(control_packet.knobs[knob], window),
+                    current_time,
+                    ascii_active,
+                )
+            else:
+                handler(
+                    _windowed_raw(control_packet.knobs[knob], window),
+                    current_time,
+                )
     apply_crt_overlay()
 
 
