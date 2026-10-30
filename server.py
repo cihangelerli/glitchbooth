@@ -292,13 +292,27 @@ EFFECT_STATS_ACTIVE_FROM = {
 # Posterize is in the pool but attached to no knob until you add "posterize" to
 # KNOB_ATTACHMENTS (for example 3: ["pixellation", "posterize"], or its own knob).
 POSTERIZE_CURVE = (
-    (0, 0.0),
-    (12, 0.0),
+    (0, 0.00),
+    (12, 0.00),
+    (25, 0.04),
+    (50, 0.12),
+    (75, 0.20),
+    (110, 0.30),
     (150, 0.40),
+    (190, 0.45),
+    (250, 0.52),
+    (325, 0.59),
     (400, 0.65),
+    (475, 0.71),
+    (580, 0.78),
     (700, 0.85),
-    (1023, 1.0),
+    (760, 0.88),
+    (830, 0.92),
+    (900, 0.95),
+    (960, 0.98),
+    (1023, 1.00),
 )
+
 POSTERIZE_BLACK_THRESHOLD = (
     24  # grey level below which the original pixel is kept exactly
 )
