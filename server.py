@@ -294,22 +294,22 @@ EFFECT_STATS_ACTIVE_FROM = {
 POSTERIZE_CURVE = (
     (0, 0.00),
     (12, 0.00),
-    (25, 0.04),
-    (50, 0.12),
-    (75, 0.20),
-    (110, 0.30),
-    (150, 0.40),
-    (190, 0.45),
-    (250, 0.52),
-    (325, 0.59),
-    (400, 0.65),
-    (475, 0.71),
-    (580, 0.78),
-    (700, 0.85),
-    (760, 0.88),
-    (830, 0.92),
-    (900, 0.95),
-    (960, 0.98),
+    (25, 0.02),
+    (50, 0.05),
+    (75, 0.08),
+    (110, 0.12),
+    (150, 0.17),
+    (190, 0.22),
+    (250, 0.29),
+    (325, 0.36),
+    (400, 0.43),
+    (475, 0.50),
+    (580, 0.60),
+    (700, 0.72),
+    (760, 0.78),
+    (830, 0.85),
+    (900, 0.92),
+    (960, 0.97),
     (1023, 1.00),
 )
 
@@ -320,7 +320,7 @@ POSTERIZE_BLACK_RAMP = (
     34  # between the two values the neon is mixed in at half strength
 )
 POSTERIZE_BANDS_LOW = 8  # tone bands at the weakest strength ...
-POSTERIZE_BANDS_HIGH = 3  # ... and at full strength
+POSTERIZE_BANDS_HIGH = 8  # ... and at full strength
 POSTERIZE_DETAIL_LOW = (
     0.75  # how much of the original brightness modulates the neon (weak) ...
 )
