@@ -223,15 +223,15 @@ KNOB_ATTACHMENTS = {
 # Optional range of the knob in which an effect works, as fractions of the knob travel.
 # Inside its window the effect sees the full 0-1023 range; outside it is off.
 # Example: {"chroma_shift": (0.0, 0.7), "packet_corruption": (0.35, 1.0)}
-EFFECT_KNOB_WINDOW = {"melt": (0.0, 1.0), "data_mosh": (0.55, 1.0)}
+EFFECT_KNOB_WINDOW = {"melt": (0.0, 1.0), "data_mosh": (0.39, 1.0)}
 
 # Cost weights follow effects when they move between knobs.
 EFFECT_COST_WEIGHT = {
     "ascii_matrix": 0.10,
     "signal_drift": 0.07,
-    "data_mosh": 0.35,
+    "data_mosh": 0.27,
     "pixellation": 0.07,
-    "melt": 0.34,
+    "melt": 0.27,
     "chroma_shift": 0.07,
     "packet_corruption": 0.0,
     "posterize": 0.15,
@@ -244,7 +244,7 @@ EFFECT_LABELS = {
     "signal_drift": "Signal Drift",
     "data_mosh": "Data Corruption",
     "pixellation": "Pixel Damage",
-    "melt": "Melt",
+    "melt": "Data Melt",
     "chroma_shift": "Chroma Shift",
     "packet_corruption": "Packet Corruption",
     "posterize": "Posterize",
@@ -336,12 +336,12 @@ POSTERIZE_FLICKER_PROB = 0.005  # share of outline sections that flash white-hot
 # Outline colour: "glow" = the brightest neon next to the border (often near-white), "white", "black" (ink)
 POSTERIZE_OUTLINE_STYLE = "black"
 POSTERIZE_SECTION_PX = (
-    4  # size of the dropout / flicker sections (must divide 640 and 480)
+    2  # size of the dropout / flicker sections (must divide 640 and 480)
 )
 POSTERIZE_FRAGMENT_FROM = 0.85  # strength from which fine detail starts to break apart
 POSTERIZE_FRAGMENT_AMOUNT = 2  # grey levels of break-up noise at full strength
 POSTERIZE_ROTATE_SECONDS = (
-    3  # 0 = fixed colours; N = the colour assignment shifts every N seconds
+    5  # 0 = fixed colours; N = the colour assignment shifts every N seconds
 )
 POSTERIZE_RNG_SEED = (
     None  # None = fresh entropy each start; tests reseed via seed_private_rngs()
