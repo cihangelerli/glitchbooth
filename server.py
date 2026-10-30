@@ -200,13 +200,13 @@ FRAME_W = 640
 # The CRT scanline overlay always runs last and is not part of this list.
 EFFECT_ORDER = [
     "pixellation",
-    "posterize",
     "signal_drift",
     "melt",
     "data_mosh",
     "chroma_shift",
     "packet_corruption",
     "ascii_matrix",
+    "posterize",
 ]
 
 # Knob (0-5) -> effects. The FIRST effect is its visible primary name; remaining
@@ -216,14 +216,14 @@ KNOB_ATTACHMENTS = {
     1: ["signal_drift"],
     2: ["posterize"],
     3: ["pixellation"],
-    4: ["melt"],
+    4: ["melt", "data_mosh"],
     5: ["chroma_shift", "packet_corruption"],
 }
 
 # Optional range of the knob in which an effect works, as fractions of the knob travel.
 # Inside its window the effect sees the full 0-1023 range; outside it is off.
 # Example: {"chroma_shift": (0.0, 0.7), "packet_corruption": (0.35, 1.0)}
-EFFECT_KNOB_WINDOW = {}
+EFFECT_KNOB_WINDOW = {"melt": (0.0, 1.0), "data_mosh": (0.55, 1.0)}
 
 # Cost weights follow effects when they move between knobs.
 EFFECT_COST_WEIGHT = {
@@ -341,7 +341,7 @@ POSTERIZE_SECTION_PX = (
 POSTERIZE_FRAGMENT_FROM = 0.85  # strength from which fine detail starts to break apart
 POSTERIZE_FRAGMENT_AMOUNT = 2  # grey levels of break-up noise at full strength
 POSTERIZE_ROTATE_SECONDS = (
-    2  # 0 = fixed colours; N = the colour assignment shifts every N seconds
+    3  # 0 = fixed colours; N = the colour assignment shifts every N seconds
 )
 POSTERIZE_RNG_SEED = (
     None  # None = fresh entropy each start; tests reseed via seed_private_rngs()
