@@ -80,8 +80,6 @@ if not IK_PRIVATE_KEY:
 
 IK_AUTH_STRING = base64.b64encode(f"{IK_PRIVATE_KEY}:".encode()).decode()
 
-HTTP_SESSION = requests.Session()
-
 # =========================================================================
 # EVENT MODE CONFIGURATION
 # =========================================================================
@@ -516,8 +514,10 @@ CRT_MASK = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
 
 def initialize_crt_mask():
     global CRT_MASK
-    print(
-        f"[SYSTEM SETUP] Materializing resolution-agnostic CRT mask ({FRAME_W}x{FRAME_H})..."
+    logger.info(
+        "[SYSTEM SETUP] Materializing resolution-agnostic CRT mask (%dx%d)...",
+        FRAME_W,
+        FRAME_H,
     )
 
     float_mask = np.ones((FRAME_H, FRAME_W, 3), dtype=np.float32)
@@ -2346,6 +2346,75 @@ def cleanup_sessions(limit=100):
         print(f"Archival pipeline exception: {e}")
 
 
+def async_storage_worker(
+    disk_id, color_mat, bw_mat, active_knobs, naked_mat=None
+):
+    _write_naked_capture(disk_id, naked_mat)
+    color_ok = cv2.imwrite(
+        os.path.join(CAPTURE_DIR, f"{disk_id}_color.jpg"), color_mat
+    )
+    bw_ok = cv2.imwrite(
+        os.path.join(CAPTURE_DIR, f"{disk_id}_bw.jpg"), bw_mat
+    )
+
+    if not color_ok or not bw_ok:
+        print(
+            f"[STATE ENGINE CRITICAL] Disk IO failure writing session {disk_id}. Tripping fallback flag."
+        )
+        logger.error(
+            "[STATE ENGINE] Disk IO failure writing session %s. color_ok=%s bw_ok=%s",
+            disk_id,
+            color_ok,
+            bw_ok,
+        )
+        with mode_lock:
+            ACTIVE_SESSION["upload_failed"] = True
+        return
+
+    logger.info(
+        "[CAPTURE] Session files written: %s color_ok=%s bw_ok=%s",
+        disk_id,
+        color_ok,
+        bw_ok,
+    )
+
+    try:
+        upload_queue.put(disk_id, block=False)
+        logger.info("[UPLOAD QUEUE] Session queued for upload: %s", disk_id)
+        cleanup_sessions(limit=100)
+    except queue.Full:
+        print(
+            f"[STATE ENGINE WARNING] Queue full. Enqueuing {disk_id} directly to offline cache file."
+        )
+        try:
+            with cache_file_lock:
+                with open("pending_uploads.txt", "a") as cache_log:
+                    cache_log.write(f"{disk_id}\n")
+        except Exception as cache_err:
+            print(
+                f"[STATE ENGINE CRITICAL] Failed to write queue fallback to cache: {cache_err}"
+            )
+
+        with mode_lock:
+            ACTIVE_SESSION["upload_failed"] = True
+
+    if TELEMETRY_ENABLED:
+        try:
+            print(
+                f"[TELEMETRY ENGINE] Executing core capture ledger entry for session: {disk_id}"
+            )
+            telemetry.record_capture(
+                session_id=disk_id,
+                knobs=active_knobs,
+                effects=get_active_effects(active_knobs),
+                wiring=get_wiring_label(),
+            )
+        except Exception as telemetry_fault:
+            print(
+                f"[TELEMETRY HOOK ERROR] Non-fatal capture entry failure: {telemetry_fault}"
+            )
+
+
 def generate_composite_receipt_image(ts: str) -> str:
     """
     Composites the QR code into a corner of the rotated B&W capture.
@@ -2562,6 +2631,7 @@ def idle_sync_worker():
     pending_uploads.txt and re-attempts synchronization when grid link recovers.
     """
     print("IO IDLE SYNC ENGINE: Resilient background scheduler active.")
+    http = requests.Session()
 
     while not SHUTDOWN_EVENT.is_set():
         try:
@@ -2597,7 +2667,7 @@ def idle_sync_worker():
                         headers = {"Authorization": f"Basic {IK_AUTH_STRING}"}
 
                         # Check network dynamically by issuing a timeout-protected post request
-                        response = HTTP_SESSION.post(
+                        response = http.post(
                             upload_url, headers=headers, files=files, timeout=(4, 10)
                         )
 
@@ -2647,6 +2717,7 @@ def idle_sync_worker():
 def upload_queue_worker():
     global upload_status_msg
     print("[INIT] Cloud Upload Worker: Active and bound.")
+    http = requests.Session()
 
     while not SHUTDOWN_EVENT.is_set():
         try:
@@ -2708,7 +2779,7 @@ def upload_queue_worker():
                         }
                         headers = {"Authorization": f"Basic {IK_AUTH_STRING}"}
 
-                        response = HTTP_SESSION.post(
+                        response = http.post(
                             upload_url, headers=headers, files=files, timeout=(3, 8)
                         )
 
@@ -2938,75 +3009,6 @@ def background_loop():
 
             # CENTRAL CONTROL MATRIX & TRANSITION MACHINE
             # ------------------------------------------------------------------
-
-            # Reusable Storage Worker (Scoped inside state_machine_loop)
-            def async_storage_worker(
-                disk_id, color_mat, bw_mat, active_knobs, naked_mat=None
-            ):
-                _write_naked_capture(disk_id, naked_mat)
-                color_ok = cv2.imwrite(
-                    os.path.join(CAPTURE_DIR, f"{disk_id}_color.jpg"), color_mat
-                )
-                bw_ok = cv2.imwrite(
-                    os.path.join(CAPTURE_DIR, f"{disk_id}_bw.jpg"), bw_mat
-                )
-
-                if not color_ok or not bw_ok:
-                    print(
-                        f"[STATE ENGINE CRITICAL] Disk IO failure writing session {disk_id}. Tripping fallback flag."
-                    )
-                    logger.error(
-                        "[STATE ENGINE] Disk IO failure writing session %s. color_ok=%s bw_ok=%s",
-                        disk_id,
-                        color_ok,
-                        bw_ok,
-                    )
-                    with mode_lock:
-                        ACTIVE_SESSION["upload_failed"] = True
-                    return
-
-                logger.info(
-                    "[CAPTURE] Session files written: %s color_ok=%s bw_ok=%s",
-                    disk_id,
-                    color_ok,
-                    bw_ok,
-                )
-
-                try:
-                    upload_queue.put(disk_id, block=False)
-                    logger.info("[UPLOAD QUEUE] Session queued for upload: %s", disk_id)
-                    cleanup_sessions(limit=100)
-                except queue.Full:
-                    print(
-                        f"[STATE ENGINE WARNING] Queue full. Enqueuing {disk_id} directly to offline cache file."
-                    )
-                    try:
-                        with cache_file_lock:
-                            with open("pending_uploads.txt", "a") as cache_log:
-                                cache_log.write(f"{disk_id}\n")
-                    except Exception as cache_err:
-                        print(
-                            f"[STATE ENGINE CRITICAL] Failed to write queue fallback to cache: {cache_err}"
-                        )
-
-                    with mode_lock:
-                        ACTIVE_SESSION["upload_failed"] = True
-
-                if TELEMETRY_ENABLED:
-                    try:
-                        print(
-                            f"[TELEMETRY ENGINE] Executing core capture ledger entry for session: {disk_id}"
-                        )
-                        telemetry.record_capture(
-                            session_id=disk_id,
-                            knobs=active_knobs,
-                            effects=get_active_effects(active_knobs),
-                            wiring=get_wiring_label(),
-                        )
-                    except Exception as telemetry_fault:
-                        print(
-                            f"[TELEMETRY HOOK ERROR] Non-fatal capture entry failure: {telemetry_fault}"
-                        )
 
             # STATE 1: LIVE VIEWER - Initiates pre-capture countdown
             if loop_mode == "live":
