@@ -223,7 +223,8 @@ KNOB_ATTACHMENTS = {
 # Optional range of the knob in which an effect works, as fractions of the knob travel.
 # Inside its window the effect sees the full 0-1023 range; outside it is off.
 # Example: {"chroma_shift": (0.0, 0.7), "packet_corruption": (0.35, 1.0)}
-EFFECT_KNOB_WINDOW = {"melt": (0.0, 1.0), "data_mosh": (0.39, 1.0)}
+# EFFECT_KNOB_WINDOW = {"melt": (0.0, 1.0), "data_mosh": (0.39, 1.0)}
+EFFECT_KNOB_WINDOW = {}
 
 # Cost weights follow effects when they move between knobs.
 EFFECT_COST_WEIGHT = {
@@ -326,11 +327,11 @@ POSTERIZE_DETAIL_LOW = (
 )
 POSTERIZE_DETAIL_HIGH = 0.75  # ... and at full strength (faces stay readable)
 POSTERIZE_MIX_START = 0.05  # neon share at the weakest strength ...
-POSTERIZE_MIX_FULL_AT = 0.67  # ... reaching 1.0 at this strength (0-1)
+POSTERIZE_MIX_FULL_AT = 0.37  # ... reaching 1.0 at this strength (0-1)
 POSTERIZE_OUTLINE_2PX_FROM = 0.90  # strength from which outlines are 2 px thick
 POSTERIZE_OUTLINE_3PX_FROM = 0.99  # strength from which outlines are 3 px thick
 POSTERIZE_DROPOUT_LOW = 0.05  # share of the outline that is missing (weak) ...
-POSTERIZE_DROPOUT_HIGH = 0.05  # ... and at full strength
+POSTERIZE_DROPOUT_HIGH = 0.01  # ... and at full strength
 POSTERIZE_JITTER_MAX_PX = 0  # outline rows shift sideways by up to 1 .. this many px
 POSTERIZE_FLICKER_PROB = 0.005  # share of outline sections that flash white-hot
 # Outline colour: "glow" = the brightest neon next to the border (often near-white), "white", "black" (ink)
