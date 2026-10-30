@@ -30,8 +30,6 @@ import queue
 import resource
 import socket
 import subprocess
-
-# import random
 import threading
 import time
 
@@ -40,8 +38,6 @@ import qrcode
 import requests
 import serial
 from escpos.printer import File
-
-# numpy as_strided based vectorized melt implementations for testing
 from numpy.lib.stride_tricks import as_strided
 from PIL import Image, ImageDraw, ImageFont
 
@@ -136,11 +132,11 @@ FLASH_DURATION = float(os.getenv("FLASH_DURATION", "0.3"))
 
 
 def get_ik_target_folder() -> str:
-    """
-    Computes the ImageKit folder path dynamically at call-time.
-    - Naked Mode (""):      '/booth_captures'
-    - Event Mode ("slug"):  '/booth_captures/slug'
-    """
+
+    # Computes the ImageKit folder path dynamically at call-time.
+    # - Naked Mode (""):      '/booth_captures'
+    # - Event Mode ("slug"):  '/booth_captures/slug'
+
     slug = (EVENT_SLUG or "").strip().strip("/")
     if slug:
         return f"/{IK_BASE_FOLDER}/{slug}"
@@ -148,11 +144,11 @@ def get_ik_target_folder() -> str:
 
 
 def get_landing_url(ts: str) -> str:
-    """
-    Constructs the landing URL for capture timestamp 'ts'.
-    - Naked Mode (""):      'https://glitchbooth.online/p/{ts}'
-    - Event Mode ("slug"):  'https://glitchbooth.online/slug/p/{ts}'
-    """
+
+    # Constructs the landing URL for capture timestamp 'ts'.
+    # - Naked Mode (""):      'https://glitchbooth.online/p/{ts}'
+    # - Event Mode ("slug"):  'https://glitchbooth.online/slug/p/{ts}'
+
     slug = (EVENT_SLUG or "").strip().strip("/")
     domain = BASE_DOMAIN.rstrip("/")
     if slug:
@@ -435,7 +431,8 @@ MELT_NEON_RAMP_SPAN = (
 )
 
 # NEON_PALETTES defined in native OpenCV BGR format: [Blue, Green, Red]
-# these palettes might be shared later with future POSTERIZE effect addition
+# these palettes ARE shared later with future POSTERIZE effect addition
+
 NEON_PALETTES = np.array(
     [
         [0, 255, 255],  # Neon Yellow      (B: 0,   G: 255, R: 255)
@@ -452,7 +449,7 @@ NEON_PALETTES = np.array(
 )
 NEON_PALETTES_FLOAT = np.ascontiguousarray(NEON_PALETTES.astype(np.float32))
 
-
+# --- CRT SCANLINES -------------------------------------------------------------------
 CRT_SCANLINE_PERIOD = 8  # [320x240: 4 ] [480x360: 6 ] [640x480: 8 ]
 CRT_SCANLINE_THICKNESS = 4  # [320x240: 2 ] [480x360: 3 ] [640x480: 4 ]
 CRT_APERTURE_PERIOD = 6  # [320x240: 3 ] [480x360: 4 ] [640x480: 6 ]
@@ -465,7 +462,6 @@ LATEST_CAMERA_FRAME = np.zeros((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
 MUTABLE_PROCESSING_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
 UI_DISPLAY_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
 NAKED_FRAME_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
-
 
 SHARED_JPEG_STREAM_BUFFER = memoryview(b"")
 SHARED_JPEG_ARRAY = None
@@ -488,16 +484,6 @@ STATIC_MELT_SNAPSHOT = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C"
 assert STATIC_MELT_SNAPSHOT.flags["C_CONTIGUOUS"], (
     "CRITICAL: STATIC_MELT_SNAPSHOT layout fault!"
 )
-
-# Used with the earlier versions of numpy based melt, vectorized melt. Not used in the current version.
-"""
-# NOTE: Ensure MELT_DRIP_WIDTH is defined before these lines!
-MELT_DRIP_WORK_BUFFER = np.zeros((FRAME_H, MELT_DRIP_WIDTH, 3), dtype=np.float32)
-
-assert MELT_DRIP_WORK_BUFFER.flags["C_CONTIGUOUS"], (
-    "CRITICAL: MELT_DRIP_WORK_BUFFER layout fault!"
-)
-"""
 
 COMPRESSION_STAGE_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
 
@@ -540,7 +526,7 @@ def initialize_crt_mask():
 
     np.clip(float_mask, 0.0, 1.0, out=float_mask)
     CRT_MASK[:] = (float_mask * 255.0).astype(np.uint8)
-    print("[SYSTEM SETUP] CRT Mask locked into contiguous C-memory.")
+    logger.info("[SYSTEM SETUP] CRT Mask locked into contiguous C-memory.")
 
 
 # TEMPORAL REGISTERS (WARM-UP, PURGE) AND PACKET CORRUPTION STATE
@@ -720,7 +706,7 @@ init_ascii_tiles()
 
 
 class ControlPacket:
-    """Immutable data record representing a single, frozen control plane epoch."""
+    # Immutable data record representing a single, frozen control plane epoch.
 
     def __init__(self, frozen_knobs, frozen_button, frozen_mode):
         self.knobs = frozen_knobs
@@ -761,7 +747,7 @@ def get_memory_usage():
 
 def telemetry_worker():
     global SYSTEM_TELEMETRY
-    print("[INIT] Telemetry Worker: Active and bound.")
+    logger.info("[INIT] Telemetry Worker: Active and bound.")
 
     while not SHUTDOWN_EVENT.is_set():
         try:
@@ -769,11 +755,11 @@ def telemetry_worker():
             SYSTEM_TELEMETRY["cpu_temp"] = get_cpu_temp()
             SYSTEM_TELEMETRY["memory_rss_mb"] = get_memory_usage()
         except Exception as e:
-            print(f"[TELEMETRY ERROR] Subprocess acquisition fault: {e}")
+            logger.error("[TELEMETRY ERROR] Subprocess acquisition fault: %s", e)
 
         if SHUTDOWN_EVENT.wait(timeout=2.0):
             break
-    print("[SHUTDOWN] Telemetry worker exited cleanly.")
+    logger.info("[SHUTDOWN] Telemetry worker exited cleanly.")
 
 
 def open_camera():
@@ -796,7 +782,7 @@ def open_camera():
                 return cap
             else:
                 cap.release()
-    print("CRITICAL V4L2 ERROR: Physical acquisition failed.")
+    logger.error("CRITICAL V4L2 ERROR: Physical acquisition failed.")
     return None
 
 
@@ -824,8 +810,10 @@ def camera_io_worker():
                     if frame.shape == LATEST_CAMERA_FRAME.shape:
                         LATEST_CAMERA_FRAME[:] = frame
                     else:
-                        print(
-                            f"[CAMERA WARNING] Resolution mismatch! Expected {LATEST_CAMERA_FRAME.shape}, got {frame.shape}. Resizing fallback applied."
+                        logger.warning(
+                            "[CAMERA WARNING] Resolution mismatch! Expected %s, got %s. Resizing fallback applied.",
+                            LATEST_CAMERA_FRAME.shape,
+                            frame.shape,
                         )
                         cv2.resize(frame, (FRAME_W, FRAME_H), dst=LATEST_CAMERA_FRAME)
                 last_good_camera = time.time()
@@ -833,7 +821,7 @@ def camera_io_worker():
                 consecutive_failures += 1
                 with hw_state_lock:
                     camera_fail_count += 1
-                print(f"CAMERA FAIL at {time.time()}")
+                logger.error("CAMERA FAIL at %s", time.time())
                 time.sleep(0.01)
             now = time.time()
             if (
@@ -841,7 +829,7 @@ def camera_io_worker():
                 or (now - last_good_camera > CAMERA_STALE_TIMEOUT)
                 or (now - camera_started_at > CAMERA_REFRESH_INTERVAL)
             ):
-                print("RESETTING CAMERA SUB-SOCKET ENGINE DUE TO STALL...")
+                logger.warning("RESETTING CAMERA SUB-SOCKET ENGINE DUE TO STALL...")
                 if cap is not None:
                     try:
                         cap.release()
@@ -854,29 +842,8 @@ def camera_io_worker():
                 last_good_camera = time.time()
                 camera_started_at = time.time()
         except Exception as fatal_e:
-            print(f"CAMERA IO WORKER FATAL EXCEPTION: {fatal_e}")
+            logger.error("CAMERA IO WORKER FATAL EXCEPTION: %s", fatal_e)
             time.sleep(1)
-
-
-# NOT IN USE CURRENTLY BUT NOT DELETED YET. MAY BE USED FOR FUTURE HARDWARE INTEGRATION
-"""
-def open_serial():
-    while True:
-        for port in SERIAL_PORTS:
-            try:
-                ser = serial.Serial(port, 9600, timeout=0.05)
-                logger.info("[HARDWARE LINK] Connected to serial port: %s", port)
-                return ser
-            except (OSError, serial.SerialException) as exc:
-                logger.debug(
-                    "[HARDWARE LINK] Serial port unavailable: %s: %s",
-                    port,
-                    exc,
-                )
-                continue
-
-        time.sleep(2)
-"""
 
 
 def update_knobs(ser):
@@ -947,15 +914,6 @@ class DataMoshEngine:
         # drag never pulls stale or empty pixels in from a neighbouring cell.
         self.hold, self.cur = z3(), z3()
 
-        # Start of change for vertical drag
-        """
-        # scratch (each used only inside one step)
-        self.sh_right, self.sh_left, self.blend = z3(), z3(), z3()
-        self.comp, self.pos3, self.neg3 = z3(), z3(), z3()
-        self.m_keep, self.m_act, self.m_neg = z1(), z1(), z1()
-        self.m_inset, self.m_tmp, self.m_fin = z1(), z1(), z1()
-        """
-
         # Scratch buffers.  The four shift buffers contain held content displaced
         # in the four possible visual directions.
         self.sh_left, self.sh_right = z3(), z3()
@@ -968,7 +926,6 @@ class DataMoshEngine:
         self.m_left, self.m_right = z1(), z1()
         self.m_up, self.m_down = z1(), z1()
         self.m_inset, self.m_tmp, self.m_fin = z1(), z1(), z1()
-        # End of change for vertical drag
 
         self.y_live, self.y_hold, self.y_pos, self.y_neg = z1(), z1(), z1(), z1()
         # distance of every pixel from its cell border (for edge erosion)
@@ -979,17 +936,11 @@ class DataMoshEngine:
         ).astype(np.uint8)
         # per-cell state
 
-        # Start of change for vertical drag
-        """
-        self.timer = np.zeros((gh, gw), dtype=np.int16)
-        self.vx = np.zeros((gh, gw), dtype=np.int8)
-        """
         self.timer = np.zeros((gh, gw), dtype=np.int16)
 
         # Per-cell direction, meaningful only while timer > 0:
         # 0 = left, 1 = right, 2 = up, 3 = down.
         self.direction = np.zeros((gh, gw), dtype=np.uint8)
-        # End of change for vertical drag
 
         self.samp = np.zeros((gh, gw, 3), dtype=np.int16)
         self.prev_samp = np.zeros((gh, gw, 3), dtype=np.int16)
@@ -1003,21 +954,16 @@ class DataMoshEngine:
         return self.have_prev or bool(self.timer.any())
 
     def reset(self):
-        """Forget everything: no hold, no vector, no remembered picture."""
+        # Forget everything: no hold, no vector, no remembered picture.
         self.timer[:] = 0
 
-        # Start of change for vertical drag
-        """
-        self.vx[:] = 0
-        """
         self.direction[:] = 0
-        # End of change for vertical drag
 
         self.have_prev = False
 
     @staticmethod
     def _cells_to_pixels(cells_u8, row0, row1, dst):
-        """Exact cell-grid upsample of cell rows row0..row1 into dst (pixel rows of those cells)."""
+        # Exact cell-grid upsample of cell rows row0..row1 into dst (pixel rows of those cells).
         rows = row1 - row0 + 1
         cv2.resize(
             cells_u8[row0 : row1 + 1],
@@ -1027,14 +973,8 @@ class DataMoshEngine:
         )
 
     def step(self, frame, strength, motion_samples=None):
-        """Apply one frame of Data Mosh to `frame` (modified in place)."""
-
-        # Start of change for vertical drag
-        """
-        gh, gw, W = MOSH_GRID_H, MOSH_GRID_W, FRAME_W
-        """
+        # Apply one frame of Data Mosh to `frame` (modified in place).
         gh, gw, H, W = MOSH_GRID_H, MOSH_GRID_W, FRAME_H, FRAME_W
-        # End of change for vertical drag
 
         vec = MOSH_VECTOR_PX
 
@@ -1068,22 +1008,7 @@ class DataMoshEngine:
 
         # ---- 2. newly held cells start from the picture of just before the motion ----
         # (`hold` already is that picture; each new cell only needs a drag direction)
-        """
-        if new_cells.any():
-            count = int(new_cells.sum())
-            self.vx[new_cells] = np.where(self.rng.random(count) > 0.5, vec, -vec)
-        self.timer[motion] = hold_frames
-        """
 
-        # Start of change for vertical drag
-        """
-        if new_cells.any():
-            count = int(new_cells.sum())
-            self.vx[new_cells] = np.where(self.rng.random(count) > 0.5, vec, -vec)
-            self.timer[new_cells] = (
-                hold_frames  # Only new cells get the timer; active cells count down freely
-            )
-        """
         if new_cells.any():
             count = int(new_cells.sum())
 
@@ -1096,7 +1021,6 @@ class DataMoshEngine:
             # Only newly held cells get a fresh timer. Existing holds continue
             # toward release instead of being perpetually renewed.
             self.timer[new_cells] = hold_frames
-        # End of change for vertical drag
 
         active = self.timer > 0
         band = None
@@ -1108,28 +1032,6 @@ class DataMoshEngine:
             r0, r1 = int(rows[0]), int(rows[-1])
             band = slice(r0 * MOSH_CELL_H, (r1 + 1) * MOSH_CELL_H)
 
-            # Start of change for vertical drag
-            """
-            self._cells_to_pixels(active.view(np.uint8), r0, r1, self.m_act)
-            self._cells_to_pixels((self.vx < 0).view(np.uint8), r0, r1, self.m_neg)
-
-            hold_band = self.hold[band]
-            # +-vec px horizontal shift with edge clamp, picked per cell by its vector sign
-            self.sh_right[band, : W - vec] = hold_band[:, vec:]
-            self.sh_right[band, W - vec :] = hold_band[:, W - 1 : W]
-            self.sh_left[band, vec:] = hold_band[:, : W - vec]
-            self.sh_left[band, :vec] = hold_band[:, 0:1]
-            cv2.copyTo(self.sh_left[band], self.m_neg[band], self.sh_right[band])
-            cv2.addWeighted(
-                self.sh_right[band],
-                MOSH_DRAG_NEW_WEIGHT,
-                hold_band,
-                1.0 - MOSH_DRAG_NEW_WEIGHT,
-                0,
-                dst=self.blend[band],
-            )
-            cv2.copyTo(self.blend[band], self.m_act[band], hold_band)
-            """
             self._cells_to_pixels(active.view(np.uint8), r0, r1, self.m_act)
             self._cells_to_pixels(
                 (self.direction == 0).view(np.uint8), r0, r1, self.m_left
@@ -1194,7 +1096,6 @@ class DataMoshEngine:
                 dst=self.blend[band],
             )
             cv2.copyTo(self.blend[band], self.m_act[band], hold_band)
-            # End of change for vertical drag
 
             # edges erode a little always, and progressively during the last frames
             inset = self.rng.integers(
@@ -1234,14 +1135,8 @@ class DataMoshEngine:
                 cv2.copyTo(self.comp[band], self.m_fin[band], frame[band])
 
         # ---- 4. time moves on; the memory follows this frame outside the cells still held ----
-        # Start of change for vertical drag
-        """
-        self.timer[self.timer > 0] -= 1
-        self.vx[self.timer == 0] = 0
-        """
         self.timer[self.timer > 0] -= 1
         self.direction[self.timer == 0] = 0
-        # End of change for vertical drag
 
         still_held = self.timer > 0
         if (
@@ -1266,19 +1161,19 @@ _MOSH = DataMoshEngine(MOSH_RNG_SEED)
 
 
 def data_mosh_reset():
-    """Cancel every hold and forget the remembered picture."""
+    # Cancel every hold and forget the remembered picture.
     _MOSH.reset()
 
 
 def data_mosh_take_samples(frame):
-    """Snapshot of the per-cell motion sample points (for MOSH_STAGE_POSITION C)."""
+    # Snapshot of the per-cell motion sample points (for MOSH_STAGE_POSITION C).
     return frame[_MOSH_SAMPLE_Y0::MOSH_CELL_H, _MOSH_SAMPLE_X0::MOSH_CELL_W][
         :MOSH_GRID_H, :MOSH_GRID_W
     ].copy()
 
 
 def apply_data_mosh(raw_knob, current_time, motion_samples=None):
-    """Data Mosh entry point. raw_knob 0-1023. Modifies MUTABLE_PROCESSING_BUFFER in place."""
+    # Data Mosh entry point. raw_knob 0-1023. Modifies MUTABLE_PROCESSING_BUFFER in place.
     strength = n(raw_knob) ** 2  # response curve unchanged from the old effect
     if strength < MOSH_DORMANT_BELOW:
         if _MOSH.is_dirty():  # lowering the knob cancels all moshing at once
@@ -1389,7 +1284,7 @@ def corruption_render(frame):
 
 
 def apply_packet_corruption(raw_knob, current_time=0.0):
-    """Packet Corruption entry point. raw_knob 0-1023. Modifies MUTABLE_PROCESSING_BUFFER in place."""
+    # Packet Corruption entry point. raw_knob 0-1023. Modifies MUTABLE_PROCESSING_BUFFER in place.
     strength = n(raw_knob)
     if strength < CORRUPTION_CLEAR_BELOW:
         # dormant: identical to the old stage (everything cleared, nothing drawn, no random draws)
@@ -1406,13 +1301,13 @@ def apply_packet_corruption(raw_knob, current_time=0.0):
 
 
 def seed_private_rngs(seed):
-    """Reseed every effect that owns a private random generator (tests / A-B harness)."""
+    # Reseed every effect that owns a private random generator (tests / A-B harness).
     _MOSH.reseed(seed)
     _POSTER.reseed(seed)
 
 
 def _validate_mosh_settings():
-    """Check Data Mosh tunables without changing the owner's tuned safe limits."""
+    # Check Data Mosh tunables without changing the owner's tuned safe limits.
     global MOSH_BLEED_MODE
     global MOSH_HOLD_MIN_FRAMES, MOSH_HOLD_MAX_FRAMES, MOSH_VECTOR_PX
     notes = []
@@ -1464,12 +1359,12 @@ _validate_mosh_settings()
 def _collect_melt_drips(
     melt_raw: float, current_time: float, h: int = FRAME_H, w: int = FRAME_W
 ):
-    """Seed discovery without a Python loop over columns.
+    # Seed discovery without a Python loop over columns.
 
-    Returns a float64 array of shape (n, 7):
-        [reach, x0, start_y, L, s, p1, p2]
-    or None when there is nothing to draw.
-    """
+    # Returns a float64 array of shape (n, 7):
+    #     [reach, x0, start_y, L, s, p1, p2]
+    # or None when there is nothing to draw.
+
     max_melt_length = int(20 + melt_raw * (h * 0.85))
     threshold = max(75, int(255 * (1.0 - melt_raw * 0.65)))
     stride = (
@@ -1548,9 +1443,9 @@ def _collect_melt_drips(
 
 
 def _melt_window_view(buf, width: int, writeable: bool):
-    """View of a C-contiguous (H, W, 3) uint8 frame where view[y, x] is the
-    3*width bytes of `width` consecutive pixels starting at column x.
-    Lets one fancy-index gather/scatter move a whole drip row (8 px)."""
+    # View of a C-contiguous (H, W, 3) uint8 frame where view[y, x] is the
+    # 3*width bytes of `width` consecutive pixels starting at column x.
+    # Lets one fancy-index gather/scatter move a whole drip row (8 px).
     h, w = buf.shape[:2]
     return as_strided(
         buf,
@@ -1653,7 +1548,7 @@ def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
 
 
 def apply_melt_pass(melt_raw: float, current_time: float):
-    """Stage 6: Gravitational Melt Deformation Public Entry Point."""
+    # Stage 6: Gravitational Melt Deformation Public Entry Point.
     if melt_raw <= 0.03:
         return
     STATIC_MELT_SNAPSHOT[:] = MUTABLE_PROCESSING_BUFFER[:]
@@ -2207,8 +2102,8 @@ rebuild_effect_plan()
 
 
 def get_active_effects(knobs):
-    """Statistics names of the attached effects that really act at these knob values
-    (after their knob windows), in processing order. Hidden (secondary) effects count too."""
+    # Statistics names of the attached effects that really act at these knob values
+    # (after their knob windows), in processing order. Hidden (secondary) effects count too.
     names = []
     for effect, _handler, knob, window, _skip in _EFFECT_PLAN:
         raw = knobs[knob] if knob < len(knobs) else 0
@@ -2218,8 +2113,8 @@ def get_active_effects(knobs):
 
 
 def get_wiring_label():
-    """Compact text of the current attachments (primary first) and windows, stored with every
-    capture, e.g. 0:ascii_matrix|1:signal_drift|...|5:chroma_shift+packet_corruption|w:packet_corruption=0.35-1"""
+    # Compact text of the current attachments (primary first) and windows, stored with every
+    # capture, e.g. 0:ascii_matrix|1:signal_drift|...|5:chroma_shift+packet_corruption|w:packet_corruption=0.35-1
     knob_of = {effect: knob for effect, _h, knob, _w, _s in _EFFECT_PLAN}
     parts = []
     for knob in range(6):
@@ -2271,7 +2166,7 @@ def apply_glitch_pipeline(current_time, control_packet):
 
 
 def _write_naked_capture(disk_id, frame):
-    """Write a device-only naked capture without affecting capture success."""
+    # Write a device-only naked capture without affecting capture success.
     if frame is None:
         return False
     try:
@@ -2346,21 +2241,12 @@ def cleanup_sessions(limit=100):
         print(f"Archival pipeline exception: {e}")
 
 
-def async_storage_worker(
-    disk_id, color_mat, bw_mat, active_knobs, naked_mat=None
-):
+def async_storage_worker(disk_id, color_mat, bw_mat, active_knobs, naked_mat=None):
     _write_naked_capture(disk_id, naked_mat)
-    color_ok = cv2.imwrite(
-        os.path.join(CAPTURE_DIR, f"{disk_id}_color.jpg"), color_mat
-    )
-    bw_ok = cv2.imwrite(
-        os.path.join(CAPTURE_DIR, f"{disk_id}_bw.jpg"), bw_mat
-    )
+    color_ok = cv2.imwrite(os.path.join(CAPTURE_DIR, f"{disk_id}_color.jpg"), color_mat)
+    bw_ok = cv2.imwrite(os.path.join(CAPTURE_DIR, f"{disk_id}_bw.jpg"), bw_mat)
 
     if not color_ok or not bw_ok:
-        print(
-            f"[STATE ENGINE CRITICAL] Disk IO failure writing session {disk_id}. Tripping fallback flag."
-        )
         logger.error(
             "[STATE ENGINE] Disk IO failure writing session %s. color_ok=%s bw_ok=%s",
             disk_id,
@@ -2383,16 +2269,18 @@ def async_storage_worker(
         logger.info("[UPLOAD QUEUE] Session queued for upload: %s", disk_id)
         cleanup_sessions(limit=100)
     except queue.Full:
-        print(
-            f"[STATE ENGINE WARNING] Queue full. Enqueuing {disk_id} directly to offline cache file."
+        logger.warning(
+            "[STATE ENGINE WARNING] Queue full. Enqueuing %s directly to offline cache file.",
+            disk_id,
         )
         try:
             with cache_file_lock:
                 with open("pending_uploads.txt", "a") as cache_log:
                     cache_log.write(f"{disk_id}\n")
         except Exception as cache_err:
-            print(
-                f"[STATE ENGINE CRITICAL] Failed to write queue fallback to cache: {cache_err}"
+            logger.error(
+                "[STATE ENGINE CRITICAL] Failed to write queue fallback to cache: %s",
+                cache_err,
             )
 
         with mode_lock:
@@ -2400,8 +2288,9 @@ def async_storage_worker(
 
     if TELEMETRY_ENABLED:
         try:
-            print(
-                f"[TELEMETRY ENGINE] Executing core capture ledger entry for session: {disk_id}"
+            logger.info(
+                "[TELEMETRY ENGINE] Executing core capture ledger entry for session: %s",
+                disk_id,
             )
             telemetry.record_capture(
                 session_id=disk_id,
@@ -2410,18 +2299,19 @@ def async_storage_worker(
                 wiring=get_wiring_label(),
             )
         except Exception as telemetry_fault:
-            print(
-                f"[TELEMETRY HOOK ERROR] Non-fatal capture entry failure: {telemetry_fault}"
+            logger.error(
+                "[TELEMETRY HOOK ERROR] Non-fatal capture entry failure: %s",
+                telemetry_fault,
             )
 
 
 def generate_composite_receipt_image(ts: str) -> str:
-    """
-    Composites the QR code into a corner of the rotated B&W capture.
-    Saves as a lossless PNG intermediate (captures/{ts}_composite.png).
-    Leaves '{ts}_bw.jpg' unchanged.
-    Returns composite path on verified success, or None on failure.
-    """
+
+    # Composites the QR code into a corner of the rotated B&W capture.
+    # Saves as a lossless PNG intermediate (captures/{ts}_composite.png).
+    # Leaves '{ts}_bw.jpg' unchanged.
+    # Returns composite path on verified success, or None on failure.
+
     composite_path = os.path.join(CAPTURE_DIR, f"{ts}_composite.png")
     if os.path.exists(composite_path) and os.path.getsize(composite_path) > 0:
         return composite_path
@@ -2535,7 +2425,7 @@ def generate_composite_receipt_image(ts: str) -> str:
 
 
 def print_booth_receipt(ts):
-    print(f"PRINTER: Spooling hardware receipt pipeline for session {ts}...")
+    logger.info("PRINTER: Spooling hardware receipt pipeline for session %s...", ts)
 
     with printer_hardware_lock:  # Serializes multi-threaded physical hardware access
         printer = None
@@ -2583,7 +2473,7 @@ def print_booth_receipt(ts):
                     )
                     dithered_img = resized_img.convert("1")
                     printer.image(dithered_img)
-                # printer.text("\n")
+                    # printer.text("\n")
 
                 if not using_composite:
                     # Explicit fallback notice printed directly on paper if composite failed
@@ -2596,7 +2486,6 @@ def print_booth_receipt(ts):
                 logger.error(
                     "[PRINTER ERROR] No printable photo found for session %s", ts
                 )
-                print(f"[PRINTER ERROR] No printable photo found for session {ts}")
 
             if is_offline_capture:
                 printer.text(" > NETWORK OFFLINE // CACHED LOCALLY  \n")
@@ -2616,21 +2505,21 @@ def print_booth_receipt(ts):
             print("PRINTER: Hardware receipt complete.")
 
         except Exception as e:
-            print(f"PRINTER HARDWARE FAULT: {e}")
+            logger.error("PRINTER HARDWARE FAULT: %s", e)
         finally:
             if printer is not None:
                 try:
                     printer.close()
                 except Exception as close_err:
-                    print(f"PRINTER UNHOOK EXCEPTION: {close_err}")
+                    logger.error("PRINTER UNHOOK EXCEPTION: %s", close_err)
 
 
 def idle_sync_worker():
-    """
-    Low-priority background worker that scans for offline captures cached in
-    pending_uploads.txt and re-attempts synchronization when grid link recovers.
-    """
-    print("IO IDLE SYNC ENGINE: Resilient background scheduler active.")
+
+    # Low-priority background worker that scans for offline captures cached in
+    # pending_uploads.txt and re-attempts synchronization when grid link recovers.
+
+    logger.info("IO IDLE SYNC ENGINE: Resilient background scheduler active.")
     http = requests.Session()
 
     while not SHUTDOWN_EVENT.is_set():
@@ -2672,8 +2561,9 @@ def idle_sync_worker():
                         )
 
                     if response.status_code == 200:
-                        print(
-                            f"[IDLE SYNC SUCCESS] Latent sync accomplished for session {ts}. Evicting from cache."
+                        logger.info(
+                            "[IDLE SYNC SUCCESS] Latent sync accomplished for session %s. Evicting from cache.",
+                            ts,
                         )
                     else:
                         still_pending.append(ts)
@@ -2693,12 +2583,14 @@ def idle_sync_worker():
                             os.fsync(tmp_log.fileno())
                         os.replace(tmp_path, final_path)
 
-                    print(
-                        f"[OFFLINE CACHE] Sync logging file updated atomically. Remaining: {len(still_pending)}"
+                    logger.info(
+                        "[OFFLINE CACHE] Sync logging file updated atomically. Remaining: %s",
+                        len(still_pending),
                     )
                 except Exception as file_err:
-                    print(
-                        f"[OFFLINE CRITICAL] Atomic file sync write failure: {file_err}"
+                    logger.error(
+                        "[OFFLINE CRITICAL] Atomic file sync write failure: %s",
+                        file_err,
                     )
                 if os.path.exists(tmp_path):
                     try:
@@ -2707,7 +2599,7 @@ def idle_sync_worker():
                         pass
 
         except Exception as sync_fault:
-            print(f"IDLE SYNC WORKER ERROR: {sync_fault}")
+            logger.error("IDLE SYNC WORKER ERROR: %s", sync_fault)
 
 
 # CLOUD INTERFACE BACKGROUND ENGINE
@@ -2716,7 +2608,7 @@ def idle_sync_worker():
 
 def upload_queue_worker():
     global upload_status_msg
-    print("[INIT] Cloud Upload Worker: Active and bound.")
+    logger.info("[INIT] Cloud Upload Worker: Active and bound.")
     http = requests.Session()
 
     while not SHUTDOWN_EVENT.is_set():
@@ -2743,7 +2635,6 @@ def upload_queue_worker():
                     ts,
                     qr_err,
                 )
-                print(f"[QR ERROR] Failed to generate/save QR code for {ts}: {qr_err}")
 
             # --- PHASE B: Pre-generate Composite Receipt Image ---
             composite_ready = False
@@ -2794,13 +2685,19 @@ def upload_queue_worker():
                             ACTIVE_SESSION["upload_complete"] = True
                         break
                     else:
-                        print(
-                            f"CLOUD SERVER REFUSAL ERROR: {response.status_code} (Attempt {attempt + 1})"
+                        logger.error(
+                            "CLOUD SERVER REFUSAL ERROR: %s (Attempt %s)",
+                            response.status_code,
+                            attempt + 1,
                         )
                         time.sleep(1)
 
                 except Exception as e:
-                    print(f"API BUS NETWORK LOSS: {e} (Attempt {attempt + 1})")
+                    logger.error(
+                        "API BUS NETWORK LOSS: %s (Attempt %s)",
+                        e,
+                        attempt + 1,
+                    )
                     time.sleep(1)
 
             if not upload_success:
@@ -2812,12 +2709,14 @@ def upload_queue_worker():
                         with open("pending_uploads.txt", "a") as cache_log:
                             cache_log.write(f"{ts}\n")
 
-                    print(
-                        f"[OFFLINE FALLBACK] Link offline. Cached session {ts} locally."
+                    logger.warning(
+                        "[OFFLINE FALLBACK] Link offline. Cached session %s locally.",
+                        ts,
                     )
                 except Exception as fallback_err:
-                    print(
-                        f"[OFFLINE CRITICAL] Failed to execute local asset fallback: {fallback_err}"
+                    logger.error(
+                        "[OFFLINE CRITICAL] Failed to execute local asset fallback: %s",
+                        fallback_err,
                     )
 
                 with mode_lock:
@@ -2826,7 +2725,10 @@ def upload_queue_worker():
             upload_queue.task_done()
 
         except Exception as fatal_e:
-            print(f"UPLOAD QUEUE WORKER FATAL EXCEPTION: {fatal_e}")
+            logger.error(
+                "UPLOAD QUEUE WORKER FATAL EXCEPTION: %s",
+                fatal_e,
+            )
             time.sleep(1)
 
 
@@ -2859,7 +2761,6 @@ def background_loop():
                     for port in SERIAL_PORTS:
                         try:
                             serial_connection = serial.Serial(port, 9600, timeout=0.05)
-                            print(f"[HARDWARE LINK] Connected to serial port: {port}")
                             logger.info(
                                 "[HARDWARE LINK] Connected to serial port: %s", port
                             )
@@ -2875,7 +2776,9 @@ def background_loop():
                 try:
                     update_knobs(serial_connection)
                 except Exception as serial_err:
-                    print(f"[HARDWARE LINK] Serial connection lost: {serial_err}")
+                    logger.error(
+                        "[HARDWARE LINK] Serial connection lost: %s", serial_err
+                    )
                     try:
                         serial_connection.close()
                     except Exception as exc:
@@ -3018,7 +2921,7 @@ def background_loop():
                         ACTIVE_SESSION["countdown_start_time"] = loop_monotonic
                         ACTIVE_SESSION["countdown_remaining"] = 3
 
-                    print(
+                    logger.info(
                         "[STATE ENGINE] Button pressed. Starting pre-capture countdown (3s pose window)."
                     )
 
@@ -3060,8 +2963,9 @@ def background_loop():
                         ACTIVE_SESSION["countdown_start_time"] = loop_monotonic
                         ACTIVE_SESSION["countdown_remaining"] = 0
 
-                    print(
-                        f"[STATE ENGINE] Pose countdown finished. Captured frame for {high_res_id}. Advanced to post-capture latency mask ('PRINTING')."
+                    logger.info(
+                        "[STATE ENGINE] Pose countdown finished. Captured frame for %s. Advanced to post-capture latency mask ('PRINTING').",
+                        high_res_id,
                     )
 
                     captured_knobs = list(GLOBAL_KNOBS)
@@ -3103,8 +3007,9 @@ def background_loop():
                         ACTIVE_SESSION["print_dispatched"] = True
                         local_session_key = ACTIVE_SESSION["session_id"]
 
-                        print(
-                            f"[STATE ENGINE] Single Print Authority: Dispatching print thread for key: {local_session_key}"
+                        logger.info(
+                            "[STATE ENGINE] Single Print Authority: Dispatching print thread for key: %s",
+                            local_session_key,
                         )
                         threading.Thread(
                             target=print_booth_receipt,
@@ -3115,8 +3020,9 @@ def background_loop():
             # STATE 4: REVIEW VIEW GATING NODE - Displays confirmation elements until the button is pressed
             elif loop_mode == "latest":
                 if button_pressed_edge:
-                    print(
-                        f"[STATE ENGINE] Clearing session {session_key}. Returning control to the live feed."
+                    logger.info(
+                        "[STATE ENGINE] Clearing session %s. Returning control to the live feed.",
+                        session_key,
                     )
                     capture_lock_until = loop_execution_time + 1.2
 
@@ -3148,8 +3054,8 @@ def background_loop():
                 time.sleep(remaining)
 
         except Exception as loop_fault:
-            print(
-                f"[STATE ENGINE CRITICAL FAULT] Core execution exception: {loop_fault}"
+            logger.error(
+                "[STATE ENGINE CRITICAL FAULT] Core execution exception: %s", loop_fault
             )
             time.sleep(1.0)
 
@@ -3209,6 +3115,7 @@ def generate_frames():
     except (BrokenPipeError, ConnectionResetError, GeneratorExit):
         return
     except Exception as e:
+        logger.error("[CRITICAL STREAM ERROR]: %s", e)
         print(f"[CRITICAL STREAM ERROR]: {e}")
         return
     finally:
@@ -3222,6 +3129,7 @@ def generate_frames():
 
 def graceful_shutdown_handler(signum, frame):
     print("\n\n[SHUTDOWN] Signal intercepted! Initiating formal teardown...")
+    logger.info("[SHUTDOWN] Signal intercepted! Initiating formal teardown...")
     SHUTDOWN_EVENT.set()
 
     if TELEMETRY_ENABLED:
@@ -3270,10 +3178,10 @@ def graceful_shutdown_handler(signum, frame):
 
 
 def start_backend_engine(blocking=True):
-    """
-    Set blocking=True for standalone server operation.
-    Set blocking=False when embedded inside Pygame.
-    """
+
+    # Set blocking=True for standalone server operation.
+    # Set blocking=False when embedded inside Pygame.
+
     import signal
 
     signal.signal(signal.SIGINT, graceful_shutdown_handler)
