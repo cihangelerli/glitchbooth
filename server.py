@@ -675,13 +675,13 @@ def init_ascii_tiles():
     for path in pi_font_paths:
         try:
             font = ImageFont.truetype(path, target_font_size)
-            print("ASCII font loaded.")
+            logger.info("ASCII font loaded.")
             break
         except OSError:
             continue
 
     if font is None:
-        print(
+        logger.warning(
             "[WARNING] Monospace TTF not found. Using system default. Text may appear small."
         )
         font = ImageFont.load_default()
@@ -775,9 +775,13 @@ def open_camera():
                 # --- TRACK HARDWARE NEGOTIATION ---
                 actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                print(
-                    f"SUCCESS: V4L2 pipeline pinned to index {index} | "
-                    f"Requested {FRAME_W}x{FRAME_H}, Negotiated {actual_w}x{actual_h}"
+                logger.info(
+                    "SUCCESS: V4L2 pipeline pinned to index %s | Requested %sx%s, Negotiated %sx%s",
+                    index,
+                    FRAME_W,
+                    FRAME_H,
+                    actual_w,
+                    actual_h,
                 )
                 return cap
             else:
@@ -866,7 +870,6 @@ def update_knobs(ser):
                 GLOBAL_KNOBS = tuple(parsed[:6])
                 GLOBAL_BUTTON = parsed[6]
     except Exception as e:
-        print(f"SERIAL NODE PARSE WARNING: {e}")
         logger.debug("[SERIAL] Error reading from serial: %s", e)
         raise e
 
@@ -2502,7 +2505,7 @@ def print_booth_receipt(ts):
             printer.ln(2)
             printer.cut()
             time.sleep(0.5)
-            print("PRINTER: Hardware receipt complete.")
+            logger.info("PRINTER: Hardware receipt complete.")
 
         except Exception as e:
             logger.error("PRINTER HARDWARE FAULT: %s", e)
