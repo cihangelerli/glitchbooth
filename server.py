@@ -324,7 +324,7 @@ POSTERIZE_BANDS_HIGH = 8  # ... and at full strength
 POSTERIZE_DETAIL_LOW = (
     0.95  # how much of the original brightness modulates the neon (weak) ...
 )
-POSTERIZE_DETAIL_HIGH = 0.55  # ... and at full strength (faces stay readable)
+POSTERIZE_DETAIL_HIGH = 0.75  # ... and at full strength (faces stay readable)
 POSTERIZE_MIX_START = 0.05  # neon share at the weakest strength ...
 POSTERIZE_MIX_FULL_AT = 0.67  # ... reaching 1.0 at this strength (0-1)
 POSTERIZE_OUTLINE_2PX_FROM = 0.80  # strength from which outlines are 2 px thick
@@ -334,7 +334,7 @@ POSTERIZE_DROPOUT_HIGH = 0.05  # ... and at full strength
 POSTERIZE_JITTER_MAX_PX = 1  # outline rows shift sideways by up to 1 .. this many px
 POSTERIZE_FLICKER_PROB = 0.02  # share of outline sections that flash white-hot
 # Outline colour: "glow" = the brightest neon next to the border (often near-white), "white", "black" (ink)
-POSTERIZE_OUTLINE_STYLE = "glow"
+POSTERIZE_OUTLINE_STYLE = "black"
 POSTERIZE_SECTION_PX = (
     4  # size of the dropout / flicker sections (must divide 640 and 480)
 )
