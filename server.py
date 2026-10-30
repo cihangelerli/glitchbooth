@@ -14,6 +14,7 @@ from flask import (
     request,
     send_from_directory,
 )
+from werkzeug.utils import secure_filename
 
 load_dotenv(Path(__file__).parent / ".env", override=False)
 
@@ -617,6 +618,8 @@ cam_raw_lock = threading.Lock()
 printer_hardware_lock = threading.Lock()
 cache_file_lock = threading.Lock()
 
+hw_state_lock = threading.Lock()
+
 SHUTDOWN_EVENT = threading.Event()
 CRITICAL_WORKERS = []
 
@@ -800,6 +803,7 @@ def open_camera():
 def camera_io_worker():
     global last_good_camera, camera_started_at, cam_thread_alive
     global LATEST_CAMERA_FRAME
+    global last_frame_time, camera_fail_count
     cap = open_camera()
     consecutive_failures = 0
 
@@ -810,11 +814,12 @@ def camera_io_worker():
                 cap = open_camera()
                 continue
             ret, frame = cap.read()
-            global last_frame_time, camera_fail_count
+
             if ret and frame is not None:
                 consecutive_failures = 0
-                camera_fail_count = 0
-                last_frame_time = time.time()
+                with hw_state_lock:
+                    camera_fail_count = 0
+                    last_frame_time = time.time()
                 with cam_raw_lock:
                     if frame.shape == LATEST_CAMERA_FRAME.shape:
                         LATEST_CAMERA_FRAME[:] = frame
@@ -826,7 +831,8 @@ def camera_io_worker():
                 last_good_camera = time.time()
             else:
                 consecutive_failures += 1
-                camera_fail_count += 1
+                with hw_state_lock:
+                    camera_fail_count += 1
                 print(f"CAMERA FAIL at {time.time()}")
                 time.sleep(0.01)
             now = time.time()
@@ -840,7 +846,7 @@ def camera_io_worker():
                     try:
                         cap.release()
                         del cap
-                    except:
+                    except Exception:
                         pass
                 time.sleep(0.3)
                 cap = open_camera()
@@ -853,6 +859,7 @@ def camera_io_worker():
 
 
 # NOT IN USE CURRENTLY BUT NOT DELETED YET. MAY BE USED FOR FUTURE HARDWARE INTEGRATION
+"""
 def open_serial():
     while True:
         for port in SERIAL_PORTS:
@@ -869,6 +876,7 @@ def open_serial():
                 continue
 
         time.sleep(2)
+"""
 
 
 def update_knobs(ser):
@@ -887,8 +895,9 @@ def update_knobs(ser):
             except ValueError:
                 logger.debug("[SERIAL] Ignoring non-integer packet: %r", line)
                 return
-            GLOBAL_KNOBS = tuple(parsed[:6])
-            GLOBAL_BUTTON = parsed[6]
+            with hw_state_lock:
+                GLOBAL_KNOBS = tuple(parsed[:6])
+                GLOBAL_BUTTON = parsed[6]
     except Exception as e:
         print(f"SERIAL NODE PARSE WARNING: {e}")
         logger.debug("[SERIAL] Error reading from serial: %s", e)
@@ -2177,7 +2186,7 @@ def _windowed_raw(raw_knob, window):
     if lo <= 0 and hi >= 1:
         return raw_knob
     x = (raw_knob / 1023.0 - lo) / (hi - lo)
-    return 0 if x <= 0 else 1023 if x >= 1 else x * 1023.0
+    return 0.0 if x <= 0.0 else 1023.0 if x >= 1.0 else x * 1023.0
 
 
 def compute_effect_intensity(knobs):
@@ -2624,7 +2633,7 @@ def idle_sync_worker():
                 if os.path.exists(tmp_path):
                     try:
                         os.remove(tmp_path)
-                    except:
+                    except Exception:
                         pass
 
         except Exception as sync_fault:
@@ -2682,7 +2691,8 @@ def upload_queue_worker():
 
             # --- PHASE C: ImageKit Cloud Upload (Independent of composite) ---
 
-            upload_status_msg = "UPLOADING"
+            with mode_lock:
+                upload_status_msg = "UPLOADING"
             upload_success = False
             MAX_UPLOAD_RETRIES = 2
 
@@ -2703,9 +2713,10 @@ def upload_queue_worker():
                         )
 
                     if response.status_code == 200:
-                        res_data = response.json()
+                        # res_data = response.json()
 
-                        upload_status_msg = "SUCCESS"
+                        with mode_lock:
+                            upload_status_msg = "SUCCESS"
                         upload_success = True
 
                         with mode_lock:
@@ -2722,7 +2733,8 @@ def upload_queue_worker():
                     time.sleep(1)
 
             if not upload_success:
-                upload_status_msg = "FAILED"
+                with mode_lock:
+                    upload_status_msg = "FAILED"
 
                 try:
                     with cache_file_lock:
@@ -2758,6 +2770,7 @@ def background_loop():
     # global shutdown_hold_start
     global SHARED_JPEG_STREAM_BUFFER, SHARED_JPEG_ARRAY
     global PRINT_ALPHA, PRINT_BETA
+    global upload_status_msg
 
     threading.Thread(target=camera_io_worker, daemon=True).start()
 
@@ -2810,7 +2823,10 @@ def background_loop():
                 already_printed = ACTIVE_SESSION["print_dispatched"]
                 c_start = ACTIVE_SESSION["countdown_start_time"]
 
-            packet = ControlPacket(GLOBAL_KNOBS, GLOBAL_BUTTON, loop_mode)
+            with hw_state_lock:
+                _knobs = GLOBAL_KNOBS
+                _button = GLOBAL_BUTTON
+            packet = ControlPacket(_knobs, _button, loop_mode)
             loop_execution_time = time.time()
             loop_monotonic = time.monotonic()
 
@@ -2882,8 +2898,11 @@ def background_loop():
             else:
                 preview_matrix = UI_DISPLAY_BUFFER
 
-            should_encode = (ACTIVE_STREAM_VIEWERS > 0) or (FRAME_ID % 15 == 0)
-            quality = stream_jpeg_quality if ACTIVE_STREAM_VIEWERS > 0 else 20
+            with frame_lock:
+                _viewers = ACTIVE_STREAM_VIEWERS
+                _fid_check = FRAME_ID
+            should_encode = (_viewers > 0) or (_fid_check % 15 == 0)
+            quality = stream_jpeg_quality if _viewers > 0 else 20
 
             if should_encode:
                 ret, encoded_jpeg = cv2.imencode(
@@ -3099,13 +3118,11 @@ def background_loop():
                     )
                     capture_lock_until = loop_execution_time + 1.2
 
-                    global upload_status_msg
-                    upload_status_msg = "IDLE"
-
                     with mode_lock:
                         ACTIVE_SESSION["mode"] = "live"
                         ACTIVE_SESSION["session_id"] = None
                         ACTIVE_SESSION["countdown_remaining"] = 3
+                        upload_status_msg = "IDLE"
 
                     # Force a comprehensive GC collection during idle state transition
                     # gc.collect()
@@ -3212,8 +3229,6 @@ def graceful_shutdown_handler(signum, frame):
             print(f"  [WARNING] Failed to request telemetry shutdown boundary: {e}")
 
     try:
-        import subprocess
-
         # If disable was requested via web route, handle it now
         if ACTIVE_SESSION.get("disable_service_on_exit", False):
             print("[SHUTDOWN] Softly disabling glitchbooth.service for next boot...")
@@ -3239,8 +3254,13 @@ def graceful_shutdown_handler(signum, frame):
     except Exception as tty_err:
         print(f"[SHUTDOWN TTY RESCUE] Terminal rescue routine failed: {tty_err}")
 
+    # Give background workers a moment to observe SHUTDOWN_EVENT
+    time.sleep(1.5)
     print("[SYSTEM EXIT] Teardown complete. Process terminated.")
-    os._exit(0)
+    # sys.exit runs atexit handlers and finally blocks; os._exit does not
+    import sys
+
+    sys.exit(0)
 
 
 # BACKEND ENGINE STARTING ANd OWNING ALL THE WORKERS
@@ -3385,7 +3405,8 @@ def gallery():
 
 @app.route("/print_capture/<session_id>", methods=["POST"])
 def print_capture(session_id):
-    if ".." in session_id or "/" in session_id:
+    session_id = secure_filename(session_id)
+    if not session_id:
         return (
             jsonify({"status": "error", "message": "Invalid session identifier"}),
             400,
@@ -3419,7 +3440,8 @@ def print_capture(session_id):
 
 @app.route("/delete_capture/<session_id>", methods=["POST"])
 def delete_capture(session_id):
-    if ".." in session_id or "/" in session_id:
+    session_id = secure_filename(session_id)
+    if not session_id:
         return (
             jsonify({"status": "error", "message": "Invalid session identifier"}),
             400,
@@ -3489,6 +3511,7 @@ def state():
         current_session_id = ACTIVE_SESSION["session_id"]
         countdown_secs = ACTIVE_SESSION["countdown_remaining"]
         c_start = ACTIVE_SESSION["countdown_start_time"]
+        current_upload_status = upload_status_msg
 
     is_flash = (
         current_mode == "countdown" and (time.monotonic() - c_start) < FLASH_DURATION
@@ -3505,7 +3528,7 @@ def state():
             "cpu_temp": SYSTEM_TELEMETRY["cpu_temp"],
             "memory_rss_mb": SYSTEM_TELEMETRY["memory_rss_mb"],
             "frame_id": FRAME_ID,
-            "upload_status": upload_status_msg,
+            "upload_status": current_upload_status,
             "mode": current_mode,
             "is_flash": is_flash,
             "countdown_seconds": countdown_secs,
