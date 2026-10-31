@@ -320,10 +320,10 @@ POSTERIZE_BANDS_HIGH = 8  # ... and at full strength
 POSTERIZE_DETAIL_LOW = (
     0.95  # how much of the original brightness modulates the neon (weak) ...
 )
-POSTERIZE_DETAIL_HIGH = 0.75  # ... and at full strength (faces stay readable)
+POSTERIZE_DETAIL_HIGH = 0.95  # ... and at full strength (faces stay readable)
 POSTERIZE_MIX_START = 0.05  # neon share at the weakest strength ...
-POSTERIZE_MIX_FULL_AT = 0.37  # ... reaching 1.0 at this strength (0-1)
-POSTERIZE_OUTLINE_2PX_FROM = 0.90  # strength from which outlines are 2 px thick
+POSTERIZE_MIX_FULL_AT = 0.43  # ... reaching 1.0 at this strength (0-1)
+POSTERIZE_OUTLINE_2PX_FROM = 0.85  # strength from which outlines are 2 px thick
 POSTERIZE_OUTLINE_3PX_FROM = 0.99  # strength from which outlines are 3 px thick
 POSTERIZE_DROPOUT_LOW = 0.05  # share of the outline that is missing (weak) ...
 POSTERIZE_DROPOUT_HIGH = 0.01  # ... and at full strength
@@ -334,7 +334,7 @@ POSTERIZE_OUTLINE_STYLE = "black"
 POSTERIZE_SECTION_PX = (
     2  # size of the dropout / flicker sections (must divide 640 and 480)
 )
-POSTERIZE_FRAGMENT_FROM = 0.85  # strength from which fine detail starts to break apart
+POSTERIZE_FRAGMENT_FROM = 0.67  # strength from which fine detail starts to break apart
 POSTERIZE_FRAGMENT_AMOUNT = 2  # grey levels of break-up noise at full strength
 POSTERIZE_ROTATE_SECONDS = (
     5  # 0 = fixed colours; N = the colour assignment shifts every N seconds
