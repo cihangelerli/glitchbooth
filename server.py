@@ -590,6 +590,9 @@ POSTERIZE_JITTER_MAX_PX = 0  # outline rows shift sideways by up to 1 .. this ma
 POSTERIZE_FLICKER_PROB = 0.005  # share of outline sections that flash white-hot
 # Outline colour: "glow" = the brightest neon next to the border (often near-white), "white", "black" (ink)
 POSTERIZE_OUTLINE_STYLE = "black"
+POSTERIZE_OUTLINE_MAX_PX = 2  # maximum outline thickness (min to mid to max)
+POSTERIZE_OUTLINE_MID_PX = 1  # mid-level outline thickness
+POSTERIZE_OUTLINE_MIN_PX = 1  # minimum outline thickness
 POSTERIZE_SECTION_PX = (
     2  # size of the dropout / flicker sections (must divide 640 and 480)
 )
@@ -2216,9 +2219,13 @@ class PosterizeEngine:
             1.0, s / POSTERIZE_MIX_FULL_AT
         )
         px = (
-            3
+            POSTERIZE_OUTLINE_MAX_PX
             if s >= POSTERIZE_OUTLINE_3PX_FROM
-            else (2 if s >= POSTERIZE_OUTLINE_2PX_FROM else 1)
+            else (
+                POSTERIZE_OUTLINE_MID_PX
+                if s >= POSTERIZE_OUTLINE_2PX_FROM
+                else POSTERIZE_OUTLINE_MIN_PX
+            )
         )
         dropout = (
             POSTERIZE_DROPOUT_LOW + (POSTERIZE_DROPOUT_HIGH - POSTERIZE_DROPOUT_LOW) * s
