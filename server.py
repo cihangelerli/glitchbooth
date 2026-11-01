@@ -2216,7 +2216,7 @@ _POSTER = PosterizeEngine()
 
 def apply_posterize(raw_knob, current_time, ascii_active=False):
     """Posterize entry point. raw_knob 0-1023."""
-    outline_style = "white" if ascii_active else POSTERIZE_OUTLINE_STYLE
+    outline_style = "glow" if ascii_active else POSTERIZE_OUTLINE_STYLE
     outline_detail = 0.95 if ascii_active else None
     _POSTER.step(
         MUTABLE_PROCESSING_BUFFER, raw_knob, current_time, outline_style, outline_detail
