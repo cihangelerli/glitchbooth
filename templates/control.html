@@ -499,7 +499,7 @@
       }
 
       function forceLiveMode() {
-        sendPost("/clear_session", function () {
+        sendPost("/force_reset", function () {
           alert("Session cleared. Booth returned to Live Mode.");
           updateTelemetry();
         });

@@ -199,6 +199,22 @@ html, body, img, div{ -webkit-touch-callout:none; -webkit-user-select:none; user
     letter-spacing: 1px;
 }
 
+#noticeBar {
+    display: none;
+    position: absolute;
+    left: 5%;
+    right: 5%;
+    bottom: 8%;
+    padding: 14px 16px;
+    background: rgba(0, 0, 0, 0.88);
+    border: 2px solid #ff5a5a;
+    color: #ff5a5a;
+    font-size: 20px;
+    text-align: center;
+    letter-spacing: 1px;
+    z-index: 30;
+}
+
 @media screen and (max-width: 600px) {
     #cornerCountdown {
         font-size: 72px;
@@ -216,6 +232,7 @@ html, body, img, div{ -webkit-touch-callout:none; -webkit-user-select:none; user
     #feedOverlay    { padding-top: 22%; }
     #countdownNumber { font-size: 38px; }
     #countdownStatus { font-size: 14px; }
+    #noticeBar { font-size: 15px; }
     .header { font-size: 16px; }
 }
 
@@ -297,6 +314,9 @@ html, body, img, div{ -webkit-touch-callout:none; -webkit-user-select:none; user
             <div id="countdownNumber">PRINTING</div>
             <div id="countdownStatus">SPOOLING TO PRINTER</div>
         </div>
+
+        <!-- Message from the booth (camera or print problem) -->
+        <div id="noticeBar"></div>
 
     </div>
 
@@ -473,6 +493,12 @@ function update(){
                     var num        = document.getElementById('countdownNumber');
                     var status     = document.getElementById('countdownStatus');
                     var qrOverlay  = document.getElementById('qrOverlay');
+                    var noticeBar  = document.getElementById('noticeBar');
+
+                    if(noticeBar){
+                        noticeBar.textContent   = d.notice || "";
+                        noticeBar.style.display = d.notice ? "block" : "none";
+                    }
 
                     /* Edge detection: trigger web visual flash immediately on transition to countdown */
                     if(lastMode === "pre-capture-countdown" && d.mode === "countdown"){
@@ -517,18 +543,7 @@ function update(){
                             }
                         }
                     }
-                    /* 3. GLITCH NOISE PROCESSING */
-                    else if(d.mode === "processing"){
-                        if(flashEl)     flashEl.style.display     = "none";
-                        if(cornerCd)    cornerCd.style.display    = "none";
-                        if(qrOverlay)   qrOverlay.style.display   = "none";
-                        if(feedOverlay){
-                            feedOverlay.style.display = "block";
-                            num.innerHTML    = "::";
-                            status.innerHTML = "FINALIZING PRINT";
-                        }
-                    }
-                    /* 4. REVIEW LATEST */
+                    /* 3. REVIEW LATEST */
                     else if(d.mode === "latest"){
                         if(flashEl)     flashEl.style.display     = "none";
                         if(cornerCd)    cornerCd.style.display    = "none";
@@ -537,7 +552,7 @@ function update(){
                         window.location.href = "/latest?id=" + d.session_id;
                         return;
                     }
-                    /* 5. LIVE / IDLE FEED */
+                    /* 4. LIVE / IDLE FEED */
                     else{
                         if(flashEl)     flashEl.style.display     = "none";
                         if(cornerCd)    cornerCd.style.display    = "none";

@@ -2107,8 +2107,12 @@ class PosterizeEngine:
             )
         )
 
-        outdetail = outline_detail or POSTERIZE_DETAIL_HIGH
-        detail = POSTERIZE_DETAIL_LOW + (outdetail - POSTERIZE_DETAIL_LOW) * s
+        # outdetail = outline_detail or POSTERIZE_DETAIL_HIGH
+        # detail = POSTERIZE_DETAIL_LOW + (outdetail - POSTERIZE_DETAIL_LOW) * s
+
+        outdetail = outline_detail or POSTERIZE_DETAIL_LOW
+        detail = POSTERIZE_DETAIL_LOW + (POSTERIZE_DETAIL_HIGH - outdetail) * s
+
         mix = POSTERIZE_MIX_START + (1.0 - POSTERIZE_MIX_START) * min(
             1.0, s / POSTERIZE_MIX_FULL_AT
         )
@@ -2217,7 +2221,8 @@ _POSTER = PosterizeEngine()
 def apply_posterize(raw_knob, current_time, ascii_active=False):
     """Posterize entry point. raw_knob 0-1023."""
     outline_style = "glow" if ascii_active else POSTERIZE_OUTLINE_STYLE
-    outline_detail = 0.95 if ascii_active else None
+    # outline_detail = 0.95 if ascii_active else None
+    outline_detail = 0.37 if ascii_active else None
     _POSTER.step(
         MUTABLE_PROCESSING_BUFFER, raw_knob, current_time, outline_style, outline_detail
     )

@@ -118,8 +118,6 @@ last_processed_session_id = None
 latest_display_surface = None
 latest_qr_surface = None
 
-latest_mode_start_time = None  # Tracks 20-second auto-fallback window
-
 # Knob telemetry tracking registers & layout order mapping from index.html
 last_knob_values = [None] * 6
 knob_changed_times = [0.0] * 6
@@ -250,13 +248,64 @@ PRINTING_SURF = printing_font.render("PRINTING", True, (0, 255, 0)).convert_alph
 PRINTING_RECT = PRINTING_SURF.get_rect()
 PRINTING_RECT.center = VIDEO_RECT.center
 
-NOISE_CACHE = []
-for _ in range(15):
-    noise_arr = np.random.randint(
-        0, 256, (VIDEO_RENDER_H, VIDEO_RENDER_W, 3), dtype=np.uint8
+# 3. Notice box (camera problem in the live view, print problem while printing)
+try:
+    notice_font = pygame.font.SysFont("Courier", 30, bold=True)
+except Exception:
+    notice_font = pygame.font.Font(None, 34)
+NOTICE_COLOR = (255, 90, 90)
+_notice_cache = {"text": None, "surfaces": []}
+
+
+def wrap_notice(text, font, max_width):
+    lines, current = [], ""
+    for word in text.split():
+        trial = word if not current else current + " " + word
+        if not current or font.size(trial)[0] <= max_width:
+            current = trial
+        else:
+            lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
+
+
+def notice_surfaces(text):
+    if text != _notice_cache["text"]:
+        _notice_cache["text"] = text
+        _notice_cache["surfaces"] = [
+            notice_font.render(line, True, NOTICE_COLOR)
+            for line in wrap_notice(text, notice_font, VIDEO_RECT.width - 60)
+        ]
+    return _notice_cache["surfaces"]
+
+
+def draw_notice(canvas, text, where):
+    # where: "center" (live view), "below_printing" (under the PRINTING text), "top" (review screen)
+    lines = notice_surfaces(text)
+    if not lines:
+        return
+    line_h = lines[0].get_height() + 6
+    box = pygame.Rect(
+        0,
+        0,
+        max(surf.get_width() for surf in lines) + 40,
+        line_h * len(lines) + 24,
     )
-    noise_surf = pygame.surfarray.make_surface(np.transpose(noise_arr, (1, 0, 2)))
-    NOISE_CACHE.append(noise_surf.convert())
+    box.centerx = VIDEO_RECT.centerx
+    if where == "below_printing":
+        box.top = PRINTING_RECT.bottom + 24
+    elif where == "top":
+        box.top = VIDEO_RECT.top + 24
+    else:
+        box.centery = VIDEO_RECT.centery
+    pygame.draw.rect(canvas, (0, 0, 0), box)
+    pygame.draw.rect(canvas, NOTICE_COLOR, box, 2)
+    y = box.top + 12
+    for surf in lines:
+        canvas.blit(surf, (box.centerx - surf.get_width() // 2, y))
+        y += line_h
 
 # QR Guide Indicator — pre-render once at startup
 if QR_GUIDE_ENABLED:
@@ -343,7 +392,6 @@ for img_path in selected_images:
 
 ticker_scroll_x = 0.0
 ticker_velocity = 0.9
-noise_animation_index = 0
 
 logger.info(
     "[DISPLAY INIT] System pre-cached. Ribbon tape references: %d",
@@ -420,7 +468,8 @@ try:
             current_session_id = server.ACTIVE_SESSION["session_id"]
             countdown_val = server.ACTIVE_SESSION["countdown_remaining"]
             countdown_start_time = server.ACTIVE_SESSION.get("countdown_start_time", 0)
-            upload_status = server.ACTIVE_SESSION.get("upload_status", "SUCCESS")
+            upload_status = server.ACTIVE_SESSION["upload_status"]
+            current_notice = server._notice_locked()
             current_knobs = server.ACTIVE_SESSION.get("knobs", [0] * 6)
 
         # Update micro-timers tracking live knob changes for dynamic UI highlighting
@@ -528,6 +577,14 @@ try:
                 else:
                     virtual_canvas.blit(PRINTING_SURF, PRINTING_RECT)
 
+            # Notice over the video (camera problem, print problem)
+            if current_notice:
+                draw_notice(
+                    virtual_canvas,
+                    current_notice,
+                    "below_printing" if current_mode == "countdown" else "center",
+                )
+
             # Draw Header Title above the video stream
             header_surf = ui_font.render("> GLITCH BOOTH beta 04", True, (0, 255, 0))
             virtual_canvas.blit(header_surf, (PADDING_LEFT, CLEARANCE_MARGIN))
@@ -605,16 +662,7 @@ try:
                 panel_y += CLEARANCE_MARGIN
 
         # ----------------------------------------------------------------------
-        # PROFILE 3: GLITCH COMPUTATION PROCESSING WINDOW
-        # ----------------------------------------------------------------------
-        elif current_mode == "processing":
-            noise_animation_index += 1
-            noise_frame = NOISE_CACHE[noise_animation_index % len(NOISE_CACHE)]
-            virtual_canvas.blit(noise_frame, VIDEO_RECT)
-            pygame.draw.rect(virtual_canvas, (0, 255, 0), VIDEO_RECT, 2)
-
-        # ----------------------------------------------------------------------
-        # PROFILE 4: LATEST SCREEN DISPLAY (ZERO-SCAN SPLICE INSERTIONS)
+        # PROFILE 3: LATEST SCREEN DISPLAY (ZERO-SCAN SPLICE INSERTIONS)
         # ----------------------------------------------------------------------
         elif current_mode == "latest":
             if current_session_id is not None:
@@ -625,9 +673,6 @@ try:
                     qr_path = os.path.join(
                         server.SAVED_DIR, f"{current_session_id}_qr.png"
                     )
-
-                    # Start timing the watchdog screen visibility duration
-                    latest_mode_start_time = time.time()
 
                     if os.path.exists(color_path) and os.path.exists(qr_path):
                         try:
@@ -723,16 +768,8 @@ try:
                     pygame.draw.rect(
                         virtual_canvas, (0, 255, 0), (qr_x, qr_y, 240, 240), 2
                     )
-                # Watchdog Fallback: Automatically revert back to live loop after 20 seconds
-                if latest_mode_start_time is not None and (
-                    time.time() - latest_mode_start_time > 20.0
-                ):
-                    logger.info(
-                        "[WATCHDOG] 20-second display threshold reached. Reverting to live loop state."
-                    )
-                    with server.mode_lock:
-                        server.ACTIVE_SESSION["mode"] = "live"
-                    latest_mode_start_time = None
+                if current_notice:
+                    draw_notice(virtual_canvas, current_notice, "top")
                 # Render terminal footer copy below the scannable area
                 footer_text = "> FOTOĞRAF ÇEKME MODUNA GERİ DÖNMEK İÇİN DÜĞMEYE BAS!"
                 footer_surf = ui_font.render(footer_text, True, (0, 255, 0))
