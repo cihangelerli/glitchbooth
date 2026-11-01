@@ -590,15 +590,15 @@ POSTERIZE_JITTER_MAX_PX = 0  # outline rows shift sideways by up to 1 .. this ma
 POSTERIZE_FLICKER_PROB = 0.005  # share of outline sections that flash white-hot
 # Outline colour: "glow" = the brightest neon next to the border (often near-white), "white", "black" (ink)
 POSTERIZE_OUTLINE_STYLE = "black"
-# added variables in stead of hard-coded magic numbers!
+# added tunables in stead of hard-coded magic numbers!
 POSTERIZE_OUTLINE_MAX_PX = 2  # maximum outline thickness (min to mid to max)
 POSTERIZE_OUTLINE_MID_PX = 1  # mid-level outline thickness
 POSTERIZE_OUTLINE_MIN_PX = 1  # minimum outline thickness
 POSTERIZE_SECTION_PX = (
     2  # size of the dropout / flicker sections (must divide 640 and 480)
 )
-POSTERIZE_FRAGMENT_FROM = 0.67  # strength from which fine detail starts to break apart
-POSTERIZE_FRAGMENT_AMOUNT = 2  # grey levels of break-up noise at full strength
+POSTERIZE_FRAGMENT_FROM = 0.61  # strength from which fine detail starts to break apart
+POSTERIZE_FRAGMENT_AMOUNT = 3  # grey levels of break-up noise at full strength
 POSTERIZE_ROTATE_SECONDS = (
     5  # 0 = fixed colours; N = the colour assignment shifts every N seconds
 )
@@ -683,7 +683,7 @@ MELT_NEON_RAMP_SPAN = (
 )
 
 # NEON_PALETTES defined in native OpenCV BGR format: [Blue, Green, Red]
-# these palettes are shared by Melt and Posterize
+# these palettes are shared by Melt and Posterize, CORRECT hexcodes should ALWAYS be here for reference.
 
 NEON_PALETTES = np.array(
     [
