@@ -576,7 +576,7 @@ POSTERIZE_BLACK_RAMP = (
     34  # between the two values the neon is mixed in at half strength
 )
 POSTERIZE_BANDS_LOW = 3  # tone bands at the weakest strength ...
-POSTERIZE_BANDS_HIGH = 12  # ... and at full strength
+POSTERIZE_BANDS_HIGH = 9  # ... and at full strength
 POSTERIZE_DETAIL_LOW = (
     0.95  # how much of the original brightness modulates the neon (weak) ...
 )
@@ -684,18 +684,18 @@ MELT_NEON_RAMP_SPAN = (
 
 NEON_PALETTES = np.array(
     [
-        [0, 255, 255],  # Neon Yellow           (B: 0,   G: 255, R: 255)
-        [255, 0, 255],  # Hot Magenta           (B: 255, G: 0,   R: 255)
-        [255, 255, 0],  # Electric Cyan         (B: 255, G: 255, R: 0)
-        [0, 255, 0],  # Acid Green            (B: 0,   G: 255, R: 0)
-        [255, 0, 128],  # Deep Violet           (B: 255, G: 0,   R: 128)
-        [0, 165, 255],  # Tangerine             (B: 0,   G: 165, R: 255)
-        [128, 0, 255],  # Neon Rose             (B: 128, G: 0,   R: 255)
-        [0, 255, 127],  # Chartreuse            (B: 0,   G: 255, R: 127)
-        [132, 83, 255],  # Electric Pink         (B: 132, G: 83,  R: 255)
-        [104, 223, 255],  # Bright Yellow         (B: 104, G: 223, R: 255)
-        [199, 228, 101],  # Neon Teal             (B: 174, G: 228, R: 101)
-        [137, 231, 110],  # Neon Limey Green      (B: 137, G: 231, R: 110)
+        [0, 255, 255],  # Neon Yellow           (B: 0,   G: 255, R: 255) #FFFF00
+        [255, 0, 255],  # Hot Magenta           (B: 255, G: 0,   R: 255) #FF00FF
+        [255, 255, 0],  # Electric Cyan         (B: 255, G: 255, R: 0)   #00FFFF
+        [0, 255, 0],  # Acid Green            (B: 0,   G: 255, R: 0)   #00FF00
+        [255, 0, 128],  # Deep Violet           (B: 255, G: 0,   R: 128) #8000FF
+        [0, 165, 255],  # Tangerine             (B: 0,   G: 165, R: 255) #FFA500
+        [128, 0, 255],  # Neon Rose             (B: 128, G: 0,   R: 255) #FF0080
+        [0, 255, 127],  # Chartreuse            (B: 0,   G: 255, R: 127) #7FFF00
+        # [132, 83, 255],  # Electric Pink         (B: 132, G: 83,  R: 255) #FF5384
+        # [104, 223, 255],  # Bright Yellow         (B: 104, G: 223, R: 255) #FFDF68
+        [199, 228, 101],  # Neon Teal             (B: 199, G: 228, R: 101) #65E4C7
+        # [137, 231, 110],  # Neon Limey Green      (B: 137, G: 231, R: 110) #6EE789
     ],
     dtype=np.uint8,
     order="C",

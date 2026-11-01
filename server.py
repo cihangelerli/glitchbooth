@@ -77,7 +77,9 @@ def _env_level(name, default):
 LOG_DIR = Path(os.getenv("LOG_DIR") or Path(__file__).parent / "logs")
 LOG_KEEP_SESSIONS = int(_env_float("LOG_KEEP_SESSIONS", 3, 1))
 LOG_FILE_MAX_MB = _env_float("LOG_FILE_MAX_MB", 25, 1)  # per file ...
-LOG_FILE_SEGMENTS = int(_env_float("LOG_FILE_SEGMENTS", 6, 1))  # ... plus this many older ones
+LOG_FILE_SEGMENTS = int(
+    _env_float("LOG_FILE_SEGMENTS", 6, 1)
+)  # ... plus this many older ones
 LOG_SHORT_SESSION_SECONDS = 120
 
 _LOG_FORMAT = (
@@ -249,7 +251,9 @@ def shutdown_logging():
     listener.stop()  # drains the queue before it returns
     root = logging.getLogger()
     root.removeHandler(queue_handler)
-    root.addHandler(logging.StreamHandler(sys.stderr))  # late messages still reach the terminal
+    root.addHandler(
+        logging.StreamHandler(sys.stderr)
+    )  # late messages still reach the terminal
     for handler in listener.handlers:
         try:
             handler.flush()
@@ -571,7 +575,7 @@ POSTERIZE_BLACK_RAMP = (
     34  # between the two values the neon is mixed in at half strength
 )
 POSTERIZE_BANDS_LOW = 3  # tone bands at the weakest strength ...
-POSTERIZE_BANDS_HIGH = 12  # ... and at full strength
+POSTERIZE_BANDS_HIGH = 9  # ... and at full strength
 POSTERIZE_DETAIL_LOW = (
     0.95  # how much of the original brightness modulates the neon (weak) ...
 )
@@ -679,18 +683,18 @@ MELT_NEON_RAMP_SPAN = (
 
 NEON_PALETTES = np.array(
     [
-        [0, 255, 255],  # Neon Yellow           (B: 0,   G: 255, R: 255)
-        [255, 0, 255],  # Hot Magenta           (B: 255, G: 0,   R: 255)
-        [255, 255, 0],  # Electric Cyan         (B: 255, G: 255, R: 0)
-        [0, 255, 0],  # Acid Green            (B: 0,   G: 255, R: 0)
-        [255, 0, 128],  # Deep Violet           (B: 255, G: 0,   R: 128)
-        [0, 165, 255],  # Tangerine             (B: 0,   G: 165, R: 255)
-        [128, 0, 255],  # Neon Rose             (B: 128, G: 0,   R: 255)
-        [0, 255, 127],  # Chartreuse            (B: 0,   G: 255, R: 127)
-        [132, 83, 255],  # Electric Pink         (B: 132, G: 83,  R: 255)
-        [104, 223, 255],  # Bright Yellow         (B: 104, G: 223, R: 255)
-        [199, 228, 101],  # Neon Teal             (B: 174, G: 228, R: 101)
-        [137, 231, 110],  # Neon Limey Green      (B: 137, G: 231, R: 110)
+        [0, 255, 255],  # Neon Yellow           (B: 0,   G: 255, R: 255) #FFFF00
+        [255, 0, 255],  # Hot Magenta           (B: 255, G: 0,   R: 255) #FF00FF
+        [255, 255, 0],  # Electric Cyan         (B: 255, G: 255, R: 0)   #00FFFF
+        [0, 255, 0],  # Acid Green            (B: 0,   G: 255, R: 0)   #00FF00
+        [255, 0, 128],  # Deep Violet           (B: 255, G: 0,   R: 128) #8000FF
+        [0, 165, 255],  # Tangerine             (B: 0,   G: 165, R: 255) #FFA500
+        [128, 0, 255],  # Neon Rose             (B: 128, G: 0,   R: 255) #FF0080
+        [0, 255, 127],  # Chartreuse            (B: 0,   G: 255, R: 127) #7FFF00
+        # [132, 83, 255],  # Electric Pink         (B: 132, G: 83,  R: 255) #FF5384
+        # [104, 223, 255],  # Bright Yellow         (B: 104, G: 223, R: 255) #FFDF68
+        [199, 228, 101],  # Neon Teal             (B: 199, G: 228, R: 101) #65E4C7
+        # [137, 231, 110],  # Neon Limey Green      (B: 137, G: 231, R: 110) #6EE789
     ],
     dtype=np.uint8,
     order="C",
@@ -837,7 +841,9 @@ ACTIVE_SESSION = {
 
 mode_lock = threading.Lock()
 frame_lock = threading.Lock()
-UI_FRAME_SEQ = 0  # bumped (under frame_lock) each time UI_DISPLAY_BUFFER is fully rewritten
+UI_FRAME_SEQ = (
+    0  # bumped (under frame_lock) each time UI_DISPLAY_BUFFER is fully rewritten
+)
 cam_raw_lock = threading.Lock()
 
 printer_hardware_lock = threading.Lock()
@@ -1095,8 +1101,12 @@ def telemetry_worker():
             SYSTEM_TELEMETRY["memory_rss_mb"] = get_memory_usage()
         except Exception as e:
             log_throttled(
-                logger, logging.WARNING, "sysmon-fault", 60.0,
-                "[SYSMON] Could not read system status: %s", e,
+                logger,
+                logging.WARNING,
+                "sysmon-fault",
+                60.0,
+                "[SYSMON] Could not read system status: %s",
+                e,
             )
 
         if SHUTDOWN_EVENT.wait(timeout=2.0):
@@ -1129,7 +1139,10 @@ def open_camera():
             else:
                 cap.release()
     log_throttled(
-        logger, logging.ERROR, "camera-open", 30.0,
+        logger,
+        logging.ERROR,
+        "camera-open",
+        30.0,
         "[CAMERA] Could not open a camera on V4L2 indexes 0-2 (acquisition failed)",
     )
     return None
@@ -1150,7 +1163,10 @@ def camera_io_worker():
                     camera_down_since = time.monotonic()
                 elif time.monotonic() - camera_down_since > 30:
                     log_throttled(
-                        logger, logging.CRITICAL, "camera-down", 60.0,
+                        logger,
+                        logging.CRITICAL,
+                        "camera-down",
+                        60.0,
                         "[CAMERA] Still no camera after %.0f s; the booth cannot take photos",
                         time.monotonic() - camera_down_since,
                     )
@@ -1185,8 +1201,12 @@ def camera_io_worker():
                 with hw_state_lock:
                     camera_fail_count += 1
                 log_throttled(
-                    logger, logging.WARNING, "camera-read", 5.0,
-                    "[CAMERA] Frame read failed (%d consecutive)", consecutive_failures,
+                    logger,
+                    logging.WARNING,
+                    "camera-read",
+                    5.0,
+                    "[CAMERA] Frame read failed (%d consecutive)",
+                    consecutive_failures,
                 )
                 time.sleep(0.01)
             now = time.time()
@@ -1204,7 +1224,9 @@ def camera_io_worker():
                 else:
                     reset_reason = "scheduled refresh"
                     reset_level = logging.INFO
-                logger.log(reset_level, "[CAMERA] Resetting the camera: %s", reset_reason)
+                logger.log(
+                    reset_level, "[CAMERA] Resetting the camera: %s", reset_reason
+                )
                 if cap is not None:
                     try:
                         cap.release()
@@ -1218,8 +1240,12 @@ def camera_io_worker():
                 camera_started_at = time.time()
         except Exception:
             log_throttled(
-                logger, logging.ERROR, "camera-worker-fault", 10.0,
-                "[CAMERA] Camera worker exception", exc_info=True,
+                logger,
+                logging.ERROR,
+                "camera-worker-fault",
+                10.0,
+                "[CAMERA] Camera worker exception",
+                exc_info=True,
             )
             time.sleep(1)
 
@@ -2835,9 +2861,7 @@ def print_booth_receipt(ts, offline_notice=False, on_cut=None):
                     printer.text(" > NOTICE: QR EMBEDDING UNAVAILABLE  \n")
                     printer.text(f" > RETRIEVE AT: {get_landing_url(ts)}\n\n")
             else:
-                logger.error(
-                    "[PRINTER] No printable photo found for session %s", ts
-                )
+                logger.error("[PRINTER] No printable photo found for session %s", ts)
 
             if is_offline_capture:
                 printer.text(" > NETWORK OFFLINE // CACHED LOCALLY  \n")
@@ -2846,7 +2870,7 @@ def print_booth_receipt(ts, offline_notice=False, on_cut=None):
                 printer.text(" > You can get your digital copy online later: \n")
                 printer.text(f"   {get_landing_url(ts)}\n")
             else:
-                printer.text(" > Scan to save your digital copy!   \n")
+                printer.text(" > Scan QR to save your digital copy!   \n")
                 printer.text(" > Follow us on socials: @dirtcakestudio   \n")
                 printer.text(" > Follow us on socials: @glitchbooth.online   \n")
 
@@ -2866,7 +2890,9 @@ def print_booth_receipt(ts, offline_notice=False, on_cut=None):
                 try:
                     printer.close()
                 except Exception as close_err:
-                    logger.warning("[PRINTER] Could not close the printer device: %s", close_err)
+                    logger.warning(
+                        "[PRINTER] Could not close the printer device: %s", close_err
+                    )
 
     return printed
 
@@ -2913,9 +2939,7 @@ def _run_print_job(ts, source):
     logger.error(
         "[PRINTER] Giving up on session %s after %d attempts", ts, PRINT_ATTEMPTS
     )
-    session_update(
-        ts, print_state="failed", notice=MSG_PRINT_FAILED, notice_until=None
-    )
+    session_update(ts, print_state="failed", notice=MSG_PRINT_FAILED, notice_until=None)
 
 
 def print_worker():
@@ -3608,7 +3632,9 @@ def graceful_shutdown_handler(signum, frame):
     try:
         # If disable was requested via web route, handle it now
         if ACTIVE_SESSION.get("disable_service_on_exit", False):
-            logger.info("[SHUTDOWN] Softly disabling glitchbooth.service for next boot...")
+            logger.info(
+                "[SHUTDOWN] Softly disabling glitchbooth.service for next boot..."
+            )
             subprocess.run(
                 ["sudo", "systemctl", "disable", "glitchbooth.service"], check=False
             )
@@ -3626,7 +3652,9 @@ def graceful_shutdown_handler(signum, frame):
             subprocess.run(["sudo", "chvt", "1"], check=False)
             logger.info("[SHUTDOWN TTY RESCUE] Local terminal login prompt restored")
         else:
-            logger.info("[SHUTDOWN] System reboot/poweroff in progress. Skipping TTY rescue.")
+            logger.info(
+                "[SHUTDOWN] System reboot/poweroff in progress. Skipping TTY rescue."
+            )
 
     except Exception as tty_err:
         logger.exception("[SHUTDOWN TTY RESCUE] Terminal rescue routine failed")
@@ -3699,7 +3727,9 @@ def start_backend_engine(blocking=True):
         logger.info("[SERVER] Starting Waitress web server in blocking mode...")
         serve(app, host="0.0.0.0", port=5000, threads=8)
     else:
-        logger.info("[SERVER] Starting Waitress web server asynchronously behind Pygame...")
+        logger.info(
+            "[SERVER] Starting Waitress web server asynchronously behind Pygame..."
+        )
         web_thread = threading.Thread(
             target=lambda: serve(app, host="0.0.0.0", port=5000, threads=8),
             name="WaitressWebServer",
