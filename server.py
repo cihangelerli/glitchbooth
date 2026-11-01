@@ -304,7 +304,8 @@ os.makedirs(SAVED_DIR, exist_ok=True)
 ARCHIVE_DIR = "captures_archive"
 os.makedirs(ARCHIVE_DIR, exist_ok=True)
 
-# Device-only, unprocessed source frame captured alongside a processed capture.
+# Unprocessed source frame of every capture (the very frame the effects run on), saved as
+# <id>_clean.jpg and uploaded to the clean ImageKit folder for the website slider.
 NAKED_DIR = "captures_naked"
 os.makedirs(NAKED_DIR, exist_ok=True)
 
@@ -332,7 +333,9 @@ IK_AUTH_STRING = base64.b64encode(f"{IK_PRIVATE_KEY}:".encode()).decode()
 #
 # CRITICAL CHECKLIST WHEN CHANGING EVENT_SLUG:
 # 1. WEBSITE SLUG MATCH: 'EVENT_SLUG' MUST match 'SLUG' in 'event.config.ts' EXACTLY.
-# 2. IMAGEKIT FOLDER: Ensure '/booth_captures/<EVENT_SLUG>/' exists on ImageKit.
+# # 2. IMAGEKIT FOLDER: Ensure '/booth_captures/<EVENT_SLUG>/' exists on ImageKit.
+#    Clean photos go to '/booth_captures_clean/<EVENT_SLUG>/' (same slug, sibling base
+#    folder). ImageKit creates a missing folder on the first upload into it.
 # 3. THERMAL RECEIPT: Manually update event title, subtitle, and social handles
 #    inside 'print_booth_receipt()' below!
 # 4. PENDING UPLOADS: Ensure 'pending_uploads.txt' is empty or flushed before
@@ -343,6 +346,7 @@ IK_AUTH_STRING = base64.b64encode(f"{IK_PRIVATE_KEY}:".encode()).decode()
 
 EVENT_SLUG = os.getenv("EVENT_SLUG", "")
 IK_BASE_FOLDER = os.getenv("IK_BASE_FOLDER", "booth_captures")
+IK_CLEAN_BASE_FOLDER = os.getenv("IK_CLEAN_BASE_FOLDER", "booth_captures_clean")
 BASE_DOMAIN = os.getenv("BASE_DOMAIN", "https://glitchbooth.online")
 
 # Print contrast variables (1.2 & 11 for bright days, 1.4 & 37 for night)
@@ -384,6 +388,18 @@ def get_ik_target_folder() -> str:
     if slug:
         return f"/{IK_BASE_FOLDER}/{slug}"
     return f"/{IK_BASE_FOLDER}"
+
+
+def get_ik_clean_folder() -> str:
+
+    # Same structure as get_ik_target_folder(), under the sibling clean base folder.
+    # - Naked Mode (""):      '/booth_captures_clean'
+    # - Event Mode ("slug"):  '/booth_captures_clean/slug'
+
+    slug = (EVENT_SLUG or "").strip().strip("/")
+    if slug:
+        return f"/{IK_CLEAN_BASE_FOLDER}/{slug}"
+    return f"/{IK_CLEAN_BASE_FOLDER}"
 
 
 def get_landing_url(ts: str) -> str:
@@ -487,6 +503,10 @@ EFFECT_LABELS = {
 KNOB_EMPTY_LABEL = "-"
 
 NAKED_CAPTURE_ENABLED = True
+# The clean (unprocessed) frame is saved as <id>_clean.jpg and uploaded next to the processed
+# photo, so the website can offer a clean/processed slider.
+CLEAN_JPEG_QUALITY = 88  # 85-90
+
 TELEMETRY_ENABLED = (
     True  # Set False to disable all capture logging and telemetry threads
 )
@@ -2367,18 +2387,22 @@ def apply_glitch_pipeline(current_time, control_packet):
 
 
 def _write_naked_capture(disk_id, frame):
-    # Write a device-only naked capture without affecting capture success.
+    # Write the clean (unprocessed) frame without affecting capture success.
     if frame is None:
         return False
     try:
-        ok = cv2.imwrite(os.path.join(NAKED_DIR, f"{disk_id}_naked.jpg"), frame)
+        ok = cv2.imwrite(
+            os.path.join(NAKED_DIR, f"{disk_id}_clean.jpg"),
+            frame,
+            [int(cv2.IMWRITE_JPEG_QUALITY), CLEAN_JPEG_QUALITY],
+        )
         if not ok:
             logger.error(
-                "[NAKED] could not write naked capture for session %s", disk_id
+                "[CLEAN] could not write clean capture for session %s", disk_id
             )
         return bool(ok)
     except Exception as exc:
-        logger.error("[NAKED] naked capture failed for session %s: %s", disk_id, exc)
+        logger.error("[CLEAN] clean capture failed for session %s: %s", disk_id, exc)
         return False
 
 
@@ -2710,6 +2734,70 @@ def print_booth_receipt(ts):
                     )
 
 
+def upload_clean_capture(ts, attempts=2, poster=None):
+    # Best-effort upload of <ts>_clean.jpg to the clean ImageKit folder. It never raises and
+    # its result is never used to decide anything: a failed clean upload must not affect the
+    # processed upload, the print or the session. Without the clean file the website simply
+    # shows no slider for this capture.
+    local_path = os.path.join(NAKED_DIR, f"{ts}_clean.jpg")
+    if not os.path.exists(local_path):
+        logger.debug("[CLEAN UPLOAD] No clean file for session %s; skipping", ts)
+        return False
+
+    remote_filename = f"{ts}_clean.jpg"
+    poster = poster or requests
+    for attempt in range(attempts):
+        try:
+            with open(local_path, "rb") as f:
+                files = {
+                    "file": (remote_filename, f, "image/jpeg"),
+                    "fileName": (None, remote_filename),
+                    "useUniqueFileName": (None, "false"),
+                    "folder": (None, get_ik_clean_folder()),
+                }
+                headers = {"Authorization": f"Basic {IK_AUTH_STRING}"}
+                response = poster.post(
+                    "https://upload.imagekit.io/api/v1/files/upload",
+                    headers=headers,
+                    files=files,
+                    timeout=(3, 8),
+                )
+            if response.status_code == 200:
+                logger.info("[CLEAN UPLOAD] Session %s uploaded", ts)
+                return True
+            logger.warning(
+                "[CLEAN UPLOAD] Session %s rejected by the cloud: HTTP %s (attempt %s of %s)",
+                ts,
+                response.status_code,
+                attempt + 1,
+                attempts,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[CLEAN UPLOAD] Session %s network failure: %s (attempt %s of %s)",
+                ts,
+                exc,
+                attempt + 1,
+                attempts,
+            )
+        if attempt + 1 < attempts:
+            time.sleep(2)
+
+    logger.warning(
+        "[CLEAN UPLOAD] Giving up on the clean photo for session %s; the website will show no slider for it",
+        ts,
+    )
+    return False
+
+
+def upload_clean_capture_in_background(ts):
+    # Own short-lived thread, so even a hanging clean upload cannot delay the upload worker
+    # (and with it the next capture's QR and composite).
+    threading.Thread(
+        target=upload_clean_capture, args=(ts,), name="CleanUpload", daemon=True
+    ).start()
+
+
 def idle_sync_worker():
 
     # Low-priority background worker that scans for offline captures cached in
@@ -2765,6 +2853,8 @@ def idle_sync_worker():
                             "[IDLE SYNC] Session %s uploaded; removing it from the pending list.",
                             ts,
                         )
+                        # Best effort: its result never keeps the entry in the pending list.
+                        upload_clean_capture(ts, attempts=1, poster=http)
                     else:
                         log_throttled(
                             logger,
@@ -2907,6 +2997,8 @@ def upload_queue_worker():
 
                         with mode_lock:
                             ACTIVE_SESSION["upload_complete"] = True
+                            # Best effort, off the critical path: the print is already unblocked.
+                            upload_clean_capture_in_background(ts)
                         break
                     else:
                         logger.warning(
@@ -3571,6 +3663,7 @@ def delete_capture(session_id):
     bw_path = os.path.join(CAPTURE_DIR, f"{session_id}_bw.jpg")
     qr_path = os.path.join(SAVED_DIR, f"{session_id}_qr.png")
     comp_png = os.path.join(CAPTURE_DIR, f"{session_id}_composite.png")
+    clean_path = os.path.join(NAKED_DIR, f"{session_id}_clean.jpg")
 
     deleted_any = False
     for path in [color_path, bw_path, qr_path, comp_png]:
