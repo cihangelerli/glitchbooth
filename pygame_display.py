@@ -24,21 +24,13 @@ from pathlib import Path
 
 import pygame
 
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
-    format="%(asctime)s %(levelname)s [%(threadName)s] %(name)s: %(message)s",
-)
+# Import backend shared state and layout buffers directly from server context.
+# Importing it also sets up logging for the whole process (terminal + session file).
+import server
 
 logger = logging.getLogger("glitchbooth.display")
 
-logger.info("[DISPLAY INIT] Importing backend server module")
-
-# Import backend shared state and layout buffers directly from server context
-import server
-
-logger.info("[DISPLAY INIT] Starting backend engine in embedded mode")
+logger.info("[DISPLAY INIT] Backend module imported; starting the backend engine in embedded mode")
 
 # Launch the backend workers and Flask API seamlessly without blocking Pygame
 server.start_backend_engine(blocking=False)
@@ -48,7 +40,7 @@ logger.info("[DISPLAY INIT] Backend engine started")
 # ==============================================================================
 # DYNAMIC STARTUP INVARIANTS & ENFORCEMENT
 # ==============================================================================
-print("\n[DISPLAY INIT] Executing structural memory layout assertions...")
+logger.info("[DISPLAY INIT] Executing structural memory layout assertions...")
 assert server.UI_DISPLAY_BUFFER.ndim == 3, (
     f"CRITICAL: Shape mismatch! Expected 3 dimensions (H, W, C), got {server.UI_DISPLAY_BUFFER.ndim}"
 )
@@ -64,8 +56,10 @@ OP_FRAME_H, OP_FRAME_W = (
     server.UI_DISPLAY_BUFFER.shape[0],
     server.UI_DISPLAY_BUFFER.shape[1],
 )
-print(
-    f"[DISPLAY INIT] Invariants verified. Ingested Resolution: {OP_FRAME_W}x{OP_FRAME_H}"
+logger.info(
+    "[DISPLAY INIT] Invariants verified. Ingested resolution: %dx%d",
+    OP_FRAME_W,
+    OP_FRAME_H,
 )
 
 # ==============================================================================
@@ -118,8 +112,8 @@ local_frame_buffer = np.empty((OP_FRAME_H, OP_FRAME_W, 3), dtype=np.uint8, order
 
 # Local presentation tracking registers
 last_valid_surface = None
-last_seq = -1  # NEW: last server.UI_FRAME_SEQ we copied
-scaled_video_surface = None  # NEW: cached mirrored + scaled video frame
+last_seq = -1  # last server.UI_FRAME_SEQ we copied
+scaled_video_surface = None  # cached mirrored + scaled video frame
 last_processed_session_id = None
 latest_display_surface = None
 latest_qr_surface = None
@@ -137,7 +131,6 @@ KNOB_ROWS = [(k_id, _knob_names[k_id]) for k_id in KNOB_ROW_ORDER]
 # ==============================================================================
 # RUN-ONCE BOOT DRIVER ENCODING ANALYSIS
 # ==============================================================================
-print("[DISPLAY INIT] Testing host OS image buffer driver capabilities...")
 logger.info("[DISPLAY INIT] Testing zero-copy frame buffer path")
 
 USE_FROMBUFFER = True
@@ -151,9 +144,6 @@ except ValueError as exc:
         exc,
     )
 
-print(
-    f"[DISPLAY INIT] Execution Pipeline Selected: {'Zero-Copy Frame View' if USE_FROMBUFFER else 'Surfarray Matrix Convert Fallback'}"
-)
 logger.info(
     "[DISPLAY INIT] Execution pipeline selected: %s",
     "zero-copy frame view" if USE_FROMBUFFER else "surfarray matrix fallback",
@@ -197,7 +187,7 @@ clock = pygame.time.Clock()
 # ==============================================================================
 # ASSET CACHE GENERATION & PRE-CONVERSION
 # ==============================================================================
-print("[DISPLAY INIT] Cold compiling asset caches and memory gallery lookups...")
+logger.info("[DISPLAY INIT] Cold compiling asset caches and memory gallery lookups...")
 
 # 1. Configurable Corner Placement (authoritative setting from server.py)
 COUNTDOWN_CORNER = getattr(server, "COUNTDOWN_CORNER", "bottom-center")
@@ -306,46 +296,6 @@ if QR_GUIDE_ENABLED:
 
 ticker_surface_array = []
 
-"""
-all_images = []
-
-if os.path.exists(server.CAPTURE_DIR):
-    for f in os.listdir(server.CAPTURE_DIR):
-        # Only include final color captures
-        if not f.endswith("_color.jpg"):
-            continue
-
-        full_path = os.path.join(server.CAPTURE_DIR, f)
-
-        # Extract timestamp from filename: "1781455701604_color.jpg" -> "1781455701604"
-        try:
-            timestamp_str = f.split("_")[0]
-            timestamp = int(timestamp_str)
-
-            # Store path and the extracted timestamp
-            all_images.append((full_path, timestamp))
-
-        except (ValueError, IndexError):
-            # This handles files that might not follow the naming convention
-            print(f"[DISPLAY INIT] Skipping malformed filename: {f}")
-            continue
-
-# newest first
-all_images.sort(key=lambda x: x[1], reverse=True)
-
-for img_path, _ in all_images[:100]:
-    try:
-        loaded_surf = pygame.image.load(img_path)
-        scaled_surf = pygame.transform.scale(
-            loaded_surf, (TICKER_ITEM_W, TICKER_ITEM_H)
-        )
-        ticker_surface_array.append(scaled_surf.convert())
-
-    except Exception as err:
-        print(f"[DISPLAY INIT] Skipping unreadable image asset {img_path}: {err}")
-
-"""
-
 # Target captures_archive folder (with fallback to captures if archive is empty or missing)
 target_dir = getattr(server, "ARCHIVE_DIR", "captures_archive")
 if not os.path.exists(target_dir):
@@ -374,8 +324,10 @@ sample_size = min(100, len(candidate_images))
 selected_images = (
     random.sample(candidate_images, sample_size) if candidate_images else []
 )
-print(
-    f"[DISPLAY INIT] Selected {len(selected_images)} random photos from archive (out of {len(candidate_images)} available)."
+logger.info(
+    "[DISPLAY INIT] Selected %d random photos from the archive (out of %d available).",
+    len(selected_images),
+    len(candidate_images),
 )
 
 # 4. Pre-scale and load the random pool into the ticker tape
@@ -387,18 +339,17 @@ for img_path in selected_images:
         )
         ticker_surface_array.append(scaled_surf.convert())
     except Exception as err:
-        print(f"[DISPLAY INIT] Skipping unreadable image asset {img_path}: {err}")
+        logger.warning("[DISPLAY INIT] Skipping unreadable image asset %s: %s", img_path, err)
 
 ticker_scroll_x = 0.0
 ticker_velocity = 0.9
 noise_animation_index = 0
 
-print(
-    f"[DISPLAY INIT] System pre-cached. Ribbon tape references: {len(ticker_surface_array)}"
+logger.info(
+    "[DISPLAY INIT] System pre-cached. Ribbon tape references: %d",
+    len(ticker_surface_array),
 )
-print(
-    "[DISPLAY INITIALIZATION] Core graphics pipeline entering main execution loop...\n"
-)
+logger.info("[DISPLAY INIT] Core graphics pipeline entering the main execution loop")
 
 
 # ==============================================================================
@@ -414,11 +365,10 @@ def audio_loop():
     for wav in Path("static/sounds").glob("glitch-*.wav"):
         try:
             sounds.append(pygame.mixer.Sound(str(wav)))
-            # print(f"[AUDIO INIT] Loaded {wav.name}")
         except Exception as err:
-            print(f"[AUDIO INIT] Failed loading {wav.name}: {err}")
+            logger.warning("[AUDIO INIT] Failed loading %s: %s", wav.name, err)
 
-    print(f"[AUDIO INIT] Total sounds loaded: {len(sounds)}")
+    logger.info("[AUDIO INIT] Total sounds loaded: %d", len(sounds))
 
     if not sounds:
         return
@@ -436,9 +386,9 @@ def audio_loop():
 
 
 pygame.mixer.init()
-print("[AUDIO INIT] Mixer initialized")
+logger.info("[AUDIO INIT] Mixer initialized")
 threading.Thread(target=audio_loop, daemon=True).start()
-print("[AUDIO INIT] Glitch Audio Started.")
+logger.info("[AUDIO INIT] Glitch audio started")
 
 
 # ==============================================================================
@@ -449,24 +399,16 @@ try:
         # Handle structural Pygame inputs and physical terminal interrupts
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                print(
-                    "[WATCHDOG] Window close event detected. Initiating clean exit..."
-                )
-                # server.graceful_shutdown_handler(None, None)
+                logger.info("[WATCHDOG] Window close event detected. Initiating clean exit...")
                 raise KeyboardInterrupt
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    print(
-                        "[WATCHDOG] Escape key override registered. Initiating systemic exit..."
-                    )
-                    # server.graceful_shutdown_handler(None, None)
+                    logger.info("[WATCHDOG] Escape key registered. Initiating exit...")
                     raise KeyboardInterrupt
                 elif event.key == pygame.K_c and (
                     pygame.key.get_mods() & pygame.KMOD_CTRL
                 ):
-                    print(
-                        "[WATCHDOG] Ctrl+C shortcut combination detected. Initiating systemic exit..."
-                    )
+                    logger.info("[WATCHDOG] Ctrl+C shortcut detected. Initiating exit...")
                     raise KeyboardInterrupt
 
         # Refresh virtual display root bounds
@@ -506,8 +448,13 @@ try:
                         local_frame_buffer[:] = server.UI_DISPLAY_BUFFER
                         t_duration = time.perf_counter() - t_start
                         if t_duration > 0.002:
-                            print(
-                                f"[PERF WARNING] Frame copy latency spike detected: {t_duration * 1000:.2f}ms"
+                            server.log_throttled(
+                                logger,
+                                logging.WARNING,
+                                "display-frame-copy",
+                                10.0,
+                                "[PERF] Frame copy latency spike: %.2f ms",
+                                t_duration * 1000,
                             )
                         last_seq = seq
                 finally:
@@ -706,12 +653,19 @@ try:
                             ).convert()
 
                             last_processed_session_id = current_session_id
-                            print(
-                                f"[DISPLAY LOGIC] Hot insertion successful for transaction id: {current_session_id}"
+                            logger.info(
+                                "[DISPLAY LOGIC] Latest screen loaded for session %s",
+                                current_session_id,
                             )
                         except Exception as load_err:
-                            print(
-                                f"[DISPLAY LOGIC] Post-processing storage file link syncing... {load_err}"
+                            server.log_throttled(
+                                logger,
+                                logging.WARNING,
+                                "display-latest-load",
+                                5.0,
+                                "[DISPLAY LOGIC] Files for session %s are not readable yet: %s",
+                                current_session_id,
+                                load_err,
                             )
                     else:
                         # Safety Fallback: Grab the exact frame state frozen during processing execution
@@ -773,7 +727,7 @@ try:
                 if latest_mode_start_time is not None and (
                     time.time() - latest_mode_start_time > 20.0
                 ):
-                    print(
+                    logger.info(
                         "[WATCHDOG] 20-second display threshold reached. Reverting to live loop state."
                     )
                     with server.mode_lock:
@@ -789,7 +743,7 @@ try:
 
         # Inside your main while loop, right near the frame rendering blocks:
         if server.ACTIVE_SESSION.get("exit_to_terminal", False):
-            print("[WATCHDOG] Web interface requested clean exit to terminal.")
+            logger.info("[WATCHDOG] Web interface requested clean exit to terminal.")
             break
 
         # Apply transformation matching hardware portrait presentation alignment configurations
@@ -799,7 +753,6 @@ try:
         clock.tick(TARGET_FPS)
 
 except KeyboardInterrupt:
-    print("\n[WATCHDOG] Intercepted exit signal.")
     logger.info("[WATCHDOG] Intercepted display exit signal")
     # Flag that this was a manual keyboard exit to release the terminal
     server.ACTIVE_SESSION["exit_to_terminal"] = True
@@ -818,14 +771,14 @@ finally:
     RUN_AUDIO = False
     try:
         pygame.mixer.quit()
-        print("[AUDIO SHUTDOWN] Glitch Audio Stopped.")
+        logger.info("[AUDIO SHUTDOWN] Glitch audio stopped")
     except Exception:
         pass
 
     # 3. Release Pygame graphics contexts and unmount KMSDRM buffers
     try:
         pygame.quit()
-        print("[UI SHUTDOWN COMPLETE] Kiosk graphics engine unmounted.")
+        logger.info("[UI SHUTDOWN] Kiosk graphics engine unmounted")
     except Exception:
         pass
 
@@ -839,6 +792,7 @@ finally:
     # 4. Hand over total execution control to the final server handler
     try:
         server.graceful_shutdown_handler(None, None)
-    except Exception as e:
-        print(f"[UI SHUTDOWN] Direct execution fallback required: {e}")
+    except Exception:
+        logger.exception("[UI SHUTDOWN] Backend shutdown handler failed; exiting directly")
+        server.shutdown_logging()
         sys.exit(0)

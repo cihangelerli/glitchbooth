@@ -8,6 +8,7 @@ in-memory stats counters to eliminate line-by-line parsing overhead during sync 
 
 import base64
 import json
+import logging
 import os
 import queue
 import threading
@@ -16,6 +17,8 @@ from pathlib import Path
 
 import requests
 
+logger = logging.getLogger("glitchbooth.telemetry")
+
 # Base Configuration & Directory Enforcement
 TELEMETRY_DIR = Path(__file__).parent / "telemetry"
 TELEMETRY_DIR.mkdir(exist_ok=True)
@@ -23,11 +26,31 @@ TELEMETRY_DIR.mkdir(exist_ok=True)
 CAPTURE_LOG_PATH = TELEMETRY_DIR / "capture_log.jsonl"
 STATS_JSON_PATH = TELEMETRY_DIR / "stats.json"
 
+
+def _env_seconds(name, default, minimum):
+    try:
+        value = float(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+    return value if value >= minimum else default
+
+
+# Every upload of stats.json to ImageKit is stored there as a new file version, so the
+# upload is slow. The local stats.json is still refreshed every `interval_seconds` of
+# telemetry_sync_worker. All values can be set in .env.
+STATS_UPLOAD_INTERVAL_SECONDS = _env_seconds("STATS_UPLOAD_INTERVAL_SECONDS", 3600, 60)
+STATS_UPLOAD_RETRY_SECONDS = _env_seconds("STATS_UPLOAD_RETRY_SECONDS", 300, 30)
+# The first upload after a start waits this long, so a restart loop cannot burn versions.
+STATS_FIRST_UPLOAD_DELAY_SECONDS = _env_seconds("STATS_FIRST_UPLOAD_DELAY_SECONDS", 600, 0)
+# 1 = skip an upload when no capture was made since the last successful upload.
+STATS_SKIP_UNCHANGED = os.getenv("STATS_SKIP_UNCHANGED", "1").strip() != "0"
+
 KNOB_ACTIVATION_THRESHOLD = 10
 
-# Statistics names of the six knobs as they were counted before Phase 4. Ledger rows without an
-# "effects" list (everything recorded before Phase 4) are still read through this table, so the
-# old history does not change. "data_corruption" is the old fused Data Mosh + corruption knob.
+# Statistics names of the six knobs as they were counted before ledger rows carried an
+# "effects" list. Rows without that list (older history) are still read through this table,
+# so the old history does not change. "data_corruption" is the old fused Data Mosh +
+# corruption knob.
 LEGACY_KNOB_EFFECTS = [
     "ascii_matrix",
     "signal_drift",
@@ -69,9 +92,9 @@ LIVE_STATS = {
 
 def _increment_ram_metrics_internal(knobs: list, ts_epoch: int, effects=None):
     """Surgically mutates running statistics in RAM with O(1) constant complexity.
-    `effects` (Phase 4): the statistics names of the effects that were really acting at
-    capture time, hidden ones included. Without it (old ledger rows, old callers) the names
-    are derived from the knob numbers exactly as before."""
+    `effects`: the statistics names of the effects that were really acting at capture
+    time, hidden ones included. Without it (older ledger rows) the names are derived from
+    the knob numbers through LEGACY_KNOB_EFFECTS."""
     global LIVE_STATS
     LIVE_STATS["total_captures"] += 1
 
@@ -135,9 +158,8 @@ def init_telemetry(shutdown_event=None):
             "combo_tracker": {},
         }
 
-        print(
-            "[TELEMETRY] Executing single-pass transaction log replay to sync live RAM metrics..."
-        )
+        logger.info("[TELEMETRY] Replaying the capture ledger to rebuild live statistics...")
+        skipped_lines = 0
         try:
             with open(CAPTURE_LOG_PATH, "r") as f:
                 for line in f:
@@ -147,18 +169,24 @@ def init_telemetry(shutdown_event=None):
                         rec = json.loads(line)
                         knobs = rec.get("knobs", [0] * 6)
                         ts_epoch = rec.get("ts", int(time.time()))
-                        effects = rec.get("effects")  # present from Phase 4 on
+                        effects = rec.get("effects")  # present in newer rows
                         if not isinstance(effects, list):
                             effects = None
                         _increment_ram_metrics_internal(knobs, ts_epoch, effects)
                     except Exception:
+                        skipped_lines += 1
                         continue
-            print(
-                f"[TELEMETRY] State restoration complete. Restored {LIVE_STATS['total_captures']} historical events."
+            logger.info(
+                "[TELEMETRY] Restored %d historical captures.",
+                LIVE_STATS["total_captures"],
             )
-        except Exception as e:
-            print(
-                f"[TELEMETRY ERROR] Critical error during startup state restoration: {e}"
+            if skipped_lines:
+                logger.warning(
+                    "[TELEMETRY] Skipped %d unreadable ledger lines.", skipped_lines
+                )
+        except Exception:
+            logger.exception(
+                "[TELEMETRY] Failed to restore statistics from the capture ledger"
             )
 
         _telemetry_initialized = True
@@ -166,15 +194,13 @@ def init_telemetry(shutdown_event=None):
 
 def request_shutdown():
     """Exposed clean boundary function for server.py to trigger a graceful flush."""
-    print("[TELEMETRY] Shutdown requested. Injecting sentinel token to flush queue...")
+    logger.info("[TELEMETRY] Shutdown requested; flushing the capture queue.")
     try:
         # Bounded wait: guarantees sentinel delivery if the consumer clears a slot
         # within 2 seconds, but prevents an infinite hang if the thread is bricked.
         _telemetry_queue.put(None, timeout=2.0)
     except queue.Full:
-        print(
-            "[TELEMETRY CRITICAL] Failed to inject shutdown sentinel; queue remained full."
-        )
+        logger.error("[TELEMETRY] Could not queue the shutdown sentinel; the capture queue stayed full.")
 
 
 def record_capture(
@@ -194,7 +220,7 @@ def record_capture(
     }
     if (
         effects is not None
-    ):  # Phase 4 row: names of the effects that were acting + wiring
+    ):  # row with the names of the effects that were acting + wiring
         payload["v"] = 2
         payload["effects"] = [str(e) for e in effects]
         if wiring:
@@ -208,8 +234,9 @@ def record_capture(
     try:
         _telemetry_queue.put(payload, block=False)
     except queue.Full:
-        print(
-            "[TELEMETRY CRITICAL] Async disk queue is full! Discarding disk payload to save memory."
+        logger.error(
+            "[TELEMETRY] Capture queue is full; capture %s was counted in memory but not written to the ledger.",
+            session_id,
         )
 
 
@@ -267,17 +294,30 @@ def compile_summary_stats():
     try:
         with open(STATS_JSON_PATH, "w") as f:
             json.dump(stats_payload, f, indent=2)
-        print("[TELEMETRY] Local stats.json refreshed cleanly from memory.")
-    except Exception as e:
-        print(f"[TELEMETRY ERROR] Failed writing local stats.json payload: {e}")
+        logger.debug("[TELEMETRY] Local stats.json refreshed from memory.")
+    except Exception:
+        logger.exception("[TELEMETRY] Failed writing the local stats.json payload")
+
+
+_last_sync_warning = None
+
+
+def _warn_sync_problem(msg, *args):
+    """The stats upload runs every few minutes, so a network outage would repeat the same
+    warning over and over: say it once per 10 minutes and keep the rest at debug level."""
+    global _last_sync_warning
+    now = time.monotonic()
+    if _last_sync_warning is None or now - _last_sync_warning > 600:
+        _last_sync_warning = now
+        logger.warning(msg, *args)
+    else:
+        logger.debug(msg, *args)
 
 
 def upload_stats_to_imagekit() -> bool:
     private_key = os.getenv("IK_PRIVATE_KEY")
     if not private_key:
-        print(
-            "[TELEMETRY WARNING] Sync bypassed: IK_PRIVATE_KEY is missing from execution context."
-        )
+        logger.warning("[TELEMETRY] Cloud sync skipped: IK_PRIVATE_KEY is missing.")
         return False
 
     if not STATS_JSON_PATH.exists():
@@ -308,46 +348,74 @@ def upload_stats_to_imagekit() -> bool:
         )
 
         if response.status_code in [200, 201]:
-            print(
-                "[TELEMETRY CLOUD] stats.json synchronized cleanly to ImageKit distribution node."
-            )
+            logger.debug("[TELEMETRY] stats.json synchronized to ImageKit.")
             return True
         else:
-            print(
-                f"[TELEMETRY ERROR] ImageKit Rejected Post: Status {response.status_code} - {response.text}"
+            _warn_sync_problem(
+                "[TELEMETRY] ImageKit rejected the stats upload: HTTP %s - %s",
+                response.status_code,
+                response.text[:200],
             )
             return False
     except Exception as e:
-        print(f"[TELEMETRY ERROR] Cloud pipeline unexpected fault exception: {e}")
+        _warn_sync_problem("[TELEMETRY] stats.json upload failed: %s", e)
         return False
 
 
 def telemetry_sync_worker(interval_seconds: int = 120):
-    """Target loop for periodic stats compilation and cloud synchronization."""
+    """Refreshes the local stats.json every `interval_seconds`. The cloud upload follows the
+    slower STATS_UPLOAD_* schedule, because each upload creates a new ImageKit file version."""
     if _shutdown_event is None:
         raise RuntimeError(
             "init_telemetry(SHUTDOWN_EVENT) must be called before starting telemetry workers"
         )
 
-    print(
-        f"[TELEMETRY ENGINE] Asynchronous tracking sync container activated. Intervals: {interval_seconds}s."
+    logger.info(
+        "[TELEMETRY] Stats sync worker started (local refresh every %ss, cloud upload every %ss, first upload after %ss).",
+        interval_seconds,
+        STATS_UPLOAD_INTERVAL_SECONDS,
+        STATS_FIRST_UPLOAD_DELAY_SECONDS,
     )
+
+    next_upload_at = time.monotonic() + STATS_FIRST_UPLOAD_DELAY_SECONDS
+    last_uploaded_total = None
 
     while True:
         if _shutdown_event.wait(timeout=interval_seconds):
             break
 
         compile_summary_stats()
-        upload_stats_to_imagekit()
 
-    print("[TELEMETRY] Final stats flush sequence engaged...")
+        if time.monotonic() < next_upload_at:
+            continue
+
+        with _telemetry_io_lock:
+            total_now = LIVE_STATS["total_captures"]
+        if (
+            STATS_SKIP_UNCHANGED
+            and last_uploaded_total is not None
+            and total_now == last_uploaded_total
+        ):
+            logger.debug(
+                "[TELEMETRY] No new captures since the last upload; skipping the cloud upload."
+            )
+            next_upload_at = time.monotonic() + STATS_UPLOAD_INTERVAL_SECONDS
+            continue
+
+        if upload_stats_to_imagekit():
+            last_uploaded_total = total_now
+            next_upload_at = time.monotonic() + STATS_UPLOAD_INTERVAL_SECONDS
+        else:
+            next_upload_at = time.monotonic() + STATS_UPLOAD_RETRY_SECONDS
+
+    logger.info("[TELEMETRY] Final stats flush...")
     compile_summary_stats()
-    print("[TELEMETRY] Periodic sync worker terminated gracefully.")
+    logger.info("[TELEMETRY] Stats sync worker stopped.")
 
 
 def telemetry_consumer_worker():
     """CONSUMER NODE: Pulls log events from memory channel and writes to disk out-of-band."""
-    print("[TELEMETRY ENGINE] Asynchronous tracking consumer backend initialized.")
+    logger.info("[TELEMETRY] Capture ledger writer started.")
 
     while True:
         try:
@@ -361,20 +429,20 @@ def telemetry_consumer_worker():
                 try:
                     with open(CAPTURE_LOG_PATH, "a") as f:
                         f.write(json.dumps(payload) + "\n")
-                    print(
-                        f"[TELEMETRY ASYNC] Capture session {payload['session_id']} safely written to disk."
+                    logger.debug(
+                        "[TELEMETRY] Capture %s written to the ledger.",
+                        payload["session_id"],
                     )
-                except Exception as append_err:
-                    print(
-                        f"[TELEMETRY ERROR] Disk queue execution worker append failure: {append_err}"
+                except Exception:
+                    logger.exception(
+                        "[TELEMETRY] Could not append capture %s to the ledger",
+                        payload.get("session_id"),
                     )
 
             _telemetry_queue.task_done()
 
-        except Exception as queue_fault:
-            print(
-                f"[TELEMETRY SYSTEM CRITICAL] Consumer loop crash intercept: {queue_fault}"
-            )
+        except Exception:
+            logger.exception("[TELEMETRY] Capture ledger writer loop exception")
             time.sleep(1)
 
-    print("[TELEMETRY] Storage consumer worker terminated gracefully.")
+    logger.info("[TELEMETRY] Capture ledger writer stopped.")

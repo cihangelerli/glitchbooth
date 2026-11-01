@@ -24,12 +24,17 @@ import cv2
 
 cv2.setNumThreads(1)
 
+import atexit
+import faulthandler
 import logging
+import logging.handlers
 import math
 import queue
+import re
 import resource
 import socket
 import subprocess
+import sys
 import threading
 import time
 
@@ -41,10 +46,248 @@ from escpos.printer import File
 from numpy.lib.stride_tricks import as_strided
 from PIL import Image, ImageDraw, ImageFont
 
-# import gc
 import telemetry
 
 logger = logging.getLogger("glitchbooth.server")
+
+
+# LOGGING
+# ==================================================
+# One logging setup for the whole process (server, display and telemetry all use it).
+# Records go through a queue to a listener thread, so no worker (camera, processing loop,
+# display) ever waits on the disk or the terminal. Two outputs:
+#   - terminal (stderr: tty1 under systemd, or your ssh session): LOG_CONSOLE_LEVEL
+#   - one file per service start in LOG_DIR: LOG_LEVEL, size-capped
+# The newest LOG_KEEP_SESSIONS sessions are kept. The previous session is always kept
+# (it is the one that just ended or crashed); short sessions, such as a crash loop, are
+# pruned before long ones.
+def _env_float(name, default, minimum):
+    try:
+        value = float(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+    return value if value >= minimum else default
+
+
+def _env_level(name, default):
+    level = getattr(logging, str(os.getenv(name, "")).strip().upper(), None)
+    return level if isinstance(level, int) else default
+
+
+LOG_DIR = Path(os.getenv("LOG_DIR") or Path(__file__).parent / "logs")
+LOG_KEEP_SESSIONS = int(_env_float("LOG_KEEP_SESSIONS", 3, 1))
+LOG_FILE_MAX_MB = _env_float("LOG_FILE_MAX_MB", 25, 1)  # per file ...
+LOG_FILE_SEGMENTS = int(
+    _env_float("LOG_FILE_SEGMENTS", 6, 1)
+)  # ... plus this many older ones
+LOG_SHORT_SESSION_SECONDS = 120
+
+_LOG_FORMAT = (
+    "%(asctime)s.%(msecs)03d %(levelname)-8s [%(threadName)s] %(name)s: %(message)s"
+)
+_LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+_LOG_STEM_RE = re.compile(r"^(glitchbooth-\d{8}-\d{6})\.")
+_log_state = {
+    "listener": None,
+    "queue_handler": None,
+    "fault_file": None,
+    "fault_path": None,
+    "closed": False,
+}
+_log_state_lock = threading.Lock()
+_throttle_state = {}
+_throttle_lock = threading.Lock()
+
+
+def _prune_old_log_sessions(current_stem):
+    sessions = {}
+    for entry in LOG_DIR.iterdir():
+        match = _LOG_STEM_RE.match(entry.name)
+        if match and match.group(1) != current_stem:
+            sessions.setdefault(match.group(1), []).append(entry)
+
+    def last_write(files):
+        newest = 0.0
+        for path in files:
+            try:
+                newest = max(newest, path.stat().st_mtime)
+            except OSError:
+                pass
+        return newest
+
+    def seconds(stem, files):
+        try:
+            started = time.mktime(
+                time.strptime(stem[len("glitchbooth-") :], "%Y%m%d-%H%M%S")
+            )
+        except ValueError:
+            return 0.0
+        return last_write(files) - started
+
+    newest_first = sorted(
+        sessions, key=lambda stem: last_write(sessions[stem]), reverse=True
+    )
+    slots = LOG_KEEP_SESSIONS - 1  # the session being started takes one slot
+    keep = newest_first[: min(1, slots)]
+    rest = newest_first[1:]
+    long_ones = [
+        stem
+        for stem in rest
+        if seconds(stem, sessions[stem]) >= LOG_SHORT_SESSION_SECONDS
+    ]
+    short_ones = [stem for stem in rest if stem not in long_ones]
+    for stem in long_ones + short_ones:
+        if len(keep) >= slots:
+            break
+        keep.append(stem)
+    for stem, files in sessions.items():
+        if stem not in keep:
+            for path in files:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+
+
+def _log_uncaught_exception(exc_type, exc, tb):
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc, tb)
+        return
+    logging.getLogger("glitchbooth").critical(
+        "[CRASH] Uncaught exception in the main thread", exc_info=(exc_type, exc, tb)
+    )
+
+
+def _log_uncaught_thread_exception(args):
+    if args.exc_type is SystemExit:
+        return
+    thread_name = args.thread.name if args.thread else "unknown"
+    logging.getLogger("glitchbooth").critical(
+        "[CRASH] Uncaught exception in thread %s",
+        thread_name,
+        exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+    )
+
+
+def setup_logging():
+    """Idempotent: every entry point may call it; the first call does the work."""
+    with _log_state_lock:
+        if _log_state["listener"] is not None or _log_state["closed"]:
+            return
+        formatter = logging.Formatter(_LOG_FORMAT, _LOG_DATE_FORMAT)
+        handlers = []
+
+        console = logging.StreamHandler(sys.stderr)
+        console.setLevel(_env_level("LOG_CONSOLE_LEVEL", logging.INFO))
+        console.setFormatter(formatter)
+        handlers.append(console)
+
+        stem = time.strftime("glitchbooth-%Y%m%d-%H%M%S")
+        file_error = None
+        try:
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+            file_handler = logging.handlers.RotatingFileHandler(
+                LOG_DIR / f"{stem}.log",
+                maxBytes=int(LOG_FILE_MAX_MB * 1024 * 1024),
+                backupCount=LOG_FILE_SEGMENTS,
+                encoding="utf-8",
+            )
+            file_handler.setLevel(_env_level("LOG_LEVEL", logging.INFO))
+            file_handler.setFormatter(formatter)
+            handlers.append(file_handler)
+            _prune_old_log_sessions(stem)
+            # Native crashes (OpenCV, SDL) write their traceback here.
+            fault_path = LOG_DIR / f"{stem}.fault"
+            fault_file = open(fault_path, "w")
+            faulthandler.enable(file=fault_file)
+            _log_state["fault_file"], _log_state["fault_path"] = fault_file, fault_path
+        except OSError as exc:
+            file_error = exc
+
+        log_queue = queue.Queue(-1)
+        queue_handler = logging.handlers.QueueHandler(log_queue)
+        root = logging.getLogger()
+        root.setLevel(min(handler.level for handler in handlers))
+        root.addHandler(queue_handler)
+        listener = logging.handlers.QueueListener(
+            log_queue, *handlers, respect_handler_level=True
+        )
+        listener.start()
+        _log_state["listener"], _log_state["queue_handler"] = listener, queue_handler
+
+        for noisy in ("urllib3", "PIL", "waitress", "werkzeug", "requests", "asyncio"):
+            logging.getLogger(noisy).setLevel(logging.WARNING)
+        sys.excepthook = _log_uncaught_exception
+        threading.excepthook = _log_uncaught_thread_exception
+        atexit.register(shutdown_logging)
+
+    boot = logging.getLogger("glitchbooth")
+    if file_error is None:
+        boot.info(
+            "[LOG] Session %s started. Terminal >= %s, file >= %s, keeping %d sessions in %s",
+            stem,
+            logging.getLevelName(console.level),
+            logging.getLevelName(file_handler.level),
+            LOG_KEEP_SESSIONS,
+            LOG_DIR,
+        )
+    else:
+        boot.error(
+            "[LOG] Session file logging is unavailable (%s); logging to the terminal only",
+            file_error,
+        )
+
+
+def shutdown_logging():
+    """Flush and stop the log listener. Safe to call more than once."""
+    with _log_state_lock:
+        listener = _log_state["listener"]
+        if listener is None:
+            return
+        _log_state["listener"] = None
+        _log_state["closed"] = True
+        queue_handler = _log_state["queue_handler"]
+        fault_file, fault_path = _log_state["fault_file"], _log_state["fault_path"]
+    listener.stop()  # drains the queue before it returns
+    root = logging.getLogger()
+    root.removeHandler(queue_handler)
+    root.addHandler(
+        logging.StreamHandler(sys.stderr)
+    )  # late messages still reach the terminal
+    for handler in listener.handlers:
+        try:
+            handler.flush()
+            handler.close()
+        except Exception:
+            pass
+    if fault_file is not None:
+        try:
+            faulthandler.disable()
+            fault_file.close()
+            if fault_path.stat().st_size == 0:
+                fault_path.unlink()
+        except OSError:
+            pass
+
+
+def log_throttled(log, level, key, interval, msg, *args, exc_info=False):
+    """Log at most once per `interval` seconds for each `key`. When messages were
+    suppressed in between, the next one says how many. Returns True if it logged."""
+    now = time.monotonic()
+    with _throttle_lock:
+        last, suppressed = _throttle_state.get(key, (None, 0))
+        if last is not None and now - last < interval:
+            _throttle_state[key] = (last, suppressed + 1)
+            return False
+        _throttle_state[key] = (now, 0)
+    if suppressed:
+        msg += " (%d similar messages suppressed)"
+        args += (suppressed,)
+    log.log(level, msg, *args, exc_info=exc_info)
+    return True
+
+
+setup_logging()
 
 app = Flask(__name__)
 
@@ -156,23 +399,20 @@ def get_landing_url(ts: str) -> str:
     return f"{domain}/p/{ts}"
 
 
-print("==================================================")
-print(" GLITCHBOOTH SERVER RUNTIME CONFIGURATION")
-print(
-    f" [MODE]          : {'EVENT MODE (' + EVENT_SLUG + ')' if EVENT_SLUG else 'NAKED MODE'}"
+logger.info(
+    "[CONFIG] mode=%s | imagekit path=%s | print contrast alpha=%s beta=%s | sample url=%s",
+    "EVENT MODE (" + EVENT_SLUG + ")" if EVENT_SLUG else "NAKED MODE",
+    get_ik_target_folder(),
+    PRINT_ALPHA,
+    PRINT_BETA,
+    get_landing_url(str(int(time.time() * 1000))),
 )
-print(f" [IMAGEKIT PATH] : {get_ik_target_folder()}")
-print(f" [PRINT CONTRAST]: ALPHA={PRINT_ALPHA}, BETA={PRINT_BETA}")
-print(f" [SAMPLE URL]    : {get_landing_url(str(int(time.time() * 1000)))}")
-print("==================================================")
 
 
 SERIAL_PORTS = ["/dev/ttyUSB0", "/dev/ttyACM0"]
 CAMERA_STALE_TIMEOUT = 5
 CAMERA_REFRESH_INTERVAL = 21600
 STREAM_FPS = 15
-# Disabling button-knobs combo shutdown feature
-# SHUTDOWN_THRESHOLD = 20
 
 CRT_ENABLED = True
 CRT_SCANLINE_STRENGTH = 0.12
@@ -187,7 +427,7 @@ FRAME_W = 640
 # SCALABLE GLITCH MATRIX CONSTANTS
 # ==============================================================================
 
-# PHASE 3 TUNABLES: EFFECT ORDER, KNOB ATTACHMENTS, WINDOWS, COST WEIGHTS, LABELS
+# EFFECT TUNABLES: ORDER, KNOB ATTACHMENTS, WINDOWS, COST WEIGHTS, LABELS
 # ==============================================================================
 # Every effect is a handler. EFFECT_ORDER is the processing order, top to bottom:
 # an effect works on the result of the effects above it, so LATER = ON TOP.
@@ -218,7 +458,6 @@ KNOB_ATTACHMENTS = {
 # Optional range of the knob in which an effect works, as fractions of the knob travel.
 # Inside its window the effect sees the full 0-1023 range; outside it is off.
 # Example: {"chroma_shift": (0.0, 0.7), "packet_corruption": (0.35, 1.0)}
-# EFFECT_KNOB_WINDOW = {} # no window
 EFFECT_KNOB_WINDOW = {"melt": (0.0, 1.0), "data_mosh": (0.49, 1.0)}
 
 # Cost weights follow effects when they move between knobs.
@@ -252,7 +491,7 @@ TELEMETRY_ENABLED = (
     True  # Set False to disable all capture logging and telemetry threads
 )
 
-# PHASE 4 TUNABLES: STATISTICS
+# STATISTICS TUNABLES
 # ==============================================================================
 # Every capture is counted by effect NAME (all attached effects, primary and hidden).
 # Name under which each effect is counted in stats.json and in the capture ledger.
@@ -283,10 +522,10 @@ EFFECT_STATS_ACTIVE_FROM = {
     "posterize": 13,  # acts above the first non-zero point of POSTERIZE_CURVE (knob 12)
 }
 
-# PHASE 5 TUNABLES: POSTERIZE (neon tone bands with glitchy outlines)
+# POSTERIZE TUNABLES (neon tone bands with glitchy outlines)
 # ==============================================================================
-# Posterize is in the pool but attached to no knob until you add "posterize" to
-# KNOB_ATTACHMENTS (for example 3: ["pixellation", "posterize"], or its own knob).
+# Posterize acts only while it is attached to a knob in KNOB_ATTACHMENTS (a knob can
+# drive several effects, for example 3: ["pixellation", "posterize"]).
 POSTERIZE_CURVE = (
     (0, 0.00),
     (12, 0.00),
@@ -339,11 +578,8 @@ POSTERIZE_FRAGMENT_AMOUNT = 2  # grey levels of break-up noise at full strength
 POSTERIZE_ROTATE_SECONDS = (
     5  # 0 = fixed colours; N = the colour assignment shifts every N seconds
 )
-POSTERIZE_RNG_SEED = (
-    None  # None = fresh entropy each start; tests reseed via seed_private_rngs()
-)
 
-# PHASE 2 TUNABLES: DATA MOSH, PACKET CORRUPTION
+# DATA MOSH AND PACKET CORRUPTION TUNABLES
 # ==============================================================================
 
 # --- Data Mosh -------------------------------------------------------------------
@@ -357,16 +593,13 @@ MOSH_HOLD_MAX_FRAMES = 49
 # Per-frame drag distance in any of four directions: left, right, up, or down.
 MOSH_VECTOR_PX = 9  # pixels per frame (1-11)
 MOSH_DRAG_NEW_WEIGHT = 222 / 256  # share of the dragged picture per frame
-MOSH_EDGE_ERODE_MAX_PX = 0  # random edge erosion 0..N px on held cells (as before)
+MOSH_EDGE_ERODE_MAX_PX = 0  # random edge erosion 0..N px on held cells
 MOSH_RELEASE_FRAMES = 11  # edges dissolve over the last N frames of a hold
 MOSH_RELEASE_ERODE_PX = 1  # extra erosion per release frame
 # Colour-plane bleed inside held cells: "shape_live_colour_held", "shape_held_colour_live", "off"
 MOSH_BLEED_MODE = "shape_live_colour_held"
 MOSH_BLEED_MAX = 0.23  # bleed mix = MAX * strength (0-1)
 
-MOSH_RNG_SEED = (
-    None  # None = fresh entropy each start; tests reseed via seed_private_rngs()
-)
 MOSH_CELL_H = 16
 MOSH_CELL_W = 12
 
@@ -397,11 +630,6 @@ GLOBAL_NOISE_BUFFER = np.empty(
     (CORRUPTION_CELL_H, CORRUPTION_CELL_W, 3), dtype=np.uint8, order="C"
 )
 
-GLITCH_BOX_MIN = 8  # [320x240: 8 ] [480x360: 12] [640x480: 16]
-GLITCH_BOX_SCALE = 48  # [320x240: 24] [480x360: 36] [640x480: 48]
-GLITCH_STRIP_MIN = 4  # [320x240: 4 ] [480x360: 6 ] [640x480: 8 ]
-GLITCH_STRIP_SCALE = 24  # [320x240: 12] [480x360: 18] [640x480: 24]
-
 # --- Signal Drift -------------------------------------------------------------------
 DRIFT_MAX_AMOUNT = 60  # [320x240: 30] [480x360: 45] [640x480: 60]
 
@@ -431,7 +659,7 @@ MELT_NEON_RAMP_SPAN = (
 )
 
 # NEON_PALETTES defined in native OpenCV BGR format: [Blue, Green, Red]
-# these palettes ARE shared later with future POSTERIZE effect addition
+# these palettes are shared by Melt and Posterize
 
 NEON_PALETTES = np.array(
     [
@@ -472,12 +700,10 @@ FROZEN_DISPLAY_BUFFER.fill(0)
 FROZEN_PRINT_BUFFER = np.empty((FRAME_W, FRAME_H), dtype=np.uint8, order="C")
 FROZEN_PRINT_BUFFER.fill(255)
 
-STATIC_NOISE_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
-
 # Shared luminance buffer: utilized sequentially during Melt pass and post-capture receipt contrast prep
 STATIC_MELT_GRAY_BUFFER = np.empty((FRAME_H, FRAME_W), dtype=np.uint8, order="C")
 
-# --- PHASE 1: MELT PERSISTENT GRAVITATIONAL DEFORMATION BUFFERS ---
+# --- MELT BUFFERS ---
 
 STATIC_MELT_SNAPSHOT = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
 
@@ -491,7 +717,6 @@ STATIC_ROW_BUFFER = np.empty((FRAME_W, 3), dtype=np.uint8, order="C")
 CHANNEL_SHIFT_BUFFER = np.empty((FRAME_H, FRAME_W), dtype=np.uint8, order="C")
 SLICE_SHIFT_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
 GHOST_FRAME_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
-GHOST_GREEN_BUFFER = np.empty((FRAME_H, FRAME_W), dtype=np.uint8, order="C")
 
 STATIC_V_BUFFER = None
 
@@ -529,14 +754,10 @@ def initialize_crt_mask():
     logger.info("[SYSTEM SETUP] CRT Mask locked into contiguous C-memory.")
 
 
-# TEMPORAL REGISTERS (WARM-UP, PURGE) AND PACKET CORRUPTION STATE
+# WARM-UP REGISTER AND PACKET CORRUPTION STATE
 # =========================================================================
 WARMUP_FRAMES = 10
 WARMUP_COUNTER = 0
-LAST_TEMPORAL_PURGE = time.time()
-
-PREV_FRAME_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
-SHARED_GRAY_BUFFER = np.empty((FRAME_H, FRAME_W), dtype=np.uint8, order="C")
 
 CORRUPTION_ENERGY = np.zeros(
     (CORRUPTION_GRID_H, CORRUPTION_GRID_W), dtype=np.float32, order="C"
@@ -546,7 +767,7 @@ CORRUPTION_MODE = np.zeros(
     (CORRUPTION_GRID_H, CORRUPTION_GRID_W), dtype=np.uint8, order="C"
 )
 
-# ASCII ENGINE PRE-ALLOCATED STORAGE (PHASE 1 MVP)
+# ASCII ENGINE PRE-ALLOCATED STORAGE
 # =========================================================================
 ASCII_GRID_W = 80
 ASCII_GRID_H = 60
@@ -563,7 +784,6 @@ ASCII_BLOCK_BUFFER = np.zeros(
 
 ASCII_TILES = np.zeros((16, CELL_H, CELL_W), dtype=np.uint8, order="C")
 
-ASCII_COLOR_BUFFER = np.zeros((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
 ASCII_GREEN_BUFFER = np.zeros((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
 ASCII_NOISE_LOW = np.zeros((ASCII_GRID_H, ASCII_GRID_W), dtype=np.uint8, order="C")
 ASCII_NOISE_UP = np.zeros((FRAME_H, FRAME_W), dtype=np.uint8, order="C")
@@ -597,7 +817,7 @@ ACTIVE_SESSION = {
 mode_lock = threading.Lock()
 frame_lock = threading.Lock()
 UI_FRAME_SEQ = (
-    0  # NEW: bumped (under frame_lock) each time UI_DISPLAY_BUFFER is fully rewritten
+    0  # bumped (under frame_lock) each time UI_DISPLAY_BUFFER is fully rewritten
 )
 cam_raw_lock = threading.Lock()
 
@@ -621,8 +841,6 @@ capture_lock_until = 0
 
 last_good_camera = time.time()
 camera_started_at = time.time()
-# Disabling button-knobs combo shutdown feature
-# shutdown_hold_start = None
 last_frame_time = time.time()
 camera_fail_count = 0
 
@@ -631,7 +849,6 @@ SYSTEM_TELEMETRY = {"ip": "0.0.0.0", "cpu_temp": "N/A", "memory_rss_mb": -1}
 last_button_state = 1
 
 FRAME_ID = 0
-STREAM_FRAME_ID = -1
 
 upload_queue = queue.Queue(maxsize=32)
 
@@ -682,7 +899,7 @@ def init_ascii_tiles():
 
     if font is None:
         logger.warning(
-            "[WARNING] Monospace TTF not found. Using system default. Text may appear small."
+            "Monospace TTF not found. Using system default. Text may appear small."
         )
         font = ImageFont.load_default()
 
@@ -747,7 +964,7 @@ def get_memory_usage():
 
 def telemetry_worker():
     global SYSTEM_TELEMETRY
-    logger.info("[INIT] Telemetry Worker: Active and bound.")
+    logger.info("[INIT] System monitor (IP, CPU temperature, memory): active.")
 
     while not SHUTDOWN_EVENT.is_set():
         try:
@@ -755,11 +972,18 @@ def telemetry_worker():
             SYSTEM_TELEMETRY["cpu_temp"] = get_cpu_temp()
             SYSTEM_TELEMETRY["memory_rss_mb"] = get_memory_usage()
         except Exception as e:
-            logger.error("[TELEMETRY ERROR] Subprocess acquisition fault: %s", e)
+            log_throttled(
+                logger,
+                logging.WARNING,
+                "sysmon-fault",
+                60.0,
+                "[SYSMON] Could not read system status: %s",
+                e,
+            )
 
         if SHUTDOWN_EVENT.wait(timeout=2.0):
             break
-    logger.info("[SHUTDOWN] Telemetry worker exited cleanly.")
+    logger.info("[SHUTDOWN] System monitor exited cleanly.")
 
 
 def open_camera():
@@ -786,7 +1010,13 @@ def open_camera():
                 return cap
             else:
                 cap.release()
-    logger.error("CRITICAL V4L2 ERROR: Physical acquisition failed.")
+    log_throttled(
+        logger,
+        logging.ERROR,
+        "camera-open",
+        30.0,
+        "[CAMERA] Could not open a camera on V4L2 indexes 0-2 (acquisition failed)",
+    )
     return None
 
 
@@ -796,13 +1026,26 @@ def camera_io_worker():
     global last_frame_time, camera_fail_count
     cap = open_camera()
     consecutive_failures = 0
+    camera_down_since = None
 
     while cam_thread_alive and not SHUTDOWN_EVENT.is_set():
         try:
             if cap is None or not cap.isOpened():
+                if camera_down_since is None:
+                    camera_down_since = time.monotonic()
+                elif time.monotonic() - camera_down_since > 30:
+                    log_throttled(
+                        logger,
+                        logging.CRITICAL,
+                        "camera-down",
+                        60.0,
+                        "[CAMERA] Still no camera after %.0f s; the booth cannot take photos",
+                        time.monotonic() - camera_down_since,
+                    )
                 time.sleep(2)
                 cap = open_camera()
                 continue
+            camera_down_since = None
             ret, frame = cap.read()
 
             if ret and frame is not None:
@@ -814,8 +1057,12 @@ def camera_io_worker():
                     if frame.shape == LATEST_CAMERA_FRAME.shape:
                         LATEST_CAMERA_FRAME[:] = frame
                     else:
-                        logger.warning(
-                            "[CAMERA WARNING] Resolution mismatch! Expected %s, got %s. Resizing fallback applied.",
+                        log_throttled(
+                            logger,
+                            logging.WARNING,
+                            "camera-resolution",
+                            60.0,
+                            "[CAMERA] Resolution mismatch: expected %s, got %s. Resizing.",
                             LATEST_CAMERA_FRAME.shape,
                             frame.shape,
                         )
@@ -825,7 +1072,14 @@ def camera_io_worker():
                 consecutive_failures += 1
                 with hw_state_lock:
                     camera_fail_count += 1
-                logger.error("CAMERA FAIL at %s", time.time())
+                log_throttled(
+                    logger,
+                    logging.WARNING,
+                    "camera-read",
+                    5.0,
+                    "[CAMERA] Frame read failed (%d consecutive)",
+                    consecutive_failures,
+                )
                 time.sleep(0.01)
             now = time.time()
             if (
@@ -833,7 +1087,18 @@ def camera_io_worker():
                 or (now - last_good_camera > CAMERA_STALE_TIMEOUT)
                 or (now - camera_started_at > CAMERA_REFRESH_INTERVAL)
             ):
-                logger.warning("RESETTING CAMERA SUB-SOCKET ENGINE DUE TO STALL...")
+                if consecutive_failures > 15:
+                    reset_reason = "%d consecutive read failures" % consecutive_failures
+                    reset_level = logging.WARNING
+                elif now - last_good_camera > CAMERA_STALE_TIMEOUT:
+                    reset_reason = "no good frame for %.1f s" % (now - last_good_camera)
+                    reset_level = logging.WARNING
+                else:
+                    reset_reason = "scheduled refresh"
+                    reset_level = logging.INFO
+                logger.log(
+                    reset_level, "[CAMERA] Resetting the camera: %s", reset_reason
+                )
                 if cap is not None:
                     try:
                         cap.release()
@@ -845,54 +1110,57 @@ def camera_io_worker():
                 consecutive_failures = 0
                 last_good_camera = time.time()
                 camera_started_at = time.time()
-        except Exception as fatal_e:
-            logger.error("CAMERA IO WORKER FATAL EXCEPTION: %s", fatal_e)
+        except Exception:
+            log_throttled(
+                logger,
+                logging.ERROR,
+                "camera-worker-fault",
+                10.0,
+                "[CAMERA] Camera worker exception",
+                exc_info=True,
+            )
             time.sleep(1)
 
 
 def update_knobs(ser):
+    # Read errors propagate: the caller logs them and reconnects.
     global GLOBAL_KNOBS, GLOBAL_BUTTON
-    try:
-        if ser.in_waiting > 0:
-            line = ser.readline().decode("utf-8", errors="ignore").strip()
-            if not line:
-                return
-            vals = line.split(",")
-            if len(vals) != 7:
-                logger.debug("[SERIAL] Ignoring malformed packet: %r", line)
-                return
-            try:
-                parsed = [int(v) for v in vals]
-            except ValueError:
-                logger.debug("[SERIAL] Ignoring non-integer packet: %r", line)
-                return
-            with hw_state_lock:
-                GLOBAL_KNOBS = tuple(parsed[:6])
-                GLOBAL_BUTTON = parsed[6]
-    except Exception as e:
-        logger.debug("[SERIAL] Error reading from serial: %s", e)
-        raise e
+    if ser.in_waiting > 0:
+        line = ser.readline().decode("utf-8", errors="ignore").strip()
+        if not line:
+            return
+        vals = line.split(",")
+        if len(vals) != 7:
+            logger.debug("[SERIAL] Ignoring malformed packet: %r", line)
+            return
+        try:
+            parsed = [int(v) for v in vals]
+        except ValueError:
+            logger.debug("[SERIAL] Ignoring non-integer packet: %r", line)
+            return
+        with hw_state_lock:
+            GLOBAL_KNOBS = tuple(parsed[:6])
+            GLOBAL_BUTTON = parsed[6]
 
 
 # =========================================================================
-# DATA MOSH v2 (PHASE 2) - INDEPENDENT EFFECT, DRIVEN BY ITS OWN KNOB ONLY
+# DATA MOSH - INDEPENDENT EFFECT (SHARES NO STATE WITH OTHER EFFECTS)
 # =========================================================================
-# Self-contained (readme R13). It owns its buffers, its timers and its own random
-# generator. It never reads, writes or calls anything that belongs to Packet
-# Corruption (or any other effect), and Packet Corruption never touches it.
+# Self-contained: it owns its buffers, its timers and its own random generator, and it
+# never reads, writes or calls anything that belongs to another effect.
 #
 # Per frame it makes a fixed, small number of large OpenCV/NumPy calls (no per-cell
 # Python loop), all inside preallocated buffers and restricted to the row band that
 # contains the held cells. OpenCV calls release the GIL, so the display thread is
-# not starved the way the old per-cell loop could starve it.
+# not starved.
 #
-# Look (approved in P2-00): a cell that shows motion freezes the PREVIOUS picture,
-# drags it +-MOSH_VECTOR_PX per frame, holds it for MOSH_HOLD_*_FRAMES (rising with
-# strength), then dissolves from its edges. Inside held cells the brightness and the
-# colour can come from different pictures (colour-plane bleed).
+# Look: a cell that shows motion freezes the PREVIOUS picture, drags it
+# +-MOSH_VECTOR_PX per frame, holds it for MOSH_HOLD_*_FRAMES (rising with strength),
+# then dissolves from its edges. Inside held cells the brightness and the colour can
+# come from different pictures (colour-plane bleed).
 #
-# Cancel rule (protected behaviour): the moment the knob drops below the dormancy
-# threshold every hold is cancelled at once and nothing is left over.
+# Cancel rule: the moment the strength drops below MOSH_DORMANT_BELOW every hold is
+# cancelled at once and nothing is left over.
 # =========================================================================
 
 MOSH_GRID_H = FRAME_H // MOSH_CELL_H
@@ -907,7 +1175,7 @@ _MOSH_SAMPLE_X0 = MOSH_CELL_W // 2
 class DataMoshEngine:
     """Temporal memory and scratch buffers of Data Mosh (about 10 MiB, allocated once)."""
 
-    def __init__(self, seed=None):
+    def __init__(self):
         H, W = FRAME_H, FRAME_W
         gh, gw = MOSH_GRID_H, MOSH_GRID_W
         z3 = lambda: np.zeros((H, W, 3), dtype=np.uint8, order="C")
@@ -948,10 +1216,7 @@ class DataMoshEngine:
         self.samp = np.zeros((gh, gw, 3), dtype=np.int16)
         self.prev_samp = np.zeros((gh, gw, 3), dtype=np.int16)
         self.have_prev = False
-        self.rng = np.random.default_rng(seed)
-
-    def reseed(self, seed):
-        self.rng = np.random.default_rng(seed)
+        self.rng = np.random.default_rng()
 
     def is_dirty(self):
         return self.have_prev or bool(self.timer.any())
@@ -975,16 +1240,15 @@ class DataMoshEngine:
             interpolation=cv2.INTER_NEAREST,
         )
 
-    def step(self, frame, strength, motion_samples=None):
+    def step(self, frame, strength):
         # Apply one frame of Data Mosh to `frame` (modified in place).
         gh, gw, H, W = MOSH_GRID_H, MOSH_GRID_W, FRAME_H, FRAME_W
 
         vec = MOSH_VECTOR_PX
 
-        if motion_samples is None:
-            motion_samples = frame[
-                _MOSH_SAMPLE_Y0::MOSH_CELL_H, _MOSH_SAMPLE_X0::MOSH_CELL_W
-            ][:gh, :gw]
+        motion_samples = frame[
+            _MOSH_SAMPLE_Y0::MOSH_CELL_H, _MOSH_SAMPLE_X0::MOSH_CELL_W
+        ][:gh, :gw]
         np.copyto(self.samp, motion_samples, casting="unsafe")
 
         if not self.have_prev:  # first frame after start / cancel: only remember
@@ -993,7 +1257,7 @@ class DataMoshEngine:
             self.have_prev = True
             return
 
-        # ---- 1. which cells show motion (same metric and threshold as before) ----
+        # ---- 1. which cells show motion ----
         threshold = int(MOSH_THRESH_BASE + (1.0 - strength) * MOSH_THRESH_SPAN)
         if np.array_equal(self.samp, self.prev_samp):
             motion = np.zeros((gh, gw), dtype=bool)  # duplicate camera frame
@@ -1160,41 +1424,26 @@ class DataMoshEngine:
         np.copyto(self.prev_samp, self.samp)
 
 
-_MOSH = DataMoshEngine(MOSH_RNG_SEED)
+_MOSH = DataMoshEngine()
 
 
-def data_mosh_reset():
-    # Cancel every hold and forget the remembered picture.
-    _MOSH.reset()
-
-
-def data_mosh_take_samples(frame):
-    # Snapshot of the per-cell motion sample points (for MOSH_STAGE_POSITION C).
-    return frame[_MOSH_SAMPLE_Y0::MOSH_CELL_H, _MOSH_SAMPLE_X0::MOSH_CELL_W][
-        :MOSH_GRID_H, :MOSH_GRID_W
-    ].copy()
-
-
-def apply_data_mosh(raw_knob, current_time, motion_samples=None):
+def apply_data_mosh(raw_knob, current_time):
     # Data Mosh entry point. raw_knob 0-1023. Modifies MUTABLE_PROCESSING_BUFFER in place.
-    strength = n(raw_knob) ** 2  # response curve unchanged from the old effect
+    strength = n(raw_knob) ** 2
     if strength < MOSH_DORMANT_BELOW:
         if _MOSH.is_dirty():  # lowering the knob cancels all moshing at once
             _MOSH.reset()
         return
-    _MOSH.step(MUTABLE_PROCESSING_BUFFER, strength, motion_samples)
+    _MOSH.step(MUTABLE_PROCESSING_BUFFER, strength)
 
 
 # =========================================================================
-# PACKET CORRUPTION - STANDALONE EFFECT (PHASE 2: EXTRACTED, LOOK UNCHANGED)
+# PACKET CORRUPTION - STANDALONE EFFECT
 # =========================================================================
-# Unwired by default (PACKET_CORRUPTION_KNOB = None) and ready to be connected to
-# any knob. It has no connection to Data Mosh. Same random draws, in the same order,
-# as the old inline stage, so its look is unchanged.
+# It has no connection to Data Mosh and works on whichever knob it is attached to.
 #   corruption_update(strength)  - spawn new damage, age the existing damage
 #   corruption_render(frame)     - paint the current damage onto `frame`
-# Both helpers take the strength as an argument and read no knobs, so the later
-# Packet Corruption + Pixellation fusion can call them directly.
+# Both helpers take the strength as an argument and read no knobs.
 # =========================================================================
 
 
@@ -1290,23 +1539,12 @@ def apply_packet_corruption(raw_knob, current_time=0.0):
     # Packet Corruption entry point. raw_knob 0-1023. Modifies MUTABLE_PROCESSING_BUFFER in place.
     strength = n(raw_knob)
     if strength < CORRUPTION_CLEAR_BELOW:
-        # dormant: identical to the old stage (everything cleared, nothing drawn, no random draws)
+        # dormant: everything cleared, nothing drawn, no random draws
         if CORRUPTION_MODE.any() or CORRUPTION_ENERGY.any():
             corruption_reset()
         return
     corruption_update(strength)
     corruption_render(MUTABLE_PROCESSING_BUFFER)
-
-
-# =========================================================================
-# PRIVATE RANDOM GENERATORS AND WIRING CHECK
-# =========================================================================
-
-
-def seed_private_rngs(seed):
-    # Reseed every effect that owns a private random generator (tests / A-B harness).
-    _MOSH.reseed(seed)
-    _POSTER.reseed(seed)
 
 
 def _validate_mosh_settings():
@@ -1333,30 +1571,19 @@ def _validate_mosh_settings():
         MOSH_HOLD_MIN_FRAMES, MOSH_HOLD_MAX_FRAMES = 6, 33
 
     for msg in notes:
-        print(f"[MOSH SETTINGS] {msg}")
-    return notes
+        logger.warning("[CONFIG] Data Mosh setting adjusted: %s", msg)
 
 
 _validate_mosh_settings()
 
 
 # =========================================================================
-# ISOLATED GRAVITATIONAL MELT ENGINE (STAGE 6) -- VECTORIZED
+# MELT ENGINE - VECTORIZED
 # =========================================================================
-# Drop-in replacement for _collect_melt_drips / _render_melt_drips in server.py.
-# apply_melt_pass() stays exactly as it is.
-#
-# Needs this extra import at the top of server.py:
-#     from numpy.lib.stride_tricks import as_strided
-#
-# Why: the old renderer made ~30 tiny NumPy calls per drip (~3,000 per frame
-# at the 100-drip cap). Small NumPy calls hold the GIL, so the pygame thread
-# had to wait for it. This version makes a few dozen large NumPy calls per
-# frame; those release the GIL while they run.
-#
-# Visual behaviour is kept: same seed selection, same hashing, same gravity
-# curve, same bilinear sampling, same neon ramp, same (reach, x0) draw order
-# so overlapping drips composite the same way.
+# apply_melt_pass() is the entry point. Drip seeds are found without a Python loop
+# over columns, and the drips are drawn with a few dozen large NumPy calls per frame
+# (many small NumPy calls hold the GIL and would starve the pygame thread; large ones
+# release it). Overlapping drips composite in (reach, x0) draw order.
 
 
 def _collect_melt_drips(
@@ -1401,7 +1628,7 @@ def _collect_melt_drips(
     seed_rank = rank // seed_step
     xs = 1 + col_idx * stride
 
-    # Same ordering as before: all rank-0 seeds (by column), then rank-1, ...
+    # Order: all rank-0 seeds (by column), then rank-1, ...
     order = np.lexsort((xs, seed_rank))
     xs, ys, seed_rank = xs[order], ys[order], seed_rank[order]
     bounds = np.searchsorted(seed_rank, np.arange(max_seeds_per_column + 1))
@@ -1424,7 +1651,7 @@ def _collect_melt_drips(
         return None
     sel = np.concatenate(picked)
 
-    # Per-drip pseudo-random parameters (same integer hashes as before).
+    # Per-drip pseudo-random parameters (integer hashes of position and time).
     x = xs[sel].astype(np.int64)
     y = ys[sel].astype(np.int64)
     h1 = (x * 73856093) ^ (y * 19349663) ^ (time_tick * 83492791)
@@ -1551,13 +1778,12 @@ def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
 
 
 def apply_melt_pass(melt_raw: float, current_time: float):
-    # Stage 6: Gravitational Melt Deformation Public Entry Point.
+    # Melt entry point.
     if melt_raw <= 0.03:
         return
     STATIC_MELT_SNAPSHOT[:] = MUTABLE_PROCESSING_BUFFER[:]
     cv2.cvtColor(STATIC_MELT_SNAPSHOT, cv2.COLOR_BGR2GRAY, dst=STATIC_MELT_GRAY_BUFFER)
     drips = _collect_melt_drips(melt_raw, current_time)
-    # NOTE: drips is now a NumPy array (or None), so no `if drips:` truth test.
     if drips is not None:
         _render_melt_drips(drips)
 
@@ -1571,7 +1797,7 @@ def n(val):
 
 
 # =========================================================================
-# PHASE 3: EFFECT HANDLERS, ATTACHMENTS, ORDER AND PER-EFFECT KNOB WINDOWS
+# EFFECT HANDLERS, ATTACHMENTS, ORDER AND PER-EFFECT KNOB WINDOWS
 # =========================================================================
 def apply_pixellation(raw_knob, current_time):
     comp = n(raw_knob)
@@ -1769,7 +1995,7 @@ def apply_crt_overlay():
 
 
 # =========================================================================
-# POSTERIZE (PHASE 5): NEON TONE BANDS WITH GLITCHY OUTLINES
+# POSTERIZE: NEON TONE BANDS WITH GLITCHY OUTLINES
 # =========================================================================
 # Colour effect: it does not move pixels. Blacks stay untouched; every other tone becomes a
 # neon colour of the Melt palette (dark tones get the deep hues, bright tones the bright ones);
@@ -1792,11 +2018,11 @@ def _posterize_palette():
 class PosterizeEngine:
     """Buffers (about 14 MiB, allocated once) and the per-frame work of Posterize."""
 
-    def __init__(self, seed=None):
+    def __init__(self):
         H, W = FRAME_H, FRAME_W
         hh, hw = H // 2, W // 2
         sp = POSTERIZE_SECTION_PX
-        self.rng = np.random.default_rng(seed)
+        self.rng = np.random.default_rng()
         z = lambda h=H, w=W: np.zeros((h, w), dtype=np.uint8, order="C")
         z3 = lambda h=H, w=W: np.zeros((h, w, 3), dtype=np.uint8, order="C")
         self.gray, self.black, self.nonblack, self.ramp = z(), z(), z(), z()
@@ -1823,14 +2049,6 @@ class PosterizeEngine:
         self._lut_key = None
         self.band_lut = np.zeros((256, 1), np.uint8)
         self.color_lut = np.zeros((3, 256, 1), np.uint8)
-
-    def reseed(self, seed):
-        """Restart the random sequence; the break-up noise is regenerated too, so the same
-        seed always gives the same picture."""
-        self.rng = np.random.default_rng(seed)
-        self.noise_bank[:] = self.rng.integers(
-            0, 256, self.noise_bank.shape, dtype=np.uint8
-        )
 
     def strength(self, raw_knob):
         """Knob value 0-1023 -> strength 0-1 through the response curve (0 = off)."""
@@ -1875,7 +2093,6 @@ class PosterizeEngine:
         dropout = (
             POSTERIZE_DROPOUT_LOW + (POSTERIZE_DROPOUT_HIGH - POSTERIZE_DROPOUT_LOW) * s
         )
-        # jitter = 1 + int(s * (POSTERIZE_JITTER_MAX_PX - 1) + 1e-9)
         jitter = int(round(s * POSTERIZE_JITTER_MAX_PX))
         if POSTERIZE_ROTATE_SECONDS > 0 and len(self.palette) > 0:
             rotation = int(current_time / POSTERIZE_ROTATE_SECONDS) % len(self.palette)
@@ -1967,7 +2184,7 @@ class PosterizeEngine:
         np.copyto(frame, self.poster)
 
 
-_POSTER = PosterizeEngine(POSTERIZE_RNG_SEED)
+_POSTER = PosterizeEngine()
 
 
 def apply_posterize(raw_knob, current_time, ascii_active=False):
@@ -2058,21 +2275,7 @@ def rebuild_effect_plan():
         for k in range(6)
     ]
     for note in notes:
-        print(f"[EFFECT CONFIG] {note}")
-    return notes
-
-
-def set_effect_config(order=None, attachments=None, windows=None, weights=None):
-    global EFFECT_ORDER, KNOB_ATTACHMENTS, EFFECT_KNOB_WINDOW, EFFECT_COST_WEIGHT
-    if order is not None:
-        EFFECT_ORDER = list(order)
-    if attachments is not None:
-        KNOB_ATTACHMENTS = {k: list(v) for k, v in attachments.items()}
-    if windows is not None:
-        EFFECT_KNOB_WINDOW = dict(windows)
-    if weights is not None:
-        EFFECT_COST_WEIGHT = dict(weights)
-    return rebuild_effect_plan()
+        logger.warning("[CONFIG] Effect configuration: %s", note)
 
 
 def get_knob_labels():
@@ -2138,15 +2341,10 @@ def get_wiring_label():
 
 
 def apply_glitch_pipeline(current_time, control_packet):
-    global WARMUP_COUNTER, LAST_TEMPORAL_PURGE
+    global WARMUP_COUNTER
     is_warming_up = WARMUP_COUNTER < WARMUP_FRAMES
-    cv2.cvtColor(MUTABLE_PROCESSING_BUFFER, cv2.COLOR_BGR2GRAY, dst=SHARED_GRAY_BUFFER)
     if is_warming_up:
-        PREV_FRAME_BUFFER[:] = MUTABLE_PROCESSING_BUFFER
         WARMUP_COUNTER += 1
-    if current_time - LAST_TEMPORAL_PURGE > 90.0:
-        PREV_FRAME_BUFFER[:] = MUTABLE_PROCESSING_BUFFER
-        LAST_TEMPORAL_PURGE = current_time
     for _effect, handler, knob, window, skip in _EFFECT_PLAN:
         if not (skip and is_warming_up):
             if _effect == "posterize":
@@ -2205,7 +2403,7 @@ def cleanup_sessions(limit=100):
                         archived_count += 1
                     except Exception as move_err:
                         logger.error(
-                            f"[ARCHIVE ERROR] Failed to archive {src_color}: {move_err}"
+                            "[ARCHIVE] Failed to archive %s: %s", src_color, move_err
                         )
 
                 # 2. Delete Black & White receipt print file
@@ -2234,14 +2432,13 @@ def cleanup_sessions(limit=100):
 
             if archived_count > 0:
                 logger.info(
-                    f"[ARCHIVE] Safely relocated {archived_count} color captures to {ARCHIVE_DIR}"
-                )
-                print(
-                    f"[ARCHIVE] Relocated {archived_count} excess captures to {ARCHIVE_DIR} (kept newest {limit})"
+                    "[ARCHIVE] Relocated %d excess captures to %s (kept newest %d)",
+                    archived_count,
+                    ARCHIVE_DIR,
+                    limit,
                 )
     except Exception as e:
-        logger.error(f"Archival pipeline exception: {e}")
-        print(f"Archival pipeline exception: {e}")
+        logger.exception("[ARCHIVE] Archival pipeline exception")
 
 
 def async_storage_worker(disk_id, color_mat, bw_mat, active_knobs, naked_mat=None):
@@ -2273,7 +2470,7 @@ def async_storage_worker(disk_id, color_mat, bw_mat, active_knobs, naked_mat=Non
         cleanup_sessions(limit=100)
     except queue.Full:
         logger.warning(
-            "[STATE ENGINE WARNING] Queue full. Enqueuing %s directly to offline cache file.",
+            "[STATE ENGINE] Upload queue full. Enqueuing %s directly to the offline cache file.",
             disk_id,
         )
         try:
@@ -2281,8 +2478,8 @@ def async_storage_worker(disk_id, color_mat, bw_mat, active_knobs, naked_mat=Non
                 with open("pending_uploads.txt", "a") as cache_log:
                     cache_log.write(f"{disk_id}\n")
         except Exception as cache_err:
-            logger.error(
-                "[STATE ENGINE CRITICAL] Failed to write queue fallback to cache: %s",
+            logger.critical(
+                "[STATE ENGINE] Failed to write the queue fallback to the offline cache: %s",
                 cache_err,
             )
 
@@ -2291,10 +2488,7 @@ def async_storage_worker(disk_id, color_mat, bw_mat, active_knobs, naked_mat=Non
 
     if TELEMETRY_ENABLED:
         try:
-            logger.info(
-                "[TELEMETRY ENGINE] Executing core capture ledger entry for session: %s",
-                disk_id,
-            )
+            logger.debug("[TELEMETRY] Recording capture %s", disk_id)
             telemetry.record_capture(
                 session_id=disk_id,
                 knobs=active_knobs,
@@ -2302,9 +2496,11 @@ def async_storage_worker(disk_id, color_mat, bw_mat, active_knobs, naked_mat=Non
                 wiring=get_wiring_label(),
             )
         except Exception as telemetry_fault:
-            logger.error(
-                "[TELEMETRY HOOK ERROR] Non-fatal capture entry failure: %s",
+            logger.warning(
+                "[TELEMETRY] Could not record capture %s: %s",
+                disk_id,
                 telemetry_fault,
+                exc_info=True,
             )
 
 
@@ -2419,16 +2615,14 @@ def generate_composite_receipt_image(ts: str) -> str:
             return composite_path
 
     except Exception as comp_err:
-        logger.error(
-            "[COMPOSITE] Unexpected failure generating composite for %s: %s",
-            ts,
-            comp_err,
+        logger.exception(
+            "[COMPOSITE] Unexpected failure generating composite for %s", ts
         )
         return None
 
 
 def print_booth_receipt(ts):
-    logger.info("PRINTER: Spooling hardware receipt pipeline for session %s...", ts)
+    logger.info("[PRINTER] Spooling hardware receipt for session %s", ts)
 
     with printer_hardware_lock:  # Serializes multi-threaded physical hardware access
         printer = None
@@ -2476,7 +2670,6 @@ def print_booth_receipt(ts):
                     )
                     dithered_img = resized_img.convert("1")
                     printer.image(dithered_img)
-                    # printer.text("\n")
 
                 if not using_composite:
                     # Explicit fallback notice printed directly on paper if composite failed
@@ -2486,9 +2679,7 @@ def print_booth_receipt(ts):
                     printer.text(" > NOTICE: QR EMBEDDING UNAVAILABLE  \n")
                     printer.text(f" > RETRIEVE AT: {get_landing_url(ts)}\n\n")
             else:
-                logger.error(
-                    "[PRINTER ERROR] No printable photo found for session %s", ts
-                )
+                logger.error("[PRINTER] No printable photo found for session %s", ts)
 
             if is_offline_capture:
                 printer.text(" > NETWORK OFFLINE // CACHED LOCALLY  \n")
@@ -2505,16 +2696,18 @@ def print_booth_receipt(ts):
             printer.ln(2)
             printer.cut()
             time.sleep(0.5)
-            logger.info("PRINTER: Hardware receipt complete.")
+            logger.info("[PRINTER] Hardware receipt complete for session %s", ts)
 
         except Exception as e:
-            logger.error("PRINTER HARDWARE FAULT: %s", e)
+            logger.exception("[PRINTER] Hardware fault while printing session %s", ts)
         finally:
             if printer is not None:
                 try:
                     printer.close()
                 except Exception as close_err:
-                    logger.error("PRINTER UNHOOK EXCEPTION: %s", close_err)
+                    logger.warning(
+                        "[PRINTER] Could not close the printer device: %s", close_err
+                    )
 
 
 def idle_sync_worker():
@@ -2522,7 +2715,7 @@ def idle_sync_worker():
     # Low-priority background worker that scans for offline captures cached in
     # pending_uploads.txt and re-attempts synchronization when grid link recovers.
 
-    logger.info("IO IDLE SYNC ENGINE: Resilient background scheduler active.")
+    logger.info("[INIT] Idle sync worker (offline cache upload retries): active.")
     http = requests.Session()
 
     while not SHUTDOWN_EVENT.is_set():
@@ -2545,6 +2738,10 @@ def idle_sync_worker():
                 remote_filename = f"{ts}_color.jpg"
 
                 if not os.path.exists(local_color_path):
+                    logger.warning(
+                        "[IDLE SYNC] Local file for session %s is missing; dropping it from the pending list.",
+                        ts,
+                    )
                     continue
 
                 try:
@@ -2565,12 +2762,30 @@ def idle_sync_worker():
 
                     if response.status_code == 200:
                         logger.info(
-                            "[IDLE SYNC SUCCESS] Latent sync accomplished for session %s. Evicting from cache.",
+                            "[IDLE SYNC] Session %s uploaded; removing it from the pending list.",
                             ts,
                         )
                     else:
+                        log_throttled(
+                            logger,
+                            logging.WARNING,
+                            "idle-sync-http",
+                            300.0,
+                            "[IDLE SYNC] Upload of session %s rejected: HTTP %s",
+                            ts,
+                            response.status_code,
+                        )
                         still_pending.append(ts)
-                except Exception:
+                except Exception as upload_err:
+                    log_throttled(
+                        logger,
+                        logging.WARNING,
+                        "idle-sync-net",
+                        300.0,
+                        "[IDLE SYNC] Upload of session %s failed: %s",
+                        ts,
+                        upload_err,
+                    )
                     still_pending.append(ts)
 
             if len(still_pending) != len(backlog):
@@ -2587,12 +2802,12 @@ def idle_sync_worker():
                         os.replace(tmp_path, final_path)
 
                     logger.info(
-                        "[OFFLINE CACHE] Sync logging file updated atomically. Remaining: %s",
+                        "[OFFLINE CACHE] Pending list updated. Remaining: %s",
                         len(still_pending),
                     )
                 except Exception as file_err:
-                    logger.error(
-                        "[OFFLINE CRITICAL] Atomic file sync write failure: %s",
+                    logger.critical(
+                        "[OFFLINE CACHE] Atomic write of the pending list failed: %s",
                         file_err,
                     )
                 if os.path.exists(tmp_path):
@@ -2602,7 +2817,14 @@ def idle_sync_worker():
                         pass
 
         except Exception as sync_fault:
-            logger.error("IDLE SYNC WORKER ERROR: %s", sync_fault)
+            log_throttled(
+                logger,
+                logging.ERROR,
+                "idle-sync-fault",
+                300.0,
+                "[IDLE SYNC] Worker exception",
+                exc_info=True,
+            )
 
 
 # CLOUD INTERFACE BACKGROUND ENGINE
@@ -2634,7 +2856,7 @@ def upload_queue_worker():
                 qr_generated = True
             except Exception as qr_err:
                 logger.error(
-                    "[QR GENERATION ERROR] Session %s QR creation failed: %s",
+                    "[UPLOAD WORKER] QR creation failed for session %s: %s",
                     ts,
                     qr_err,
                 )
@@ -2646,8 +2868,8 @@ def upload_queue_worker():
                 if comp_result:
                     composite_ready = True
                 else:
-                    logger.error(
-                        "[COMPOSITE WARNING] Composite prep failed for %s; print pipeline will handle fallback.",
+                    logger.warning(
+                        "[UPLOAD WORKER] Composite preparation failed for %s; the print pipeline will fall back.",
                         ts,
                     )
 
@@ -2678,26 +2900,27 @@ def upload_queue_worker():
                         )
 
                     if response.status_code == 200:
-                        # res_data = response.json()
-
                         with mode_lock:
                             upload_status_msg = "SUCCESS"
                         upload_success = True
+                        logger.info("[UPLOAD] Session %s uploaded", ts)
 
                         with mode_lock:
                             ACTIVE_SESSION["upload_complete"] = True
                         break
                     else:
-                        logger.error(
-                            "CLOUD SERVER REFUSAL ERROR: %s (Attempt %s)",
+                        logger.warning(
+                            "[UPLOAD] Session %s rejected by the cloud: HTTP %s (attempt %s)",
+                            ts,
                             response.status_code,
                             attempt + 1,
                         )
                         time.sleep(1)
 
                 except Exception as e:
-                    logger.error(
-                        "API BUS NETWORK LOSS: %s (Attempt %s)",
+                    logger.warning(
+                        "[UPLOAD] Session %s network failure: %s (attempt %s)",
+                        ts,
                         e,
                         attempt + 1,
                     )
@@ -2717,8 +2940,9 @@ def upload_queue_worker():
                         ts,
                     )
                 except Exception as fallback_err:
-                    logger.error(
-                        "[OFFLINE CRITICAL] Failed to execute local asset fallback: %s",
+                    logger.critical(
+                        "[OFFLINE CACHE] Could not record session %s in the pending list: %s",
+                        ts,
                         fallback_err,
                     )
 
@@ -2728,10 +2952,7 @@ def upload_queue_worker():
             upload_queue.task_done()
 
         except Exception as fatal_e:
-            logger.error(
-                "UPLOAD QUEUE WORKER FATAL EXCEPTION: %s",
-                fatal_e,
-            )
+            logger.exception("[UPLOAD WORKER] Worker exception")
             time.sleep(1)
 
 
@@ -2741,9 +2962,7 @@ def upload_queue_worker():
 
 def background_loop():
     global last_button_state, capture_lock_until, FRAME_ID
-    global UI_FRAME_SEQ  # NEW
-    # Disabling button-knobs combo shutdown feature
-    # global shutdown_hold_start
+    global UI_FRAME_SEQ
     global SHARED_JPEG_STREAM_BUFFER, SHARED_JPEG_ARRAY
     global PRINT_ALPHA, PRINT_BETA
     global upload_status_msg
@@ -2795,9 +3014,6 @@ def background_loop():
                 ACTIVE_SESSION["knobs"] = list(GLOBAL_KNOBS)
                 loop_mode = ACTIVE_SESSION["mode"]
                 session_key = ACTIVE_SESSION["session_id"]
-                upload_done = ACTIVE_SESSION["upload_complete"]
-                upload_lost = ACTIVE_SESSION["upload_failed"]
-                already_printed = ACTIVE_SESSION["print_dispatched"]
                 c_start = ACTIVE_SESSION["countdown_start_time"]
 
             with hw_state_lock:
@@ -2896,22 +3112,6 @@ def background_loop():
                     SHARED_JPEG_ARRAY = encoded_jpeg
                     SHARED_JPEG_STREAM_BUFFER = memoryview(SHARED_JPEG_ARRAY)
                     FRAME_ID += 1
-
-            # Disabling button-knobs combo shutdown feature
-            """
-            shutdown_ready = all(0 <= k <= SHUTDOWN_THRESHOLD for k in packet.knobs)
-            if shutdown_ready and packet.button == 0:
-                if shutdown_hold_start is None:
-                    shutdown_hold_start = loop_execution_time
-                elif loop_execution_time - shutdown_hold_start > 5:
-                    global cam_thread_alive
-                    cam_thread_alive = False
-                    time.sleep(0.5)
-                    subprocess.Popen(["systemctl", "poweroff"])
-                    return
-            else:
-                shutdown_hold_start = None
-            """
 
             # CENTRAL CONTROL MATRIX & TRANSITION MACHINE
             # ------------------------------------------------------------------
@@ -3035,9 +3235,6 @@ def background_loop():
                         ACTIVE_SESSION["countdown_remaining"] = 3
                         upload_status_msg = "IDLE"
 
-                    # Force a comprehensive GC collection during idle state transition
-                    # gc.collect()
-
             last_button_state = packet.button
 
             # Adaptive FPS governor
@@ -3057,8 +3254,13 @@ def background_loop():
                 time.sleep(remaining)
 
         except Exception as loop_fault:
-            logger.error(
-                "[STATE ENGINE CRITICAL FAULT] Core execution exception: %s", loop_fault
+            log_throttled(
+                logger,
+                logging.ERROR,
+                "loop-fault",
+                10.0,
+                "[STATE ENGINE] Core loop exception",
+                exc_info=True,
             )
             time.sleep(1.0)
 
@@ -3104,7 +3306,7 @@ def generate_frames():
                 continue
 
             if FRAME_ID % 1000 == 0:
-                print(f"[STREAM Sending frame {FRAME_ID}]")
+                logger.debug("[STREAM] Sending frame %s", FRAME_ID)
             yield (
                 b"--frame\r\n"
                 b"Content-Type: image/jpeg\r\n"
@@ -3118,8 +3320,7 @@ def generate_frames():
     except (BrokenPipeError, ConnectionResetError, GeneratorExit):
         return
     except Exception as e:
-        logger.error("[CRITICAL STREAM ERROR]: %s", e)
-        print(f"[CRITICAL STREAM ERROR]: {e}")
+        logger.exception("[STREAM] Unexpected error in the frame generator")
         return
     finally:
         with frame_lock:
@@ -3131,7 +3332,6 @@ def generate_frames():
 
 
 def graceful_shutdown_handler(signum, frame):
-    print("\n\n[SHUTDOWN] Signal intercepted! Initiating formal teardown...")
     logger.info("[SHUTDOWN] Signal intercepted! Initiating formal teardown...")
     SHUTDOWN_EVENT.set()
 
@@ -3139,40 +3339,43 @@ def graceful_shutdown_handler(signum, frame):
         try:
             telemetry.request_shutdown()
         except Exception as e:
-            print(f"  [WARNING] Failed to request telemetry shutdown boundary: {e}")
+            logger.warning("[SHUTDOWN] Failed to request the telemetry shutdown: %s", e)
 
     try:
         # If disable was requested via web route, handle it now
         if ACTIVE_SESSION.get("disable_service_on_exit", False):
-            print("[SHUTDOWN] Softly disabling glitchbooth.service for next boot...")
+            logger.info(
+                "[SHUTDOWN] Softly disabling glitchbooth.service for next boot..."
+            )
             subprocess.run(
                 ["sudo", "systemctl", "disable", "glitchbooth.service"], check=False
             )
 
         # ONLY run TTY/getty rescue if we are exiting to terminal (NOT powering off or rebooting)
         if ACTIVE_SESSION.get("exit_to_terminal", False):
-            print("[SHUTDOWN TTY RESCUE] Resetting console input streams...")
+            logger.info("[SHUTDOWN TTY RESCUE] Resetting console input streams...")
             subprocess.run(["stty", "sane"], check=False)
             subprocess.run(["sudo", "kbd_mode", "-a"], check=False)
 
-            print("[SHUTDOWN TTY RESCUE] Spawning fresh login prompt on tty1...")
+            logger.info("[SHUTDOWN TTY RESCUE] Spawning fresh login prompt on tty1...")
             subprocess.run(
                 ["sudo", "systemctl", "start", "getty@tty1.service"], check=False
             )
             subprocess.run(["sudo", "chvt", "1"], check=False)
-            print("[SHUTDOWN TTY RESCUE] Local terminal login prompt restored!")
+            logger.info("[SHUTDOWN TTY RESCUE] Local terminal login prompt restored")
         else:
-            print("[SHUTDOWN] System reboot/poweroff in progress. Skipping TTY rescue.")
+            logger.info(
+                "[SHUTDOWN] System reboot/poweroff in progress. Skipping TTY rescue."
+            )
 
     except Exception as tty_err:
-        print(f"[SHUTDOWN TTY RESCUE] Terminal rescue routine failed: {tty_err}")
+        logger.exception("[SHUTDOWN TTY RESCUE] Terminal rescue routine failed")
 
     # Give background workers a moment to observe SHUTDOWN_EVENT
     time.sleep(1.5)
-    print("[SYSTEM EXIT] Teardown complete. Process terminated.")
+    logger.info("[SYSTEM EXIT] Teardown complete. Process terminated.")
+    shutdown_logging()
     # sys.exit runs atexit handlers and finally blocks; os._exit does not
-    import sys
-
     sys.exit(0)
 
 
@@ -3228,14 +3431,16 @@ def start_backend_engine(blocking=True):
         CRITICAL_WORKERS.append(t)
         t.start()
 
-    # --- CROSS REFERENCE FIX: Handle web server instantiation based on execution context ---
+    # Web server: blocking when standalone, in a daemon thread when embedded in the display.
     from waitress import serve
 
     if blocking:
-        print("[SERVER] Starting Waitress web server in blocking mode...")
+        logger.info("[SERVER] Starting Waitress web server in blocking mode...")
         serve(app, host="0.0.0.0", port=5000, threads=8)
     else:
-        print("[SERVER] Starting Waitress web server asynchronously behind Pygame...")
+        logger.info(
+            "[SERVER] Starting Waitress web server asynchronously behind Pygame..."
+        )
         web_thread = threading.Thread(
             target=lambda: serve(app, host="0.0.0.0", port=5000, threads=8),
             name="WaitressWebServer",
@@ -3294,7 +3499,7 @@ def gallery():
 
         files = sorted(modern_files, reverse=True)
     except Exception as e:
-        print(f"Gallery efficient listing error: {e}")
+        logger.exception("[GALLERY] Listing error")
         files = []
 
     captures = []
@@ -3337,7 +3542,9 @@ def print_capture(session_id):
             404,
         )
 
-    print(f"[MANUAL PRINT] Dispatching manual print thread for key: {session_id}")
+    logger.info(
+        "[MANUAL PRINT] Dispatching manual print thread for session %s", session_id
+    )
 
     threading.Thread(
         target=print_booth_receipt, args=(session_id,), daemon=True
@@ -3372,7 +3579,7 @@ def delete_capture(session_id):
                 os.remove(path)
                 deleted_any = True
             except Exception as e:
-                print(f"Failed to delete file asset {path}: {e}")
+                logger.error("[GALLERY] Failed to delete file asset %s: %s", path, e)
 
     if deleted_any:
         return jsonify(
@@ -3392,19 +3599,20 @@ def video_feed():
     user_agent = request.headers.get("User-Agent", "Unknown Browser")
 
     if not STREAM_SEMAPHORE.acquire(blocking=False):
-        print(
-            f"[GUARDRAIL] Rejected stream connection from {client_ip} to protect server threads."
+        logger.warning(
+            "[STREAM] Rejected a stream connection from %s (limit reached; protecting server threads)",
+            client_ip,
         )
         return "Too Many Concurrent Streams", 429
 
-    print(f"[STREAM CONNECT] IP: {client_ip} | Agent: {user_agent}")
+    logger.info("[STREAM] Connect: IP %s | Agent: %s", client_ip, user_agent)
 
     def stream_lifecycle_wrapper():
         try:
             yield from generate_frames()
         finally:
             STREAM_SEMAPHORE.release()
-            print(f"[STREAM DISCONNECT] Released streaming slot for IP: {client_ip}")
+            logger.info("[STREAM] Disconnect: released the slot for IP %s", client_ip)
 
     response = Response(
         stream_lifecycle_wrapper(), mimetype="multipart/x-mixed-replace; boundary=frame"
@@ -3534,7 +3742,7 @@ def clear_session():
         if ACTIVE_SESSION["mode"] == "latest":
             ACTIVE_SESSION["mode"] = "live"
             ACTIVE_SESSION["session_id"] = None
-            print(
+            logger.info(
                 "[STATE ENGINE] Client-side watchdog timeout. Returning to live stream."
             )
     return jsonify({"status": "success"})
@@ -3591,12 +3799,5 @@ def server_local_stats_page():
 
 
 if __name__ == "__main__":
-    LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-
-    logging.basicConfig(
-        level=getattr(logging, LOG_LEVEL, logging.INFO),
-        format="%(asctime)s %(levelname)s [%(threadName)s] %(name)s: %(message)s",
-    )
-
     # Running independently: block on Waitress natively
     start_backend_engine(blocking=True)
