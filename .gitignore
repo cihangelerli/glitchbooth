@@ -7,7 +7,7 @@ captures_naked/
 captures/
 saved/
 backup-files/
-captures_naked/
+captures_archive/
 
 # Python Virtual Environment
 venv/
