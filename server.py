@@ -474,7 +474,8 @@ KNOB_ATTACHMENTS = {
 # Optional range of the knob in which an effect works, as fractions of the knob travel.
 # Inside its window the effect sees the full 0-1023 range; outside it is off.
 # Example: {"chroma_shift": (0.0, 0.7), "packet_corruption": (0.35, 1.0)}
-EFFECT_KNOB_WINDOW = {"melt": (0.0, 1.0), "data_mosh": (0.49, 1.0)}
+# EFFECT_KNOB_WINDOW = {"melt": (0.0, 1.0), "data_mosh": (0.49, 1.0)}
+EFFECT_KNOB_WINDOW = {}
 
 # Cost weights follow effects when they move between knobs.
 EFFECT_COST_WEIGHT = {
@@ -579,7 +580,7 @@ POSTERIZE_BANDS_HIGH = 12  # ... and at full strength
 POSTERIZE_DETAIL_LOW = (
     0.95  # how much of the original brightness modulates the neon (weak) ...
 )
-POSTERIZE_DETAIL_HIGH = 0.67  # ... and at full strength (faces stay readable)
+POSTERIZE_DETAIL_HIGH = 0.37  # ... and at full strength (faces stay readable)
 POSTERIZE_MIX_START = 0.05  # neon share at the weakest strength ...
 POSTERIZE_MIX_FULL_AT = 0.43  # ... reaching 1.0 at this strength (0-1)
 POSTERIZE_OUTLINE_2PX_FROM = 0.85  # strength from which outlines are 2 px thick
