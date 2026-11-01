@@ -607,7 +607,7 @@ POSTERIZE_ROTATE_SECONDS = (
 MOSH_DORMANT_BELOW = (
     0.02  # strength = (knob/1023)**2 below this cancels everything at once
 )
-MOSH_THRESH_BASE = 17  # motion threshold = BASE + (1 - strength) * SPAN   (18 .. 58)
+MOSH_THRESH_BASE = 37  # motion threshold = BASE + (1 - strength) * SPAN   (18 .. 58)
 MOSH_THRESH_SPAN = 53
 MOSH_HOLD_MIN_FRAMES = 17  # hold time rises from MIN to MAX with strength (1-111)
 MOSH_HOLD_MAX_FRAMES = 49
@@ -624,7 +624,7 @@ MOSH_BLEED_MAX = 0.23  # bleed mix = MAX * strength (0-1)
 MOSH_CELL_H = 16
 MOSH_CELL_W = 12
 
-# These above are connected to and kept in check by _validate_mosh_settings() below the line...
+# These above are connected to and kept in check by _validate_mosh_settings() below in the pipeline...
 
 # --- Corruption -------------------------------------------------------------------
 CORRUPTION_CELL_H = 12
@@ -674,9 +674,9 @@ MELT_STRIDE_MID = 3
 MELT_STRIDE_HIGH = 2  # Safe min stride for maintaining high FPS on Pi 5 - 1 GB is 2
 MAX_MELT_DRIPS = 120  # Balanced aesthetic ceiling 100
 MELT_DRIP_WIDTH = 8  # Thick, substantial drips when the number is bigger. 75 drips and 10 width, 100 drips and 8 width are good combos
-MELT_NEON_START_PCT = 0.85  # Where neon begins: 0.0 = top of drip, 0.5 = halfway down
+MELT_NEON_START_PCT = 0.37  # Where neon begins: 0.0 = top of drip, 0.5 = halfway down
 MELT_NEON_RAMP_SPAN = (
-    0.10  # Length of the transition ramp to full neon (Start + Span should equal 1.0)
+    0.43  # Length of the transition ramp to full neon (Start + Span should equal 1.0)
 )
 
 # NEON_PALETTES defined in native OpenCV BGR format: [Blue, Green, Red]
