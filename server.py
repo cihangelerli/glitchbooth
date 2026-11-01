@@ -590,6 +590,7 @@ POSTERIZE_JITTER_MAX_PX = 0  # outline rows shift sideways by up to 1 .. this ma
 POSTERIZE_FLICKER_PROB = 0.005  # share of outline sections that flash white-hot
 # Outline colour: "glow" = the brightest neon next to the border (often near-white), "white", "black" (ink)
 POSTERIZE_OUTLINE_STYLE = "black"
+# added variables in stead of hard-coded magic numbers!
 POSTERIZE_OUTLINE_MAX_PX = 2  # maximum outline thickness (min to mid to max)
 POSTERIZE_OUTLINE_MID_PX = 1  # mid-level outline thickness
 POSTERIZE_OUTLINE_MIN_PX = 1  # minimum outline thickness
