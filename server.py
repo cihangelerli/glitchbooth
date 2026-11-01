@@ -582,14 +582,15 @@ POSTERIZE_DETAIL_LOW = (
 POSTERIZE_DETAIL_HIGH = 0.37  # ... and at full strength (faces stay readable)
 POSTERIZE_MIX_START = 0.05  # neon share at the weakest strength ...
 POSTERIZE_MIX_FULL_AT = 0.43  # ... reaching 1.0 at this strength (0-1)
-POSTERIZE_OUTLINE_2PX_FROM = 0.85  # strength from which outlines are 2 px thick
-POSTERIZE_OUTLINE_3PX_FROM = 0.99  # strength from which outlines are 3 px thick
 POSTERIZE_DROPOUT_LOW = 0.05  # share of the outline that is missing (weak) ...
 POSTERIZE_DROPOUT_HIGH = 0.01  # ... and at full strength
 POSTERIZE_JITTER_MAX_PX = 0  # outline rows shift sideways by up to 1 .. this many px
 POSTERIZE_FLICKER_PROB = 0.005  # share of outline sections that flash white-hot
 # Outline colour: "glow" = the brightest neon next to the border (often near-white), "white", "black" (ink)
 POSTERIZE_OUTLINE_STYLE = "black"
+# corrected for names of the tunables below
+POSTERIZE_OUTLINE_MID_FROM = 0.85  # strength from which outlines are MID px thick
+POSTERIZE_OUTLINE_MAX_FROM = 0.99  # strength from which outlines are MAX px thick
 # added tunables in stead of hard-coded magic numbers!
 POSTERIZE_OUTLINE_MAX_PX = 2  # maximum outline thickness (min to mid to max)
 POSTERIZE_OUTLINE_MID_PX = 1  # mid-level outline thickness
@@ -2221,10 +2222,10 @@ class PosterizeEngine:
         )
         px = (
             POSTERIZE_OUTLINE_MAX_PX
-            if s >= POSTERIZE_OUTLINE_3PX_FROM
+            if s >= POSTERIZE_OUTLINE_MAX_FROM
             else (
                 POSTERIZE_OUTLINE_MID_PX
-                if s >= POSTERIZE_OUTLINE_2PX_FROM
+                if s >= POSTERIZE_OUTLINE_MID_FROM
                 else POSTERIZE_OUTLINE_MIN_PX
             )
         )
