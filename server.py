@@ -643,10 +643,10 @@ POSTERIZE_COLOR_MODE = "bands"  # used when POSTERIZE_MODE_SCHEDULE is empty
 # played in a loop. Use 2 or 3 of the modes, with any duration each. A mode can also be an
 # overlay of two modes, written "bands+thermal" (shown mixed by POSTERIZE_OVERLAY_MIX).
 # Example: (("bands", 40), ("thermal", 15), ("gradient", 5)).   () = fixed mode above.
-POSTERIZE_MODE_SCHEDULE = ()
+POSTERIZE_MODE_SCHEDULE = (("bands+gradient", 25), ("thermal", 10))
 POSTERIZE_MODE_FADE_SECONDS = 0  # cross-fade length at each change (0 = hard cut)
-POSTERIZE_OVERLAY_MIX = 0.5  # share of the 2nd mode in an "a+b" overlay (0-1)
-POSTERIZE_GRADIENT_STOPS = 4  # palette colours the gradient map blends through (2+)
+POSTERIZE_OVERLAY_MIX = 0.4  # share of the 2nd mode in an "a+b" overlay (0-1)
+POSTERIZE_GRADIENT_STOPS = 11  # palette colours the gradient map blends through (2+)
 POSTERIZE_THERMAL_STOPS = (  # (grey level 0-255, (B, G, R)), blended in between
     (0, (0, 0, 0)),
     (45, (140, 0, 40)),  # deep blue-violet
@@ -659,30 +659,27 @@ POSTERIZE_THERMAL_STOPS = (  # (grey level 0-255, (B, G, R)), blended in between
 
 # Solarize (Sabattier): folds the tone curve, so highlights fall back to dark tones.
 # Works on the tones before the colour step, so it combines with every colour mode.
-POSTERIZE_SOLARIZE = False
+POSTERIZE_SOLARIZE = True
 POSTERIZE_SOLARIZE_STYLE = "fold"  # "fold" = smooth triangle, "invert" = hard flip
 POSTERIZE_SOLARIZE_POINT = 150  # grey level (16-239) where the curve turns around
 
 # Halftone: the neon fill becomes a dot screen (bigger dots = brighter tone).
 POSTERIZE_HALFTONE = False
-POSTERIZE_HALFTONE_PITCH = 8  # px between dot centres (8+ survives phone JPEG)
+POSTERIZE_HALFTONE_PITCH = 11  # px between dot centres (8+ survives phone JPEG)
 POSTERIZE_HALFTONE_ANGLE = 45  # screen angle in degrees
-POSTERIZE_HALFTONE_SOFTNESS = 1.6  # dot edge softness in px (lower = harder dots)
-POSTERIZE_HALFTONE_GAP = 0.06  # brightness left between the dots (0 = black)
-POSTERIZE_HALFTONE_FROM = 0.0  # strength (0-1) from which the dots appear
+POSTERIZE_HALFTONE_SOFTNESS = 0.5  # dot edge softness in px (lower = harder dots)
+POSTERIZE_HALFTONE_GAP = 0.0  # brightness left between the dots (0 = black)
+POSTERIZE_HALFTONE_FROM = 0.2  # strength (0-1) from which the dots appear
 # Which tone bands get dots (0 = darkest band, 1 = brightest band; the rest stay solid):
 POSTERIZE_HALFTONE_TONE_FROM = 0.0  # e.g. 0.0 / 0.5 = only the darker half gets dots
-POSTERIZE_HALFTONE_TONE_TO = 1.0  # e.g. 0.5 / 1.0 = only the brighter half gets dots
+POSTERIZE_HALFTONE_TONE_TO = 0.5  # e.g. 0.5 / 1.0 = only the brighter half gets dots
 POSTERIZE_HALFTONE_ALTERNATE = False  # True = only every 2nd band inside that range
 
 # Neon edge glow: a halo (and optionally a bright neon core) on the outline.
 POSTERIZE_EDGE_GLOW = False
-POSTERIZE_GLOW_COLOR = (
-    255,
-    255,
-    0,
-)  # (B, G, R) electric cyan, or "palette" = local neon
-POSTERIZE_GLOW_RADIUS_PX = 8  # halo size
+POSTERIZE_GLOW_COLOR = (255, 255, 0)
+# (B, G, R) (255, 255, 0) electric cyan, or "palette" = local neon
+POSTERIZE_GLOW_RADIUS_PX = 7  # halo size
 POSTERIZE_GLOW_GAIN = 1.2  # halo brightness (about 0.6 - 3)
 POSTERIZE_GLOW_CLEAN = 7  # 3, 5, 7: larger = the halo follows only bigger tone borders
 POSTERIZE_GLOW_DIM = (
