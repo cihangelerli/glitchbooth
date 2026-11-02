@@ -634,12 +634,13 @@ POSTERIZE_ROTATE_SECONDS = (
 # They are read every frame, so they can be switched live (set the module variable);
 # only the halftone pitch / angle rebuild a small table when they change.
 # ------------------------------------------------------------------------------
+
 # Colour mode of the neon fill:
 #   "bands"    = hard tone bands from the neon palette (the original Posterize)
 #   "gradient" = smooth gradient map through the neon palette (dark -> bright)
 #   "thermal"  = fixed thermal-camera ramp (ignores the neon palette)
-POSTERIZE_COLOR_MODE = "bands"
-POSTERIZE_GRADIENT_STOPS = 4  # palette colours the gradient map blends through (2+)
+POSTERIZE_COLOR_MODE = "gradient"
+POSTERIZE_GRADIENT_STOPS = 7  # palette colours the gradient map blends through (2+)
 POSTERIZE_THERMAL_STOPS = (  # (grey level 0-255, (B, G, R)), blended in between
     (0, (0, 0, 0)),
     (45, (140, 0, 40)),  # deep blue-violet
@@ -649,18 +650,21 @@ POSTERIZE_THERMAL_STOPS = (  # (grey level 0-255, (B, G, R)), blended in between
     (210, (0, 235, 255)),  # yellow
     (255, (255, 255, 255)),  # white-hot
 )
+
 # Solarize (Sabattier): folds the tone curve, so highlights fall back to dark tones.
 # Works on the tones before the colour step, so it combines with every colour mode.
-POSTERIZE_SOLARIZE = False
+POSTERIZE_SOLARIZE = True
 POSTERIZE_SOLARIZE_STYLE = "fold"  # "fold" = smooth triangle, "invert" = hard flip
 POSTERIZE_SOLARIZE_POINT = 150  # grey level (16-239) where the curve turns around
+
 # Halftone: the neon fill becomes a dot screen (bigger dots = brighter tone).
 POSTERIZE_HALFTONE = False
 POSTERIZE_HALFTONE_PITCH = 8  # px between dot centres (8+ survives phone JPEG)
 POSTERIZE_HALFTONE_ANGLE = 45  # screen angle in degrees
 POSTERIZE_HALFTONE_SOFTNESS = 1.6  # dot edge softness in px (lower = harder dots)
 POSTERIZE_HALFTONE_GAP = 0.06  # brightness left between the dots (0 = black)
-POSTERIZE_HALFTONE_FROM = 0.0  # strength (0-1) from which the dots appear
+POSTERIZE_HALFTONE_FROM = 0.3  # strength (0-1) from which the dots appear
+
 # Neon edge glow: a halo (and optionally a bright neon core) on the outline.
 POSTERIZE_EDGE_GLOW = False
 POSTERIZE_GLOW_COLOR = (
