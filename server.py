@@ -542,6 +542,31 @@ EFFECT_STATS_ACTIVE_FROM = {
     "posterize": 13,  # acts above the first non-zero point of POSTERIZE_CURVE (knob 12)
 }
 
+# NEON_PALETTES defined in native OpenCV BGR format: [Blue, Green, Red]
+# these palettes are shared by Melt and Posterize, CORRECT hexcodes should ALWAYS be here for reference.
+
+NEON_PALETTES = np.array(
+    [
+        [0, 255, 255],  # Neon Yellow           (B: 0,   G: 255, R: 255) #FFFF00
+        [255, 0, 255],  # Hot Magenta           (B: 255, G: 0,   R: 255) #FF00FF
+        [255, 255, 0],  # Electric Cyan         (B: 255, G: 255, R: 0)   #00FFFF
+        [0, 255, 0],  # Acid Green            (B: 0,   G: 255, R: 0)   #00FF00
+        [255, 0, 128],  # Deep Violet           (B: 255, G: 0,   R: 128) #8000FF
+        [0, 165, 255],  # Tangerine             (B: 0,   G: 165, R: 255) #FFA500
+        [128, 0, 255],  # Neon Rose             (B: 128, G: 0,   R: 255) #FF0080
+        [0, 255, 127],  # Chartreuse            (B: 0,   G: 255, R: 127) #7FFF00
+        # [132, 83, 255],  # Electric Pink         (B: 132, G: 83,  R: 255) #FF5384
+        # [104, 223, 255],  # Bright Yellow         (B: 104, G: 223, R: 255) #FFDF68
+        [199, 228, 101],  # Neon Teal             (B: 199, G: 228, R: 101) #65E4C7
+        # [137, 231, 110],  # Neon Limey Green      (B: 137, G: 231, R: 110) #6EE789
+        [51, 18, 255],  # Neon Red              (B: 51,  G: 18,  R: 255) #FF1233
+        [52, 112, 255],  # Neon Orange           (B: 52,  G: 112, R: 255) #FF7034
+    ],
+    dtype=np.uint8,
+    order="C",
+)
+NEON_PALETTES_FLOAT = np.ascontiguousarray(NEON_PALETTES.astype(np.float32))
+
 # POSTERIZE TUNABLES (neon tone bands with glitchy outlines)
 # ==============================================================================
 # Posterize acts only while it is attached to a knob in KNOB_ATTACHMENTS (a knob can
@@ -575,7 +600,7 @@ POSTERIZE_BLACK_RAMP = (
     34  # between the two values the neon is mixed in at half strength
 )
 POSTERIZE_BANDS_LOW = 3  # tone bands at the weakest strength ...
-POSTERIZE_BANDS_HIGH = 9  # ... and at full strength
+POSTERIZE_BANDS_HIGH = 11  # ... and at full strength
 POSTERIZE_DETAIL_LOW = (
     0.95  # how much of the original brightness modulates the neon (weak) ...
 )
@@ -603,6 +628,56 @@ POSTERIZE_FRAGMENT_AMOUNT = 3  # grey levels of break-up noise at full strength
 POSTERIZE_ROTATE_SECONDS = (
     5  # 0 = fixed colours; N = the colour assignment shifts every N seconds
 )
+
+# ------------------------------------------------------------------------------
+# OPTIONAL LOOKS (all OFF / "bands" by default = exactly the old Posterize).
+# They are read every frame, so they can be switched live (set the module variable);
+# only the halftone pitch / angle rebuild a small table when they change.
+# ------------------------------------------------------------------------------
+# Colour mode of the neon fill:
+#   "bands"    = hard tone bands from the neon palette (the original Posterize)
+#   "gradient" = smooth gradient map through the neon palette (dark -> bright)
+#   "thermal"  = fixed thermal-camera ramp (ignores the neon palette)
+POSTERIZE_COLOR_MODE = "bands"
+POSTERIZE_GRADIENT_STOPS = 4  # palette colours the gradient map blends through (2+)
+POSTERIZE_THERMAL_STOPS = (  # (grey level 0-255, (B, G, R)), blended in between
+    (0, (0, 0, 0)),
+    (45, (140, 0, 40)),  # deep blue-violet
+    (90, (160, 0, 200)),  # magenta
+    (130, (30, 30, 255)),  # red
+    (170, (0, 140, 255)),  # orange
+    (210, (0, 235, 255)),  # yellow
+    (255, (255, 255, 255)),  # white-hot
+)
+# Solarize (Sabattier): folds the tone curve, so highlights fall back to dark tones.
+# Works on the tones before the colour step, so it combines with every colour mode.
+POSTERIZE_SOLARIZE = False
+POSTERIZE_SOLARIZE_STYLE = "fold"  # "fold" = smooth triangle, "invert" = hard flip
+POSTERIZE_SOLARIZE_POINT = 150  # grey level (16-239) where the curve turns around
+# Halftone: the neon fill becomes a dot screen (bigger dots = brighter tone).
+POSTERIZE_HALFTONE = False
+POSTERIZE_HALFTONE_PITCH = 8  # px between dot centres (8+ survives phone JPEG)
+POSTERIZE_HALFTONE_ANGLE = 45  # screen angle in degrees
+POSTERIZE_HALFTONE_SOFTNESS = 1.6  # dot edge softness in px (lower = harder dots)
+POSTERIZE_HALFTONE_GAP = 0.06  # brightness left between the dots (0 = black)
+POSTERIZE_HALFTONE_FROM = 0.0  # strength (0-1) from which the dots appear
+# Neon edge glow: a halo (and optionally a bright neon core) on the outline.
+POSTERIZE_EDGE_GLOW = False
+POSTERIZE_GLOW_COLOR = (
+    255,
+    255,
+    0,
+)  # (B, G, R) electric cyan, or "palette" = local neon
+POSTERIZE_GLOW_RADIUS_PX = 8  # halo size
+POSTERIZE_GLOW_GAIN = 1.2  # halo brightness (about 0.6 - 3)
+POSTERIZE_GLOW_CLEAN = 7  # 3, 5, 7: larger = the halo follows only bigger tone borders
+POSTERIZE_GLOW_DIM = (
+    0.9  # darkens the picture a little so the glow reads as light (1 = off)
+)
+POSTERIZE_GLOW_CORE = True  # also paint the outline itself in bright neon
+POSTERIZE_GLOW_KEEP_BLACKS = True  # no glow spill onto the untouched black areas
+POSTERIZE_GLOW_FROM = 0.0  # strength (0-1) from which the glow appears
+
 
 # DATA MOSH AND PACKET CORRUPTION TUNABLES
 # ==============================================================================
@@ -683,28 +758,6 @@ MELT_NEON_RAMP_SPAN = (
     0.23  # Length of the transition ramp to full neon (Start + Span should equal 1.0)
 )
 
-# NEON_PALETTES defined in native OpenCV BGR format: [Blue, Green, Red]
-# these palettes are shared by Melt and Posterize, CORRECT hexcodes should ALWAYS be here for reference.
-
-NEON_PALETTES = np.array(
-    [
-        [0, 255, 255],  # Neon Yellow           (B: 0,   G: 255, R: 255) #FFFF00
-        [255, 0, 255],  # Hot Magenta           (B: 255, G: 0,   R: 255) #FF00FF
-        [255, 255, 0],  # Electric Cyan         (B: 255, G: 255, R: 0)   #00FFFF
-        [0, 255, 0],  # Acid Green            (B: 0,   G: 255, R: 0)   #00FF00
-        [255, 0, 128],  # Deep Violet           (B: 255, G: 0,   R: 128) #8000FF
-        [0, 165, 255],  # Tangerine             (B: 0,   G: 165, R: 255) #FFA500
-        [128, 0, 255],  # Neon Rose             (B: 128, G: 0,   R: 255) #FF0080
-        [0, 255, 127],  # Chartreuse            (B: 0,   G: 255, R: 127) #7FFF00
-        # [132, 83, 255],  # Electric Pink         (B: 132, G: 83,  R: 255) #FF5384
-        # [104, 223, 255],  # Bright Yellow         (B: 104, G: 223, R: 255) #FFDF68
-        [199, 228, 101],  # Neon Teal             (B: 199, G: 228, R: 101) #65E4C7
-        # [137, 231, 110],  # Neon Limey Green      (B: 137, G: 231, R: 110) #6EE789
-    ],
-    dtype=np.uint8,
-    order="C",
-)
-NEON_PALETTES_FLOAT = np.ascontiguousarray(NEON_PALETTES.astype(np.float32))
 
 # --- CRT SCANLINES -------------------------------------------------------------------
 CRT_SCANLINE_PERIOD = 8  # [320x240: 4 ] [480x360: 6 ] [640x480: 8 ]
@@ -2140,12 +2193,35 @@ def apply_crt_overlay():
 # resolution (chunky, and four times cheaper); the outlines are drawn at full resolution.
 
 
+# =========================================================================
+# POSTERIZE: NEON TONE BANDS WITH GLITCHY OUTLINES
+# =========================================================================
+# Colour effect: it does not move pixels. Blacks stay untouched; every other tone becomes a
+# neon colour of the Melt palette (dark tones get the deep hues, bright tones the bright ones);
+# the borders between tone bands get a 1-3 px outline that is broken up, jittered and flickers,
+# so it looks like damaged video, not like pop art.
+#
+# Per frame it makes a fixed number of large OpenCV calls (about 35) in preallocated buffers,
+# no Python loop over pixels or rows. The tone map and the neon fill are computed at half
+# resolution (chunky, and four times cheaper); the outlines are drawn at full resolution.
+
+
 def _posterize_palette():
     """Melt's neon palette ordered from the darkest hue to the brightest."""
     luma = NEON_PALETTES.astype(np.float32) @ np.array(
         [0.114, 0.587, 0.299], np.float32
     )
     return np.ascontiguousarray(NEON_PALETTES[np.argsort(luma)])
+
+
+def _ramp_luts(positions, colours_bgr):
+    """Blend colour stops into three 256-entry LUTs (B, G, R)."""
+    x = np.arange(256, dtype=np.float32)
+    colours = np.asarray(colours_bgr, dtype=np.float32)
+    out = np.zeros((3, 256, 1), dtype=np.uint8)
+    for ch in range(3):
+        out[ch, :, 0] = np.clip(np.interp(x, positions, colours[:, ch]), 0, 255)
+    return out
 
 
 class PosterizeEngine:
@@ -2182,13 +2258,37 @@ class PosterizeEngine:
         self._lut_key = None
         self.band_lut = np.zeros((256, 1), np.uint8)
         self.color_lut = np.zeros((3, 256, 1), np.uint8)
+        # optional looks (about 5 MiB more, allocated once)
+        self.tone_lut = np.zeros((3, 256, 1), np.uint8)  # gradient / thermal
+        self.solar_lut = np.zeros((256, 1), np.uint8)
+        self._ht_key = None
+        self.ht_tile = z()
+        self.ht_cover, self.ht_mask, self.ht_mask3 = z(), z(), z3()
+        self.ht_cover_lut = np.zeros((256, 1), np.uint8)
+        self.ht_small = z(2, 2)
+        self.ht_gain = 1.0
+        self.gl_small = z(H // 4, W // 4)
+        self.gl_med, self.gl_edge, self.gl_tmp = z(hh, hw), z(hh, hw), z(hh, hw)
+        self.k3 = np.ones((3, 3), dtype=np.uint8)
+        self.gl_full, self.gl_full3, self.glow_col = z(), z3(), z3()
+        self.glow_solid, self.glow_core_solid = z3(), z3()
+        self._glow_key = None
 
     def strength(self, raw_knob):
         """Knob value 0-1023 -> strength 0-1 through the response curve (0 = off)."""
         return float(np.interp(raw_knob, self.curve_x, self.curve_y))
 
     def _luts(self, bands, rotation):
-        key = (bands, rotation)
+        mode = POSTERIZE_COLOR_MODE
+        key = (
+            bands,
+            rotation,
+            mode,
+            POSTERIZE_GRADIENT_STOPS,
+            POSTERIZE_THERMAL_STOPS,
+            POSTERIZE_SOLARIZE_STYLE,
+            POSTERIZE_SOLARIZE_POINT,
+        )
         if key != self._lut_key:
             self.band_lut[:, 0] = (np.arange(256) * bands // 256).astype(np.uint8)
             n_pal = len(self.palette)
@@ -2199,7 +2299,129 @@ class PosterizeEngine:
                 ) % n_pal
                 for ch in range(3):
                     self.color_lut[ch, b, 0] = self.palette[idx, ch]
+            if mode == "gradient":
+                rolled = np.roll(self.palette, -rotation, axis=0)
+                k = int(min(max(2, POSTERIZE_GRADIENT_STOPS), n_pal))
+                pick = np.round(np.linspace(0, n_pal - 1, k)).astype(int)
+                self.tone_lut[:] = _ramp_luts(np.linspace(0, 255, k), rolled[pick])
+            elif mode == "thermal":
+                pos = [p for p, _ in POSTERIZE_THERMAL_STOPS]
+                col = [c for _, c in POSTERIZE_THERMAL_STOPS]
+                self.tone_lut[:] = _ramp_luts(pos, col)
+            v = np.arange(256, dtype=np.float32)
+            t = float(min(max(POSTERIZE_SOLARIZE_POINT, 16), 239))
+            if POSTERIZE_SOLARIZE_STYLE == "invert":
+                sol = np.where(v < t, v, 255.0 - v)
+            else:
+                sol = np.where(v < t, v * 255.0 / t, (255.0 - v) * 255.0 / (255.0 - t))
+            self.solar_lut[:, 0] = np.clip(sol, 0, 255).astype(np.uint8)
             self._lut_key = key
+
+    def _build_halftone(self):
+        """Dot-screen threshold tile (static) + tone curve; rebuilt only when changed."""
+        H, W = FRAME_H, FRAME_W
+        pitch = max(4, int(POSTERIZE_HALFTONE_PITCH))
+        key = (pitch, POSTERIZE_HALFTONE_ANGLE, POSTERIZE_HALFTONE_SOFTNESS)
+        if key == self._ht_key:
+            return
+        yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+        a = np.deg2rad(POSTERIZE_HALFTONE_ANGLE)
+        u = (xx * np.cos(a) + yy * np.sin(a)) / pitch
+        v = (-xx * np.sin(a) + yy * np.cos(a)) / pitch
+        d = np.sqrt((u - np.floor(u) - 0.5) ** 2 + (v - np.floor(v) - 0.5) ** 2)
+        d /= 0.7071  # 0 = dot centre, 1 = cell corner
+        self.ht_tile[:] = np.clip(d * 235.0, 0, 255).astype(np.uint8)
+        t = np.arange(256, dtype=np.float32) / 255.0
+        # sqrt: dot AREA follows brightness; 1.12 lets the highlights close up fully
+        self.ht_cover_lut[:, 0] = (255.0 * np.sqrt(np.clip(t * 1.12, 0, 1))).astype(
+            np.uint8
+        )
+        self.ht_small = np.zeros((max(2, H // pitch), max(2, W // pitch)), np.uint8)
+        # ramp width (grey levels) = softness in px * levels per px
+        self.ht_gain = (
+            255.0 * pitch * 0.7071 / (235.0 * max(0.3, POSTERIZE_HALFTONE_SOFTNESS))
+        )
+        self._ht_key = key
+
+    def _halftone(self):
+        """Turns self.neon_full into a dot screen (coloured dots, dark gaps)."""
+        H, W = FRAME_H, FRAME_W
+        self._build_halftone()
+        sh, sw = self.ht_small.shape
+        cv2.resize(
+            self.g_half, (sw, sh), dst=self.ht_small, interpolation=cv2.INTER_AREA
+        )
+        cv2.resize(
+            self.ht_small, (W, H), dst=self.ht_cover, interpolation=cv2.INTER_LINEAR
+        )
+        cv2.LUT(self.ht_cover, self.ht_cover_lut, dst=self.ht_cover)
+        cv2.subtract(self.ht_cover, self.ht_tile, dst=self.ht_mask)
+        cv2.convertScaleAbs(
+            self.ht_mask,
+            dst=self.ht_mask,
+            alpha=self.ht_gain,
+            beta=255.0 * POSTERIZE_HALFTONE_GAP,
+        )
+        cv2.merge([self.ht_mask, self.ht_mask, self.ht_mask], dst=self.ht_mask3)
+        cv2.multiply(
+            self.neon_full, self.ht_mask3, dst=self.neon_full, scale=1.0 / 255.0
+        )
+
+    def _edge_glow(self, px):
+        """Halo (+ neon core) from the final outline mask in self.edge_tmp."""
+        H, W = FRAME_H, FRAME_W
+        palette_mode = POSTERIZE_GLOW_COLOR == "palette"
+        key = POSTERIZE_GLOW_COLOR
+        if not palette_mode and key != self._glow_key:
+            col = np.array(POSTERIZE_GLOW_COLOR, dtype=np.float32)
+            self.glow_solid[:] = col.astype(np.uint8)
+            self.glow_core_solid[:] = (col * 0.5 + 127.5).astype(
+                np.uint8
+            )  # lighter core
+            self._glow_key = key
+        # halo source = only the BIG tone borders (speckle removed), found at half resolution,
+        # so busy high-strength outlines do not flood the picture with light
+        cv2.medianBlur(self.band_half, POSTERIZE_GLOW_CLEAN, dst=self.gl_med)
+        cv2.dilate(self.gl_med, self.k3, dst=self.gl_tmp)
+        cv2.compare(self.gl_tmp, self.gl_med, cv2.CMP_NE, dst=self.gl_edge)
+        # halo at quarter resolution: shrink, blur, boost, grow
+        cv2.resize(
+            self.gl_edge,
+            (W // 4, H // 4),
+            dst=self.gl_small,
+            interpolation=cv2.INTER_AREA,
+        )
+        cv2.GaussianBlur(
+            self.gl_small,
+            (0, 0),
+            max(0.5, POSTERIZE_GLOW_RADIUS_PX / 4.0),
+            dst=self.gl_small,
+        )
+        cv2.convertScaleAbs(self.gl_small, dst=self.gl_small, alpha=POSTERIZE_GLOW_GAIN)
+        cv2.resize(
+            self.gl_small, (W, H), dst=self.gl_full, interpolation=cv2.INTER_LINEAR
+        )
+        if POSTERIZE_GLOW_KEEP_BLACKS:
+            cv2.bitwise_and(self.gl_full, self.nonblack, dst=self.gl_full)
+        cv2.merge([self.gl_full, self.gl_full, self.gl_full], dst=self.gl_full3)
+        if palette_mode:
+            cv2.multiply(
+                self.gl_full3, self.neon_full, dst=self.glow_col, scale=1.0 / 255.0
+            )
+        else:
+            cv2.multiply(
+                self.gl_full3, self.glow_solid, dst=self.glow_col, scale=1.0 / 255.0
+            )
+        cv2.addWeighted(
+            self.poster, POSTERIZE_GLOW_DIM, self.glow_col, 1.0, 0, dst=self.poster
+        )
+        if POSTERIZE_GLOW_CORE:
+            if palette_mode:
+                cv2.dilate(self.neon_full, self.kernels[px], dst=self.edge_col)
+                core = self.edge_col
+            else:
+                core = self.glow_core_solid
+            cv2.copyTo(core, self.edge_tmp, self.poster)
 
     def step(
         self, frame, raw_knob, current_time, outline_style=None, outline_detail=None
@@ -2217,6 +2439,10 @@ class PosterizeEngine:
 
         outdetail = outline_detail or POSTERIZE_DETAIL_HIGH
         detail = POSTERIZE_DETAIL_LOW + (outdetail - POSTERIZE_DETAIL_LOW) * s
+
+        # outdetail = outline_detail or POSTERIZE_DETAIL_LOW
+        # detail = POSTERIZE_DETAIL_LOW + (POSTERIZE_DETAIL_HIGH - outdetail) * s
+
         mix = POSTERIZE_MIX_START + (1.0 - POSTERIZE_MIX_START) * min(
             1.0, s / POSTERIZE_MIX_FULL_AT
         )
@@ -2254,24 +2480,41 @@ class PosterizeEngine:
             cv2.addWeighted(
                 self.g_half, 1.0, noise, amp / 255.0, -amp / 2.0, dst=self.g_half
             )
+        if POSTERIZE_SOLARIZE:  # NEW: fold the tone curve before bands and colours
+            cv2.LUT(self.g_half, self.solar_lut, dst=self.g_half)
         cv2.LUT(self.g_half, self.band_lut, dst=self.band_half)
 
         # 2. neon fill: band -> palette colour, modulated by the original brightness
-        cv2.LUT(self.band_half, self.color_lut[0], dst=self.pl_b)
-        cv2.LUT(self.band_half, self.color_lut[1], dst=self.pl_g)
-        cv2.LUT(self.band_half, self.color_lut[2], dst=self.pl_r)
+        #    ("gradient" / "thermal": tone -> colour directly, no brightness modulation)
+        if POSTERIZE_COLOR_MODE in ("gradient", "thermal"):
+            fill_src, fill_lut = self.g_half, self.tone_lut
+        else:
+            fill_src, fill_lut = self.band_half, self.color_lut
+        cv2.LUT(fill_src, fill_lut[0], dst=self.pl_b)
+        cv2.LUT(fill_src, fill_lut[1], dst=self.pl_g)
+        cv2.LUT(fill_src, fill_lut[2], dst=self.pl_r)
         cv2.merge([self.pl_b, self.pl_g, self.pl_r], dst=self.neon_half)
-        cv2.convertScaleAbs(
-            self.g_half, dst=self.scale_half, alpha=detail, beta=255.0 * (1.0 - detail)
-        )
-        cv2.merge([self.scale_half, self.scale_half, self.scale_half], dst=self.scale3)
-        cv2.multiply(self.neon_half, self.scale3, dst=self.neon_half, scale=1.0 / 255.0)
+        if fill_src is self.band_half:
+            cv2.convertScaleAbs(
+                self.g_half,
+                dst=self.scale_half,
+                alpha=detail,
+                beta=255.0 * (1.0 - detail),
+            )
+            cv2.merge(
+                [self.scale_half, self.scale_half, self.scale_half], dst=self.scale3
+            )
+            cv2.multiply(
+                self.neon_half, self.scale3, dst=self.neon_half, scale=1.0 / 255.0
+            )
         cv2.resize(
             self.neon_half, (W, H), dst=self.neon_full, interpolation=cv2.INTER_NEAREST
         )
         cv2.resize(
             self.band_half, (W, H), dst=self.band_full, interpolation=cv2.INTER_NEAREST
         )
+        if POSTERIZE_HALFTONE and s >= POSTERIZE_HALFTONE_FROM:  # NEW: dot screen
+            self._halftone()
 
         # 3. mix with the original; blacks untouched, a narrow ramp mixes half and half
         cv2.addWeighted(frame, 1.0 - mix, self.neon_full, mix, 0, dst=self.poster)
@@ -2308,6 +2551,8 @@ class PosterizeEngine:
         else:
             outline_colour = self.white
         cv2.copyTo(outline_colour, self.edge_tmp, self.poster)
+        if POSTERIZE_EDGE_GLOW and s >= POSTERIZE_GLOW_FROM:  # NEW: halo + neon core
+            self._edge_glow(px)
         self.flick_small[:] = (
             self.rng.random(self.flick_small.shape) < POSTERIZE_FLICKER_PROB
         ) * 255
@@ -2330,6 +2575,7 @@ def apply_posterize(raw_knob, current_time, ascii_active=False):
     """Posterize entry point. raw_knob 0-1023."""
     outline_style = "glow" if ascii_active else POSTERIZE_OUTLINE_STYLE
     outline_detail = 0.95 if ascii_active else None
+    # outline_detail = 0.37 if ascii_active else None
     _POSTER.step(
         MUTABLE_PROCESSING_BUFFER, raw_knob, current_time, outline_style, outline_detail
     )

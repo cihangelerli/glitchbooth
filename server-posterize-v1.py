@@ -333,7 +333,7 @@ IK_AUTH_STRING = base64.b64encode(f"{IK_PRIVATE_KEY}:".encode()).decode()
 #
 # CRITICAL CHECKLIST WHEN CHANGING EVENT_SLUG:
 # 1. WEBSITE SLUG MATCH: 'EVENT_SLUG' MUST match 'SLUG' in 'event.config.ts' EXACTLY.
-# # 2. IMAGEKIT FOLDER: Ensure '/booth_captures/<EVENT_SLUG>/' exists on ImageKit.
+# 2. IMAGEKIT FOLDER: Ensure '/booth_captures/<EVENT_SLUG>/' exists on ImageKit.
 #    Clean photos go to '/booth_captures_clean/<EVENT_SLUG>/' (same slug, sibling base
 #    folder). ImageKit creates a missing folder on the first upload into it.
 # 3. THERMAL RECEIPT: Manually update event title, subtitle, and social handles
@@ -507,7 +507,6 @@ NAKED_CAPTURE_ENABLED = True
 # The clean (unprocessed) frame is saved as <id>_clean.jpg and uploaded next to the processed
 # photo, so the website can offer a clean/processed slider.
 CLEAN_JPEG_QUALITY = 88  # 85-90
-
 TELEMETRY_ENABLED = (
     True  # Set False to disable all capture logging and telemetry threads
 )
@@ -576,26 +575,31 @@ POSTERIZE_BLACK_RAMP = (
     34  # between the two values the neon is mixed in at half strength
 )
 POSTERIZE_BANDS_LOW = 3  # tone bands at the weakest strength ...
-POSTERIZE_BANDS_HIGH = 9  # ... and at full strength
+POSTERIZE_BANDS_HIGH = 11  # ... and at full strength
 POSTERIZE_DETAIL_LOW = (
     0.95  # how much of the original brightness modulates the neon (weak) ...
 )
 POSTERIZE_DETAIL_HIGH = 0.37  # ... and at full strength (faces stay readable)
 POSTERIZE_MIX_START = 0.05  # neon share at the weakest strength ...
 POSTERIZE_MIX_FULL_AT = 0.43  # ... reaching 1.0 at this strength (0-1)
-POSTERIZE_OUTLINE_2PX_FROM = 0.85  # strength from which outlines are 2 px thick
-POSTERIZE_OUTLINE_3PX_FROM = 0.99  # strength from which outlines are 3 px thick
 POSTERIZE_DROPOUT_LOW = 0.05  # share of the outline that is missing (weak) ...
 POSTERIZE_DROPOUT_HIGH = 0.01  # ... and at full strength
 POSTERIZE_JITTER_MAX_PX = 0  # outline rows shift sideways by up to 1 .. this many px
 POSTERIZE_FLICKER_PROB = 0.005  # share of outline sections that flash white-hot
 # Outline colour: "glow" = the brightest neon next to the border (often near-white), "white", "black" (ink)
 POSTERIZE_OUTLINE_STYLE = "black"
+# corrected for names of the tunables below
+POSTERIZE_OUTLINE_MID_FROM = 0.85  # strength from which outlines are MID px thick
+POSTERIZE_OUTLINE_MAX_FROM = 0.99  # strength from which outlines are MAX px thick
+# added tunables in stead of hard-coded magic numbers!
+POSTERIZE_OUTLINE_MAX_PX = 2  # maximum outline thickness (min to mid to max)
+POSTERIZE_OUTLINE_MID_PX = 1  # mid-level outline thickness
+POSTERIZE_OUTLINE_MIN_PX = 1  # minimum outline thickness
 POSTERIZE_SECTION_PX = (
     2  # size of the dropout / flicker sections (must divide 640 and 480)
 )
-POSTERIZE_FRAGMENT_FROM = 0.67  # strength from which fine detail starts to break apart
-POSTERIZE_FRAGMENT_AMOUNT = 2  # grey levels of break-up noise at full strength
+POSTERIZE_FRAGMENT_FROM = 0.61  # strength from which fine detail starts to break apart
+POSTERIZE_FRAGMENT_AMOUNT = 3  # grey levels of break-up noise at full strength
 POSTERIZE_ROTATE_SECONDS = (
     5  # 0 = fixed colours; N = the colour assignment shifts every N seconds
 )
@@ -624,7 +628,7 @@ MOSH_BLEED_MAX = 0.23  # bleed mix = MAX * strength (0-1)
 MOSH_CELL_H = 16
 MOSH_CELL_W = 12
 
-# These above are connected to and kept in check by _validate_mosh_settings() below in the pipeline...
+# These above are connected to and kept in check by _validate_mosh_settings() below the line...
 
 # --- Corruption -------------------------------------------------------------------
 CORRUPTION_CELL_H = 12
@@ -680,7 +684,7 @@ MELT_NEON_RAMP_SPAN = (
 )
 
 # NEON_PALETTES defined in native OpenCV BGR format: [Blue, Green, Red]
-# these palettes are shared by Melt and Posterize
+# these palettes are shared by Melt and Posterize, CORRECT hexcodes should ALWAYS be here for reference.
 
 NEON_PALETTES = np.array(
     [
@@ -696,6 +700,8 @@ NEON_PALETTES = np.array(
         # [104, 223, 255],  # Bright Yellow         (B: 104, G: 223, R: 255) #FFDF68
         [199, 228, 101],  # Neon Teal             (B: 199, G: 228, R: 101) #65E4C7
         # [137, 231, 110],  # Neon Limey Green      (B: 137, G: 231, R: 110) #6EE789
+        [51, 18, 255],  # Neon Red              (B: 51,  G: 18,  R: 255) #FF1233
+        [52, 112, 255],  # Neon Orange           (B: 52,  G: 112, R: 255) #FF7034
     ],
     dtype=np.uint8,
     order="C",
@@ -828,14 +834,15 @@ GLOBAL_BUTTON = 1
 # UNIFIED TRANSACTING SESSION STATE MATRIX
 # ==============================================================================
 ACTIVE_SESSION = {
-    "mode": "live",
+    "mode": "live",  # live, pre-capture-countdown, countdown (flash + PRINTING), latest
     "session_id": None,
-    "upload_complete": False,
-    "upload_failed": False,
-    "composite_ready": False,
-    "print_dispatched": False,
+    "upload_status": "IDLE",  # IDLE, UPLOADING, SUCCESS, FAILED
+    "print_state": "idle",  # idle, waiting, printing, retrying, done, failed
+    "notice": "",  # message for the kiosk screen and the web pages
+    "notice_until": None,  # monotonic expiry of the notice (None = until the session ends)
     "countdown_start_time": 0.0,
     "countdown_remaining": 3,
+    "latest_since": 0.0,  # monotonic time the review screen started
     "knobs": [0, 0, 0, 0, 0, 0],
 }
 
@@ -869,13 +876,116 @@ camera_started_at = time.time()
 last_frame_time = time.time()
 camera_fail_count = 0
 
-upload_status_msg = "IDLE"
 SYSTEM_TELEMETRY = {"ip": "0.0.0.0", "cpu_temp": "N/A", "memory_rss_mb": -1}
 last_button_state = 1
 
 FRAME_ID = 0
 
 upload_queue = queue.Queue(maxsize=32)
+print_queue = queue.Queue(maxsize=4)
+_print_ids = set()  # captures queued or printing: one receipt per id at a time
+_print_ids_lock = threading.Lock()
+
+# CAPTURE -> PRINT FLOW TUNABLES AND MESSAGES
+# ==================================================
+# The booth screen waits for the printer, never for the cloud upload.
+LATEST_TIMEOUT_SECONDS = 20.0  # the review screen returns to the live view by itself
+PRINT_ATTEMPTS = 2  # a failed print is retried automatically
+PRINT_RETRY_DELAY = 1.0
+PRINT_OVERLAY_TIMEOUT = 10.0  # the PRINTING screen never lasts longer than this
+CAMERA_FRESH_MAX_AGE = 5.0  # an older camera frame counts as "camera not working"
+CAMERA_NOTICE_SECONDS = 5.0
+MSG_CAMERA = "GLITCH BOOTH KÜÇÜK BİR GLITCH YAŞADI :( LÜTFEN TEKRAR DENEYİN!"
+MSG_PRINT_RETRY = "BASKIDA BİR SORUN YAŞANDI :( TEKRAR DENİYORUM!"
+MSG_PRINT_FAILED = "BASKIDA BİR SORUN YAŞANDI :("
+
+# Set while the last upload failed for good (offline); any upload that works clears it.
+# The receipt uses it to choose between the normal and the offline text.
+NETWORK_OFFLINE = threading.Event()
+
+
+# SESSION STATE HELPERS
+# ==================================================
+# Everything that changes the active session from a worker thread goes through
+# session_update(), which ignores updates for a session that is no longer the active one.
+# Everything that returns the booth to the live view goes through reset_to_live().
+
+
+def session_update(session_id, **fields):
+    with mode_lock:
+        if ACTIVE_SESSION["session_id"] != session_id:
+            return False
+        ACTIVE_SESSION.update(fields)
+        return True
+
+
+def _set_notice_locked(text, seconds=None):
+    ACTIVE_SESSION["notice"] = text
+    ACTIVE_SESSION["notice_until"] = (time.monotonic() + seconds) if seconds else None
+
+
+def _notice_locked():
+    until = ACTIVE_SESSION["notice_until"]
+    if until is not None and time.monotonic() >= until:
+        ACTIVE_SESSION["notice"] = ""
+        ACTIVE_SESSION["notice_until"] = None
+    return ACTIVE_SESSION["notice"]
+
+
+def set_notice(text, seconds=None):
+    with mode_lock:
+        _set_notice_locked(text, seconds)
+
+
+def reset_to_live(reason, expected_session_id=None, only_if_mode=None):
+    # The single way back to the live view (button, review timeout, camera problem, web).
+    global capture_lock_until
+    with mode_lock:
+        if only_if_mode is not None and ACTIVE_SESSION["mode"] not in only_if_mode:
+            return False
+        if (
+            expected_session_id is not None
+            and ACTIVE_SESSION["session_id"] != expected_session_id
+        ):
+            return False
+        previous_session = ACTIVE_SESSION["session_id"]
+        ACTIVE_SESSION.update(
+            mode="live",
+            session_id=None,
+            upload_status="IDLE",
+            print_state="idle",
+            countdown_remaining=3,
+            latest_since=0.0,
+        )
+        _set_notice_locked("", None)
+        capture_lock_until = time.time() + 1.2
+    logger.info(
+        "[STATE ENGINE] Returning to the live view (%s). Cleared session %s.",
+        reason,
+        previous_session,
+    )
+    return True
+
+
+def camera_is_fresh():
+    with hw_state_lock:
+        age = time.time() - last_frame_time
+    return age <= CAMERA_FRESH_MAX_AGE, age
+
+
+def enqueue_print(ts, source, wait=0.0):
+    # Returns "queued", "duplicate" (already queued or printing) or "busy" (queue full).
+    with _print_ids_lock:
+        if ts in _print_ids:
+            return "duplicate"
+        _print_ids.add(ts)
+    try:
+        print_queue.put((ts, source), timeout=wait)
+    except queue.Full:
+        with _print_ids_lock:
+            _print_ids.discard(ts)
+        return "busy"
+    return "queued"
 
 
 # ASCII TILES
@@ -2107,19 +2217,23 @@ class PosterizeEngine:
             )
         )
 
-        # outdetail = outline_detail or POSTERIZE_DETAIL_HIGH
-        # detail = POSTERIZE_DETAIL_LOW + (outdetail - POSTERIZE_DETAIL_LOW) * s
+        outdetail = outline_detail or POSTERIZE_DETAIL_HIGH
+        detail = POSTERIZE_DETAIL_LOW + (outdetail - POSTERIZE_DETAIL_LOW) * s
 
-        outdetail = outline_detail or POSTERIZE_DETAIL_LOW
-        detail = POSTERIZE_DETAIL_LOW + (POSTERIZE_DETAIL_HIGH - outdetail) * s
+        # outdetail = outline_detail or POSTERIZE_DETAIL_LOW
+        # detail = POSTERIZE_DETAIL_LOW + (POSTERIZE_DETAIL_HIGH - outdetail) * s
 
         mix = POSTERIZE_MIX_START + (1.0 - POSTERIZE_MIX_START) * min(
             1.0, s / POSTERIZE_MIX_FULL_AT
         )
         px = (
-            3
-            if s >= POSTERIZE_OUTLINE_3PX_FROM
-            else (2 if s >= POSTERIZE_OUTLINE_2PX_FROM else 1)
+            POSTERIZE_OUTLINE_MAX_PX
+            if s >= POSTERIZE_OUTLINE_MAX_FROM
+            else (
+                POSTERIZE_OUTLINE_MID_PX
+                if s >= POSTERIZE_OUTLINE_MID_FROM
+                else POSTERIZE_OUTLINE_MIN_PX
+            )
         )
         dropout = (
             POSTERIZE_DROPOUT_LOW + (POSTERIZE_DROPOUT_HIGH - POSTERIZE_DROPOUT_LOW) * s
@@ -2221,8 +2335,8 @@ _POSTER = PosterizeEngine()
 def apply_posterize(raw_knob, current_time, ascii_active=False):
     """Posterize entry point. raw_knob 0-1023."""
     outline_style = "glow" if ascii_active else POSTERIZE_OUTLINE_STYLE
-    # outline_detail = 0.95 if ascii_active else None
-    outline_detail = 0.37 if ascii_active else None
+    outline_detail = 0.95 if ascii_active else None
+    # outline_detail = 0.37 if ascii_active else None
     _POSTER.step(
         MUTABLE_PROCESSING_BUFFER, raw_knob, current_time, outline_style, outline_detail
     )
@@ -2475,8 +2589,23 @@ def cleanup_sessions(limit=100):
         logger.exception("[ARCHIVE] Archival pipeline exception")
 
 
-def async_storage_worker(disk_id, color_mat, bw_mat, active_knobs, naked_mat=None):
-    _write_naked_capture(disk_id, naked_mat)
+def prepare_receipt_assets(ts):
+    # QR code and lossless composite of the receipt, made before the print starts.
+    # Returns True when the composite is ready; otherwise the print falls back to the plain photo.
+    try:
+        qrcode.make(get_landing_url(ts)).save(os.path.join(SAVED_DIR, f"{ts}_qr.png"))
+    except Exception as qr_err:
+        logger.error("[CAPTURE] QR creation failed for session %s: %s", ts, qr_err)
+        return False
+    if generate_composite_receipt_image(ts):
+        return True
+    logger.warning(
+        "[CAPTURE] Composite preparation failed for %s; the print will fall back.", ts
+    )
+    return False
+
+
+def _store_capture(disk_id, color_mat, bw_mat, active_knobs, naked_mat):
     color_ok = cv2.imwrite(os.path.join(CAPTURE_DIR, f"{disk_id}_color.jpg"), color_mat)
     bw_ok = cv2.imwrite(os.path.join(CAPTURE_DIR, f"{disk_id}_bw.jpg"), bw_mat)
 
@@ -2487,8 +2616,13 @@ def async_storage_worker(disk_id, color_mat, bw_mat, active_knobs, naked_mat=Non
             color_ok,
             bw_ok,
         )
-        with mode_lock:
-            ACTIVE_SESSION["upload_failed"] = True
+        session_update(
+            disk_id,
+            upload_status="FAILED",
+            print_state="failed",
+            notice=MSG_PRINT_FAILED,
+            notice_until=None,
+        )
         return
 
     logger.info(
@@ -2497,6 +2631,24 @@ def async_storage_worker(disk_id, color_mat, bw_mat, active_knobs, naked_mat=Non
         color_ok,
         bw_ok,
     )
+
+    # Everything the print needs is made first, then the print is queued.
+    prepare_receipt_assets(disk_id)
+    queued = enqueue_print(disk_id, "capture", wait=5.0)
+    if queued != "queued":
+        logger.error(
+            "[PRINTER] Could not queue session %s for printing (%s)", disk_id, queued
+        )
+        session_update(
+            disk_id,
+            print_state="failed",
+            notice=MSG_PRINT_FAILED,
+            notice_until=None,
+        )
+
+    # Bookkeeping, off the print path. The clean frame is written before the upload is
+    # queued, because the clean upload reads it.
+    _write_naked_capture(disk_id, naked_mat)
 
     try:
         upload_queue.put(disk_id, block=False)
@@ -2517,8 +2669,8 @@ def async_storage_worker(disk_id, color_mat, bw_mat, active_knobs, naked_mat=Non
                 cache_err,
             )
 
-        with mode_lock:
-            ACTIVE_SESSION["upload_failed"] = True
+        NETWORK_OFFLINE.set()
+        session_update(disk_id, upload_status="FAILED")
 
     if TELEMETRY_ENABLED:
         try:
@@ -2536,6 +2688,21 @@ def async_storage_worker(disk_id, color_mat, bw_mat, active_knobs, naked_mat=Non
                 telemetry_fault,
                 exc_info=True,
             )
+
+
+def async_storage_worker(disk_id, color_mat, bw_mat, active_knobs, naked_mat=None):
+    try:
+        _store_capture(disk_id, color_mat, bw_mat, active_knobs, naked_mat)
+    except Exception:
+        logger.exception("[CAPTURE] Storage worker failed for session %s", disk_id)
+        with mode_lock:
+            if (
+                ACTIVE_SESSION["session_id"] == disk_id
+                and ACTIVE_SESSION["print_state"] == "waiting"
+            ):
+                ACTIVE_SESSION.update(
+                    print_state="failed", notice=MSG_PRINT_FAILED, notice_until=None
+                )
 
 
 def generate_composite_receipt_image(ts: str) -> str:
@@ -2655,20 +2822,17 @@ def generate_composite_receipt_image(ts: str) -> str:
         return None
 
 
-def print_booth_receipt(ts):
+def print_booth_receipt(ts, offline_notice=False, on_cut=None):
+    # Prints the receipt of one capture. Returns True when it reached the printer, False when
+    # the printer failed. `offline_notice` selects the offline text; `on_cut` is called right
+    # after the paper is cut, so the booth screen does not wait for the final pause.
     logger.info("[PRINTER] Spooling hardware receipt for session %s", ts)
+    printed = False
 
     with printer_hardware_lock:  # Serializes multi-threaded physical hardware access
         printer = None
         try:
-            is_offline_capture = False
-            if os.path.exists("pending_uploads.txt"):
-                try:
-                    with open("pending_uploads.txt", "r") as cache_log:
-                        if ts in cache_log.read():
-                            is_offline_capture = True
-                except Exception:
-                    pass
+            is_offline_capture = offline_notice
 
             TARGET_WIDTH = 576
             printer = File("/dev/usb/lp0")
@@ -2722,13 +2886,16 @@ def print_booth_receipt(ts):
                 printer.text(" > You can get your digital copy online later: \n")
                 printer.text(f"   {get_landing_url(ts)}\n")
             else:
-                printer.text(" > Scan to save your digital copy!   \n")
+                printer.text(" > Scan QR to save your digital copy!   \n")
                 printer.text(" > Follow us on socials: @dirtcakestudio   \n")
                 printer.text(" > Follow us on socials: @glitchbooth.online   \n")
 
             printer.text("@->>--     =========================     --<<-@\n")
             printer.ln(2)
             printer.cut()
+            printed = True
+            if on_cut is not None:
+                on_cut()
             time.sleep(0.5)
             logger.info("[PRINTER] Hardware receipt complete for session %s", ts)
 
@@ -2742,6 +2909,71 @@ def print_booth_receipt(ts):
                     logger.warning(
                         "[PRINTER] Could not close the printer device: %s", close_err
                     )
+
+    return printed
+
+
+def _in_pending_list(ts):
+    try:
+        with open("pending_uploads.txt", "r") as cache_log:
+            return ts in cache_log.read()
+    except Exception:
+        return False
+
+
+def _run_print_job(ts, source):
+    # A capture print uses the live network state for the receipt text; a reprint from the
+    # gallery uses whether that capture is still waiting for its upload.
+    offline = NETWORK_OFFLINE.is_set() if source == "capture" else _in_pending_list(ts)
+
+    def mark_done():
+        session_update(ts, print_state="done", notice="", notice_until=None)
+
+    session_update(ts, print_state="printing")
+    started = time.monotonic()
+    for attempt in range(1, PRINT_ATTEMPTS + 1):
+        if print_booth_receipt(ts, offline_notice=offline, on_cut=mark_done):
+            mark_done()
+            logger.info(
+                "[PRINTER] Session %s printed in %.1f s (attempt %d)",
+                ts,
+                time.monotonic() - started,
+                attempt,
+            )
+            return
+        if attempt < PRINT_ATTEMPTS:
+            logger.warning(
+                "[PRINTER] Print of session %s failed (attempt %d of %d); trying again",
+                ts,
+                attempt,
+                PRINT_ATTEMPTS,
+            )
+            session_update(
+                ts, print_state="retrying", notice=MSG_PRINT_RETRY, notice_until=None
+            )
+            SHUTDOWN_EVENT.wait(PRINT_RETRY_DELAY)
+    logger.error(
+        "[PRINTER] Giving up on session %s after %d attempts", ts, PRINT_ATTEMPTS
+    )
+    session_update(ts, print_state="failed", notice=MSG_PRINT_FAILED, notice_until=None)
+
+
+def print_worker():
+    # The only thread that prints: captures and gallery reprints wait in one queue.
+    logger.info("[INIT] Print worker: active.")
+    while not SHUTDOWN_EVENT.is_set():
+        try:
+            ts, source = print_queue.get(timeout=1.0)
+        except queue.Empty:
+            continue
+        try:
+            _run_print_job(ts, source)
+        except Exception:
+            logger.exception("[PRINTER] Print worker exception for session %s", ts)
+        finally:
+            with _print_ids_lock:
+                _print_ids.discard(ts)
+            print_queue.task_done()
 
 
 def upload_clean_capture(ts, attempts=2, poster=None):
@@ -2863,6 +3095,7 @@ def idle_sync_worker():
                             "[IDLE SYNC] Session %s uploaded; removing it from the pending list.",
                             ts,
                         )
+                        NETWORK_OFFLINE.clear()
                         # Best effort: its result never keeps the entry in the pending list.
                         upload_clean_capture(ts, attempts=1, poster=http)
                     else:
@@ -2877,6 +3110,7 @@ def idle_sync_worker():
                         )
                         still_pending.append(ts)
                 except Exception as upload_err:
+                    NETWORK_OFFLINE.set()
                     log_throttled(
                         logger,
                         logging.WARNING,
@@ -2932,7 +3166,6 @@ def idle_sync_worker():
 
 
 def upload_queue_worker():
-    global upload_status_msg
     logger.info("[INIT] Cloud Upload Worker: Active and bound.")
     http = requests.Session()
 
@@ -2944,42 +3177,10 @@ def upload_queue_worker():
                 continue
             local_color_path = f"{CAPTURE_DIR}/{ts}_color.jpg"
             remote_filename = f"{ts}_color.jpg"
-            qr_filename = f"{ts}_qr.png"
-            qr_path = os.path.join(SAVED_DIR, qr_filename)
 
-            # --- PHASE A: Unified QR Code Generation ---
-            landing_url = get_landing_url(ts)
-            qr_generated = False
-            try:
-                qr_img = qrcode.make(landing_url)
-                qr_img.save(qr_path)
-                qr_generated = True
-            except Exception as qr_err:
-                logger.error(
-                    "[UPLOAD WORKER] QR creation failed for session %s: %s",
-                    ts,
-                    qr_err,
-                )
-
-            # --- PHASE B: Pre-generate Composite Receipt Image ---
-            composite_ready = False
-            if qr_generated:
-                comp_result = generate_composite_receipt_image(ts)
-                if comp_result:
-                    composite_ready = True
-                else:
-                    logger.warning(
-                        "[UPLOAD WORKER] Composite preparation failed for %s; the print pipeline will fall back.",
-                        ts,
-                    )
-
-            with mode_lock:
-                ACTIVE_SESSION["composite_ready"] = composite_ready
-
-            # --- PHASE C: ImageKit Cloud Upload (Independent of composite) ---
-
-            with mode_lock:
-                upload_status_msg = "UPLOADING"
+            # The QR code and the composite are already made by the capture job; this
+            # worker only uploads, in parallel with the print.
+            session_update(ts, upload_status="UPLOADING")
             upload_success = False
             MAX_UPLOAD_RETRIES = 2
 
@@ -3000,15 +3201,12 @@ def upload_queue_worker():
                         )
 
                     if response.status_code == 200:
-                        with mode_lock:
-                            upload_status_msg = "SUCCESS"
                         upload_success = True
+                        NETWORK_OFFLINE.clear()
+                        session_update(ts, upload_status="SUCCESS")
                         logger.info("[UPLOAD] Session %s uploaded", ts)
-
-                        with mode_lock:
-                            ACTIVE_SESSION["upload_complete"] = True
-                            # Best effort, off the critical path: the print is already unblocked.
-                            upload_clean_capture_in_background(ts)
+                        # Best effort, off the critical path.
+                        upload_clean_capture_in_background(ts)
                         break
                     else:
                         logger.warning(
@@ -3029,8 +3227,8 @@ def upload_queue_worker():
                     time.sleep(1)
 
             if not upload_success:
-                with mode_lock:
-                    upload_status_msg = "FAILED"
+                NETWORK_OFFLINE.set()
+                session_update(ts, upload_status="FAILED")
 
                 try:
                     with cache_file_lock:
@@ -3048,9 +3246,6 @@ def upload_queue_worker():
                         fallback_err,
                     )
 
-                with mode_lock:
-                    ACTIVE_SESSION["upload_failed"] = True
-
             upload_queue.task_done()
 
         except Exception as fatal_e:
@@ -3067,8 +3262,6 @@ def background_loop():
     global UI_FRAME_SEQ
     global SHARED_JPEG_STREAM_BUFFER, SHARED_JPEG_ARRAY
     global PRINT_ALPHA, PRINT_BETA
-    global upload_status_msg
-
     threading.Thread(target=camera_io_worker, daemon=True).start()
 
     serial_connection = None
@@ -3117,6 +3310,7 @@ def background_loop():
                 loop_mode = ACTIVE_SESSION["mode"]
                 session_key = ACTIVE_SESSION["session_id"]
                 c_start = ACTIVE_SESSION["countdown_start_time"]
+                latest_since = ACTIVE_SESSION["latest_since"]
 
             with hw_state_lock:
                 _knobs = GLOBAL_KNOBS
@@ -3156,7 +3350,7 @@ def background_loop():
                 effect_intensity = 0.5
 
             with frame_lock:
-                if loop_mode in ["countdown", "processing", "latest"]:
+                if loop_mode in ["countdown", "latest"]:
                     UI_DISPLAY_BUFFER[:] = FROZEN_DISPLAY_BUFFER[:]
                     if loop_mode == "countdown":
                         if (loop_monotonic - c_start) < FLASH_DURATION:
@@ -3221,14 +3415,24 @@ def background_loop():
             # STATE 1: LIVE VIEWER - Initiates pre-capture countdown
             if loop_mode == "live":
                 if button_pressed_edge and loop_execution_time >= capture_lock_until:
-                    with mode_lock:
-                        ACTIVE_SESSION["mode"] = "pre-capture-countdown"
-                        ACTIVE_SESSION["countdown_start_time"] = loop_monotonic
-                        ACTIVE_SESSION["countdown_remaining"] = 3
+                    camera_ok, camera_age = camera_is_fresh()
+                    if not camera_ok:
+                        logger.warning(
+                            "[STATE ENGINE] Button pressed but the camera frame is %.1f s old. Not starting a capture.",
+                            camera_age,
+                        )
+                        set_notice(MSG_CAMERA, CAMERA_NOTICE_SECONDS)
+                        capture_lock_until = loop_execution_time + 1.2
+                    else:
+                        with mode_lock:
+                            ACTIVE_SESSION["mode"] = "pre-capture-countdown"
+                            ACTIVE_SESSION["countdown_start_time"] = loop_monotonic
+                            ACTIVE_SESSION["countdown_remaining"] = 3
+                            _set_notice_locked("", None)
 
-                    logger.info(
-                        "[STATE ENGINE] Button pressed. Starting pre-capture countdown (3s pose window)."
-                    )
+                        logger.info(
+                            "[STATE ENGINE] Button pressed. Starting pre-capture countdown (3s pose window)."
+                        )
 
             # STATE 1B: PRE-CAPTURE COUNTDOWN - Live pose timer (3.. 2.. 1..) then snapshot capture
             elif loop_mode == "pre-capture-countdown":
@@ -3239,103 +3443,101 @@ def background_loop():
                     with mode_lock:
                         ACTIVE_SESSION["countdown_remaining"] = remaining_steps
                 else:
-                    # EXACT 3.0s DEADLINE REACHED: EXECUTE CAPTURE IMMEDIATELY
-                    high_res_id = f"{int(time.time_ns() // 1000000)}"
+                    camera_ok, camera_age = camera_is_fresh()
+                    if not camera_ok:
+                        logger.warning(
+                            "[STATE ENGINE] The camera frame is %.1f s old at capture time. Cancelling the capture.",
+                            camera_age,
+                        )
+                        reset_to_live("camera stale at capture")
+                        set_notice(MSG_CAMERA, CAMERA_NOTICE_SECONDS)
+                    else:
+                        # EXACT 3.0s DEADLINE REACHED: EXECUTE CAPTURE IMMEDIATELY
+                        high_res_id = f"{int(time.time_ns() // 1000000)}"
 
-                    FROZEN_DISPLAY_BUFFER[:] = MUTABLE_PROCESSING_BUFFER[:]
+                        FROZEN_DISPLAY_BUFFER[:] = MUTABLE_PROCESSING_BUFFER[:]
 
-                    cv2.cvtColor(
-                        MUTABLE_PROCESSING_BUFFER,
-                        cv2.COLOR_BGR2GRAY,
-                        dst=STATIC_MELT_GRAY_BUFFER,
-                    )
-                    contrast_boosted_gray = cv2.convertScaleAbs(
-                        STATIC_MELT_GRAY_BUFFER, alpha=PRINT_ALPHA, beta=PRINT_BETA
-                    )
-                    monochrome_rotated_frame = cv2.rotate(
-                        contrast_boosted_gray, cv2.ROTATE_90_CLOCKWISE
-                    )
+                        cv2.cvtColor(
+                            MUTABLE_PROCESSING_BUFFER,
+                            cv2.COLOR_BGR2GRAY,
+                            dst=STATIC_MELT_GRAY_BUFFER,
+                        )
+                        contrast_boosted_gray = cv2.convertScaleAbs(
+                            STATIC_MELT_GRAY_BUFFER, alpha=PRINT_ALPHA, beta=PRINT_BETA
+                        )
+                        monochrome_rotated_frame = cv2.rotate(
+                            contrast_boosted_gray, cv2.ROTATE_90_CLOCKWISE
+                        )
 
-                    FROZEN_PRINT_BUFFER[:] = monochrome_rotated_frame
+                        FROZEN_PRINT_BUFFER[:] = monochrome_rotated_frame
 
-                    with mode_lock:
-                        ACTIVE_SESSION["mode"] = "countdown"
-                        ACTIVE_SESSION["session_id"] = high_res_id
-                        ACTIVE_SESSION["upload_complete"] = False
-                        ACTIVE_SESSION["upload_failed"] = False
-                        ACTIVE_SESSION["composite_ready"] = False
-                        ACTIVE_SESSION["print_dispatched"] = False
-                        ACTIVE_SESSION["countdown_start_time"] = loop_monotonic
-                        ACTIVE_SESSION["countdown_remaining"] = 0
-
-                    logger.info(
-                        "[STATE ENGINE] Pose countdown finished. Captured frame for %s. Advanced to post-capture latency mask ('PRINTING').",
-                        high_res_id,
-                    )
-
-                    captured_knobs = list(GLOBAL_KNOBS)
-                    threading.Thread(
-                        target=async_storage_worker,
-                        args=(
-                            high_res_id,
-                            FROZEN_DISPLAY_BUFFER.copy(),
-                            FROZEN_PRINT_BUFFER.copy(),
-                            captured_knobs,
-                            NAKED_FRAME_BUFFER.copy()
-                            if NAKED_CAPTURE_ENABLED
-                            else None,
-                        ),
-                        daemon=True,
-                    ).start()
-
-            # STATE 2: POST-CAPTURE LATENCY MASK - Displays "PRINTING" overlay while offloading disk/upload
-            elif loop_mode == "countdown":
-                time_delta = loop_monotonic - c_start
-
-                if time_delta >= 3.0:
-                    with mode_lock:
-                        ACTIVE_SESSION["mode"] = "processing"
-
-                    logger.info(
-                        "[STATE ENGINE] Post-capture latency mask complete. Session %s advanced to processing.",
-                        session_key,
-                    )
-
-            # STATE 3: UNIFIED PROCESSING & PRINT DISPATCH GATING NODE
-            elif loop_mode == "processing":
-                with mode_lock:
-                    if (
-                        ACTIVE_SESSION["upload_complete"]
-                        or ACTIVE_SESSION["upload_failed"]
-                    ) and not ACTIVE_SESSION["print_dispatched"]:
-                        ACTIVE_SESSION["mode"] = "latest"
-                        ACTIVE_SESSION["print_dispatched"] = True
-                        local_session_key = ACTIVE_SESSION["session_id"]
+                        with mode_lock:
+                            ACTIVE_SESSION.update(
+                                mode="countdown",
+                                session_id=high_res_id,
+                                upload_status="IDLE",
+                                print_state="waiting",
+                                countdown_start_time=loop_monotonic,
+                                countdown_remaining=0,
+                            )
+                            _set_notice_locked("", None)
 
                         logger.info(
-                            "[STATE ENGINE] Single Print Authority: Dispatching print thread for key: %s",
-                            local_session_key,
+                            "[STATE ENGINE] Pose countdown finished. Captured frame for %s. The PRINTING screen stays until the print is done.",
+                            high_res_id,
                         )
+
+                        captured_knobs = list(GLOBAL_KNOBS)
                         threading.Thread(
-                            target=print_booth_receipt,
-                            args=(local_session_key,),
+                            target=async_storage_worker,
+                            args=(
+                                high_res_id,
+                                FROZEN_DISPLAY_BUFFER.copy(),
+                                FROZEN_PRINT_BUFFER.copy(),
+                                captured_knobs,
+                                NAKED_FRAME_BUFFER.copy()
+                                if NAKED_CAPTURE_ENABLED
+                                else None,
+                            ),
                             daemon=True,
                         ).start()
 
-            # STATE 4: REVIEW VIEW GATING NODE - Displays confirmation elements until the button is pressed
+            # STATE 2: PRINTING - flash, then the "PRINTING" overlay until the receipt is printed
+            elif loop_mode == "countdown":
+                time_delta = loop_monotonic - c_start
+                with mode_lock:
+                    print_state = ACTIVE_SESSION["print_state"]
+                finished = time_delta >= FLASH_DURATION and print_state in (
+                    "done",
+                    "failed",
+                )
+                timed_out = time_delta >= PRINT_OVERLAY_TIMEOUT
+
+                if finished or timed_out:
+                    with mode_lock:
+                        ACTIVE_SESSION["mode"] = "latest"
+                        ACTIVE_SESSION["latest_since"] = loop_monotonic
+                    if finished:
+                        logger.info(
+                            "[STATE ENGINE] Session %s print %s %.1f s after capture. Showing the review screen.",
+                            session_key,
+                            print_state,
+                            time_delta,
+                        )
+                    else:
+                        logger.warning(
+                            "[STATE ENGINE] Session %s is still '%s' %.0f s after capture. Showing the review screen anyway.",
+                            session_key,
+                            print_state,
+                            time_delta,
+                        )
+
+            # STATE 3: REVIEW VIEW - confirmation screen until the button is pressed or the timeout ends
             elif loop_mode == "latest":
                 if button_pressed_edge:
-                    logger.info(
-                        "[STATE ENGINE] Clearing session %s. Returning control to the live feed.",
-                        session_key,
-                    )
-                    capture_lock_until = loop_execution_time + 1.2
-
-                    with mode_lock:
-                        ACTIVE_SESSION["mode"] = "live"
-                        ACTIVE_SESSION["session_id"] = None
-                        ACTIVE_SESSION["countdown_remaining"] = 3
-                        upload_status_msg = "IDLE"
+                    reset_to_live("button", expected_session_id=session_key)
+                elif loop_monotonic - latest_since > LATEST_TIMEOUT_SECONDS:
+                    reset_to_live("review timeout", expected_session_id=session_key)
 
             last_button_state = packet.button
 
@@ -3503,6 +3705,7 @@ def start_backend_engine(blocking=True):
 
     worker_configs = [
         ("UploadWorker", upload_queue_worker),
+        ("PrintWorker", print_worker),
         (
             "TelemetryWorker",
             telemetry_worker,
@@ -3644,18 +3847,33 @@ def print_capture(session_id):
             404,
         )
 
-    logger.info(
-        "[MANUAL PRINT] Dispatching manual print thread for session %s", session_id
-    )
+    result = enqueue_print(session_id, "manual")
+    if result == "duplicate":
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "message": f"Session {session_id} is already waiting or printing",
+                }
+            ),
+            409,
+        )
+    if result == "busy":
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "message": "The print queue is full. Try again in a moment.",
+                }
+            ),
+            429,
+        )
 
-    threading.Thread(
-        target=print_booth_receipt, args=(session_id,), daemon=True
-    ).start()
-
+    logger.info("[MANUAL PRINT] Queued session %s for printing", session_id)
     return jsonify(
         {
             "status": "success",
-            "message": f"Reprint job spawned for session {session_id}",
+            "message": f"Reprint job queued for session {session_id}",
         }
     )
 
@@ -3676,7 +3894,7 @@ def delete_capture(session_id):
     clean_path = os.path.join(NAKED_DIR, f"{session_id}_clean.jpg")
 
     deleted_any = False
-    for path in [color_path, bw_path, qr_path, comp_png]:
+    for path in [color_path, bw_path, qr_path, comp_png, clean_path]:
         if os.path.exists(path):
             try:
                 os.remove(path)
@@ -3735,7 +3953,9 @@ def state():
         current_session_id = ACTIVE_SESSION["session_id"]
         countdown_secs = ACTIVE_SESSION["countdown_remaining"]
         c_start = ACTIVE_SESSION["countdown_start_time"]
-        current_upload_status = upload_status_msg
+        current_upload_status = ACTIVE_SESSION["upload_status"]
+        current_print_state = ACTIVE_SESSION["print_state"]
+        current_notice = _notice_locked()
 
     is_flash = (
         current_mode == "countdown" and (time.monotonic() - c_start) < FLASH_DURATION
@@ -3753,6 +3973,8 @@ def state():
             "memory_rss_mb": SYSTEM_TELEMETRY["memory_rss_mb"],
             "frame_id": FRAME_ID,
             "upload_status": current_upload_status,
+            "print_state": current_print_state,
+            "notice": current_notice,
             "mode": current_mode,
             "is_flash": is_flash,
             "countdown_seconds": countdown_secs,
@@ -3840,14 +4062,19 @@ def ping():
 
 @app.route("/clear_session", methods=["POST"])
 def clear_session():
-    """Allows client-side watchdogs to force the booth back to live streaming mode"""
-    with mode_lock:
-        if ACTIVE_SESSION["mode"] == "latest":
-            ACTIVE_SESSION["mode"] = "live"
-            ACTIVE_SESSION["session_id"] = None
-            logger.info(
-                "[STATE ENGINE] Client-side watchdog timeout. Returning to live stream."
-            )
+    """Review screen -> live view on request of a web page. The server also does this by
+    itself after LATEST_TIMEOUT_SECONDS, so no client has to."""
+    reset_to_live("web request", only_if_mode=("latest",))
+    return jsonify({"status": "success"})
+
+
+@app.route("/force_reset", methods=["POST"])
+def force_reset():
+    """Operator recovery (control page): back to the live view from any other state."""
+    reset_to_live(
+        "operator force reset",
+        only_if_mode=("pre-capture-countdown", "countdown", "latest"),
+    )
     return jsonify({"status": "success"})
 
 
