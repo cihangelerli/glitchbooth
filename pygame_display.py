@@ -124,6 +124,9 @@ knob_changed_times = [0.0] * 6
 # Row order stays fixed; names follow the primary effect attached to each knob.
 KNOB_ROW_ORDER = [0, 1, 3, 4, 2, 5]
 _knob_names = server.get_knob_labels()
+# True for a knob whose effect the server switched off at startup (bad tunable): its row
+# shows a warning instead of the knob value.
+_knob_failed = server.get_knob_failures()
 KNOB_ROWS = [(k_id, _knob_names[k_id]) for k_id in KNOB_ROW_ORDER]
 
 # ==============================================================================
@@ -621,8 +624,11 @@ try:
                 lbl_surf = ui_font.render(f"> {label}", True, color)
                 virtual_canvas.blit(lbl_surf, (PADDING_LEFT, row_y))
 
-                # Render value right-aligned
-                val_surf = ui_font.render(str(val), True, color)
+                # Render value right-aligned (a warning instead, if the effect is switched off)
+                if _knob_failed[k_id]:
+                    val_surf = ui_font.render("HATA!", True, (255, 60, 60))
+                else:
+                    val_surf = ui_font.render(str(val), True, color)
                 val_x = DISPLAY_W - PADDING_LEFT - val_surf.get_width()
                 virtual_canvas.blit(val_surf, (val_x, row_y))
 

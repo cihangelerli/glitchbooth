@@ -14,7 +14,6 @@ from flask import (
     request,
     send_from_directory,
 )
-from werkzeug.utils import secure_filename
 
 load_dotenv(Path(__file__).parent / ".env", override=False)
 
@@ -31,7 +30,6 @@ import logging.handlers
 import math
 import queue
 import re
-import resource
 import socket
 import subprocess
 import sys
@@ -289,6 +287,37 @@ def log_throttled(log, level, key, interval, msg, *args, exc_info=False):
 
 setup_logging()
 
+
+def _cfg_number(name, default, cast, minimum=None):
+    # Number from the environment with a safe fallback: a typo in .env must never stop the
+    # kiosk from starting. Only values that would break something are replaced (not a
+    # number, not finite, or below `minimum`); the default is the one written at the call.
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = cast(raw.strip())
+    except (TypeError, ValueError):
+        logger.warning(
+            "[CONFIG] %s=%r is not a valid %s, using %s",
+            name,
+            raw,
+            cast.__name__,
+            default,
+        )
+        return default
+    if not math.isfinite(value) or (minimum is not None and value < minimum):
+        logger.warning(
+            "[CONFIG] %s=%r is not usable (must be a finite number%s), using %s",
+            name,
+            raw,
+            f" >= {minimum}" if minimum is not None else "",
+            default,
+        )
+        return default
+    return value
+
+
 app = Flask(__name__)
 
 
@@ -309,16 +338,17 @@ os.makedirs(ARCHIVE_DIR, exist_ok=True)
 NAKED_DIR = "captures_naked"
 os.makedirs(NAKED_DIR, exist_ok=True)
 
-IK_URL_ENDPOINT = os.getenv("IK_URL_ENDPOINT")
 IK_PRIVATE_KEY = os.getenv("IK_PRIVATE_KEY")
-
-if not IK_URL_ENDPOINT:
-    raise ValueError("CRITICAL: IK_URL_ENDPOINT is not set in the .env file!")
-
-if not IK_PRIVATE_KEY:
-    raise ValueError("CRITICAL: IK_PRIVATE_KEY is not set in the .env file!")
-
-IK_AUTH_STRING = base64.b64encode(f"{IK_PRIVATE_KEY}:".encode()).decode()
+# Without the key the booth still runs and prints; nothing is uploaded, and every capture
+# stays in the pending list until the key is set and the service restarted.
+IK_UPLOADS_ENABLED = bool(IK_PRIVATE_KEY)
+IK_AUTH_STRING = (
+    base64.b64encode(f"{IK_PRIVATE_KEY}:".encode()).decode() if IK_UPLOADS_ENABLED else ""
+)
+if not IK_UPLOADS_ENABLED:
+    logger.critical(
+        "[CONFIG] IK_PRIVATE_KEY is not set in the .env file: uploads are OFF, captures stay in the pending list"
+    )
 
 # =========================================================================
 # EVENT MODE CONFIGURATION
@@ -350,14 +380,14 @@ IK_CLEAN_BASE_FOLDER = os.getenv("IK_CLEAN_BASE_FOLDER", "booth_captures_clean")
 BASE_DOMAIN = os.getenv("BASE_DOMAIN", "https://glitchbooth.online")
 
 # Print contrast variables (1.2 & 11 for bright days, 1.4 & 37 for night)
-PRINT_ALPHA = float(os.getenv("PRINT_ALPHA", "1.5"))
-PRINT_BETA = int(os.getenv("PRINT_BETA", "11"))
+PRINT_ALPHA = _cfg_number("PRINT_ALPHA", 1.5, float)
+PRINT_BETA = _cfg_number("PRINT_BETA", 11, int)
 
 # Receipt QR composite configuration
-RECEIPT_QR_SIZE = int(os.getenv("RECEIPT_QR_SIZE", "120"))
-RECEIPT_QR_MARGIN = int(os.getenv("RECEIPT_QR_MARGIN", "0"))
-RECEIPT_QR_ROTATION = int(
-    os.getenv("RECEIPT_QR_ROTATION", "90")
+RECEIPT_QR_SIZE = _cfg_number("RECEIPT_QR_SIZE", 120, int, minimum=1)
+RECEIPT_QR_MARGIN = _cfg_number("RECEIPT_QR_MARGIN", 0, int, minimum=0)
+RECEIPT_QR_ROTATION = _cfg_number(
+    "RECEIPT_QR_ROTATION", 90, int
 )  # 90 degrees clockwise
 RECEIPT_QR_CORNER = os.getenv(
     "RECEIPT_QR_CORNER", "bottom-left"
@@ -375,7 +405,7 @@ _VALID_CORNERS = {
 }
 _raw_corner = os.getenv("COUNTDOWN_CORNER", "bottom-center").lower().strip()
 COUNTDOWN_CORNER = _raw_corner if _raw_corner in _VALID_CORNERS else "bottom-center"
-FLASH_DURATION = float(os.getenv("FLASH_DURATION", "0.3"))
+FLASH_DURATION = _cfg_number("FLASH_DURATION", 0.3, float, minimum=0.0)
 
 
 def get_ik_target_folder() -> str:
@@ -535,7 +565,7 @@ EFFECT_STATS_ACTIVE_FROM = {
     "pixellation": 11,  # acts above 0
     "signal_drift": 11,  # acts above 0
     "melt": 31,  # acts above 0.03
-    "data_mosh": 101,  # acts from strength (knob/1023)**2 >= MOSH_DORMANT_BELOW (0.02)
+    "data_mosh": 101,  # duplicates MOSH_DORMANT_BELOW (0.02 = knob ~145): change both until it is derived
     "chroma_shift": 11,  # acts above 0.05
     "packet_corruption": 11,  # first damage appears above CORRUPTION_SPAWN_ABOVE (0.012)
     "ascii_matrix": 21,  # acts above 0.02
@@ -697,12 +727,12 @@ POSTERIZE_GLOW_FROM = 0.0  # strength (0-1) from which the glow appears
 MOSH_DORMANT_BELOW = (
     0.02  # strength = (knob/1023)**2 below this cancels everything at once
 )
-MOSH_THRESH_BASE = 37  # motion threshold = BASE + (1 - strength) * SPAN   (18 .. 58)
+MOSH_THRESH_BASE = 37  # motion threshold = BASE + (1 - strength) * SPAN   (37 .. 90 now)
 MOSH_THRESH_SPAN = 53
-MOSH_HOLD_MIN_FRAMES = 17  # hold time rises from MIN to MAX with strength (1-111)
+MOSH_HOLD_MIN_FRAMES = 17  # hold time (frames) rises from MIN to MAX with strength
 MOSH_HOLD_MAX_FRAMES = 49
 # Per-frame drag distance in any of four directions: left, right, up, or down.
-MOSH_VECTOR_PX = 9  # pixels per frame (1-11)
+MOSH_VECTOR_PX = 9  # pixels per frame (the engine limits it to 0 .. frame height)
 MOSH_DRAG_NEW_WEIGHT = 222 / 256  # share of the dragged picture per frame
 MOSH_EDGE_ERODE_MAX_PX = 0  # random edge erosion 0..N px on held cells
 MOSH_RELEASE_FRAMES = 11  # edges dissolve over the last N frames of a hold
@@ -714,13 +744,12 @@ MOSH_BLEED_MAX = 0.23  # bleed mix = MAX * strength (0-1)
 MOSH_CELL_H = 16
 MOSH_CELL_W = 12
 
-# These above are connected to and kept in check by _validate_mosh_settings() below the line...
+# All Data Mosh tuning lives in this block. Nothing limits or resets these values;
+# only an unknown MOSH_BLEED_MODE name is reported at startup.
 
 # --- Corruption -------------------------------------------------------------------
 CORRUPTION_CELL_H = 12
 CORRUPTION_CELL_W = 16
-CORRUPTION_GRID_H = FRAME_H // CORRUPTION_CELL_H
-CORRUPTION_GRID_W = FRAME_W // CORRUPTION_CELL_W
 CORRUPTION_CLEAR_BELOW = 0.01  # below this strength all damage is cleared
 CORRUPTION_SPAWN_ABOVE = 0.012  # new damage only spawns above this strength
 CORRUPTION_SPAWN_RATE = 0.23  # spawn chance per frame = strength * RATE
@@ -732,14 +761,6 @@ CORRUPTION_COLUMN_BLACK_PROB_END = 0.95  # black up to this roll, white above
 CORRUPTION_DECAY = 0.9  # energy multiplier per frame
 CORRUPTION_CLEAR_ENERGY = 0.005  # damage at or below this energy disappears
 CORRUPTION_BLEND_BELOW = 0.95  # below this energy the damage is blended, not solid
-
-STATIC_BLOCK_BUFFER = np.empty(
-    (CORRUPTION_CELL_H, CORRUPTION_CELL_W, 3), dtype=np.uint8, order="C"
-)
-
-GLOBAL_NOISE_BUFFER = np.empty(
-    (CORRUPTION_CELL_H, CORRUPTION_CELL_W, 3), dtype=np.uint8, order="C"
-)
 
 # --- Signal Drift -------------------------------------------------------------------
 DRIFT_MAX_AMOUNT = 60  # [320x240: 30] [480x360: 45] [640x480: 60]
@@ -779,6 +800,97 @@ PREVIEW_DOWNSCALE_WIDTH = (
     480  # [320x240: 240] [480x360: 320] [640x480: 480 or keep 240]
 )
 
+# --- ASCII grid -------------------------------------------------------------------
+ASCII_GRID_W = 80  # character columns
+ASCII_GRID_H = 60  # character rows
+
+# STARTUP CHECK: VALUES THAT WOULD CRASH THE BOOTH
+# ==============================================================================
+# This is NOT a tuning range: it lists the smallest value each tunable can have before the
+# booth crashes (a size of 0 divides by zero, a negative range is empty). Everything at or
+# above the minimum is yours and is never touched, and you never edit this table when tuning.
+# A tunable below its minimum switches off ONLY the effect named here, for this run, with an
+# ERROR line in the log and a warning on the booth's knob panel. The placeholder minimum only
+# lets the buffers below be built; an effect that is switched off never uses them.
+# Format: name: (minimum, effect, strict). strict=True means the value must be ABOVE the minimum.
+_CRASH_LIMITS = {
+    "ASCII_GRID_W": (1, "ascii_matrix", False),
+    "ASCII_GRID_H": (1, "ascii_matrix", False),
+    "MOSH_CELL_H": (1, "data_mosh", False),
+    "MOSH_CELL_W": (1, "data_mosh", False),
+    "MOSH_EDGE_ERODE_MAX_PX": (0, "data_mosh", False),
+    "CORRUPTION_CELL_H": (1, "packet_corruption", False),
+    "CORRUPTION_CELL_W": (1, "packet_corruption", False),
+    "CORRUPTION_SQUARE_MAX_CELLS": (1, "packet_corruption", False),
+    "POSTERIZE_SECTION_PX": (1, "posterize", False),
+    "POSTERIZE_MIX_FULL_AT": (0, "posterize", True),
+    "POSTERIZE_JITTER_MAX_PX": (0, "posterize", False),
+    "POSTERIZE_OUTLINE_MIN_PX": (0, "posterize", False),
+    "POSTERIZE_OUTLINE_MID_PX": (0, "posterize", False),
+    "POSTERIZE_OUTLINE_MAX_PX": (0, "posterize", False),
+    "MELT_CHUNK_ROWS": (1, "melt", False),
+    "MELT_STRIDE_LOW": (1, "melt", False),
+    "MELT_STRIDE_MID": (1, "melt", False),
+    "MELT_STRIDE_HIGH": (1, "melt", False),
+    "MELT_DRIP_WIDTH": (1, "melt", False),
+}
+
+DISABLED_EFFECTS = set()
+
+
+def _disable_effect(effect, name, value, rule):
+    DISABLED_EFFECTS.add(effect)
+    logger.error(
+        "[CONFIG] %s=%r %s: the %s effect is switched off for this run",
+        name,
+        value,
+        rule,
+        effect,
+    )
+
+
+def _apply_crash_limits():
+    for name, (minimum, effect, strict) in _CRASH_LIMITS.items():
+        value = globals()[name]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue  # a wrong type is not covered here
+        if value < minimum or (strict and value <= minimum):
+            above = "above" if strict else "at least"
+            _disable_effect(
+                effect, name, value, f"would crash the booth (must be {above} {minimum})"
+            )
+            if not strict:
+                globals()[name] = minimum  # placeholder so the buffers below can be built
+    sp = POSTERIZE_SECTION_PX
+    if "posterize" not in DISABLED_EFFECTS and (FRAME_W % sp or FRAME_H % sp):
+        _disable_effect(
+            "posterize", "POSTERIZE_SECTION_PX", sp, f"must divide {FRAME_W} and {FRAME_H}"
+        )
+    if MOSH_BLEED_MODE not in (
+        "shape_live_colour_held",
+        "shape_held_colour_live",
+        "off",
+    ):
+        logger.warning(
+            "[CONFIG] MOSH_BLEED_MODE=%r is not a known mode; Data Mosh will behave like 'shape_held_colour_live'",
+            MOSH_BLEED_MODE,
+        )
+
+
+_apply_crash_limits()
+
+# Values and buffers derived from the tunables above (they come after the check).
+CORRUPTION_GRID_H = FRAME_H // CORRUPTION_CELL_H
+CORRUPTION_GRID_W = FRAME_W // CORRUPTION_CELL_W
+
+STATIC_BLOCK_BUFFER = np.empty(
+    (CORRUPTION_CELL_H, CORRUPTION_CELL_W, 3), dtype=np.uint8, order="C"
+)
+
+GLOBAL_NOISE_BUFFER = np.empty(
+    (CORRUPTION_CELL_H, CORRUPTION_CELL_W, 3), dtype=np.uint8, order="C"
+)
+
 LATEST_CAMERA_FRAME = np.zeros((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
 MUTABLE_PROCESSING_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
 UI_DISPLAY_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
@@ -799,10 +911,6 @@ STATIC_MELT_GRAY_BUFFER = np.empty((FRAME_H, FRAME_W), dtype=np.uint8, order="C"
 # --- MELT BUFFERS ---
 
 STATIC_MELT_SNAPSHOT = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
-
-assert STATIC_MELT_SNAPSHOT.flags["C_CONTIGUOUS"], (
-    "CRITICAL: STATIC_MELT_SNAPSHOT layout fault!"
-)
 
 COMPRESSION_STAGE_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
 
@@ -862,9 +970,6 @@ CORRUPTION_MODE = np.zeros(
 
 # ASCII ENGINE PRE-ALLOCATED STORAGE
 # =========================================================================
-ASCII_GRID_W = 80
-ASCII_GRID_H = 60
-
 CELL_W = FRAME_W // ASCII_GRID_W
 CELL_H = FRAME_H // ASCII_GRID_H
 
@@ -1153,8 +1258,11 @@ def get_cpu_temp():
 
 
 def get_memory_usage():
+    # Current resident memory of this process in MB (not the peak); -1 if unreadable.
     try:
-        return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 2)
+        with open("/proc/self/statm") as statm:
+            resident_pages = int(statm.read().split()[1])
+        return round(resident_pages * os.sysconf("SC_PAGE_SIZE") / 1048576.0, 2)
     except Exception:
         return -1
 
@@ -1165,9 +1273,12 @@ def telemetry_worker():
 
     while not SHUTDOWN_EVENT.is_set():
         try:
-            SYSTEM_TELEMETRY["ip"] = get_actual_ip()
-            SYSTEM_TELEMETRY["cpu_temp"] = get_cpu_temp()
-            SYSTEM_TELEMETRY["memory_rss_mb"] = get_memory_usage()
+            # A new dict is swapped in whole, so readers never see a half-updated one.
+            SYSTEM_TELEMETRY = {
+                "ip": get_actual_ip(),
+                "cpu_temp": get_cpu_temp(),
+                "memory_rss_mb": get_memory_usage(),
+            }
         except Exception as e:
             log_throttled(
                 logger,
@@ -1319,25 +1430,76 @@ def camera_io_worker():
             time.sleep(1)
 
 
+_serial_rx = bytearray()  # received bytes that do not yet form a complete line
+_serial_synced = False  # False until the first (possibly cut-off) line after a connect is dropped
+_serial_bad_packets = 0
+
+
+def reset_serial_input():
+    # Called after every (re)connect: forget half-received data.
+    global _serial_synced
+    _serial_rx.clear()
+    _serial_synced = False
+
+
+def _parse_knob_packet(line):
+    # A packet is seven integers: six knobs (0-1023) and the button (0 or 1).
+    parts = line.split(",")
+    if len(parts) != 7:
+        return None
+    try:
+        values = [int(p) for p in parts]
+    except ValueError:
+        return None
+    if any(not 0 <= v <= 1023 for v in values[:6]) or values[6] not in (0, 1):
+        return None
+    return tuple(values[:6]), values[6]
+
+
 def update_knobs(ser):
+    # Takes everything that has arrived without waiting for a line to finish, and uses the
+    # newest valid packet, so the knobs never lag behind. A button press that arrived in an
+    # older packet of the same batch is kept, so a short press is not lost.
     # Read errors propagate: the caller logs them and reconnects.
-    global GLOBAL_KNOBS, GLOBAL_BUTTON
-    if ser.in_waiting > 0:
-        line = ser.readline().decode("utf-8", errors="ignore").strip()
+    global GLOBAL_KNOBS, GLOBAL_BUTTON, _serial_synced, _serial_bad_packets
+    waiting = ser.in_waiting
+    if waiting <= 0:
+        return
+    _serial_rx.extend(ser.read(waiting))
+    *complete, rest = _serial_rx.split(b"\n")
+    _serial_rx[:] = rest[-256:]  # a "line" this long is noise: keep only its tail
+    if not _serial_synced:
+        if not complete:
+            return
+        complete = complete[1:]  # the first line after a connect may be cut off
+        _serial_synced = True
+
+    newest = None
+    pressed = False
+    for raw in complete:
+        line = raw.decode("utf-8", errors="ignore").strip()
         if not line:
-            return
-        vals = line.split(",")
-        if len(vals) != 7:
-            logger.debug("[SERIAL] Ignoring malformed packet: %r", line)
-            return
-        try:
-            parsed = [int(v) for v in vals]
-        except ValueError:
-            logger.debug("[SERIAL] Ignoring non-integer packet: %r", line)
-            return
+            continue
+        parsed = _parse_knob_packet(line)
+        if parsed is None:
+            _serial_bad_packets += 1
+            log_throttled(
+                logger,
+                logging.WARNING,
+                "serial-bad-packet",
+                60.0,
+                "[SERIAL] Rejected a damaged packet: %r (%d rejected since start)",
+                line[:40],
+                _serial_bad_packets,
+            )
+            continue
+        newest = parsed
+        pressed = pressed or parsed[1] == 0
+
+    if newest is not None:
         with hw_state_lock:
-            GLOBAL_KNOBS = tuple(parsed[:6])
-            GLOBAL_BUTTON = parsed[6]
+            GLOBAL_KNOBS = newest[0]
+            GLOBAL_BUTTON = 0 if pressed else newest[1]
 
 
 # =========================================================================
@@ -1441,7 +1603,7 @@ class DataMoshEngine:
         # Apply one frame of Data Mosh to `frame` (modified in place).
         gh, gw, H, W = MOSH_GRID_H, MOSH_GRID_W, FRAME_H, FRAME_W
 
-        vec = MOSH_VECTOR_PX
+        vec = max(0, min(MOSH_VECTOR_PX, FRAME_H))  # longer than the frame or negative would crash
 
         motion_samples = frame[
             _MOSH_SAMPLE_Y0::MOSH_CELL_H, _MOSH_SAMPLE_X0::MOSH_CELL_W
@@ -1621,7 +1783,7 @@ class DataMoshEngine:
         np.copyto(self.prev_samp, self.samp)
 
 
-_MOSH = DataMoshEngine()
+_MOSH = DataMoshEngine() if "data_mosh" not in DISABLED_EFFECTS else None
 
 
 def apply_data_mosh(raw_knob, current_time):
@@ -1742,36 +1904,6 @@ def apply_packet_corruption(raw_knob, current_time=0.0):
         return
     corruption_update(strength)
     corruption_render(MUTABLE_PROCESSING_BUFFER)
-
-
-def _validate_mosh_settings():
-    # Check Data Mosh tunables without changing the owner's tuned safe limits.
-    global MOSH_BLEED_MODE
-    global MOSH_HOLD_MIN_FRAMES, MOSH_HOLD_MAX_FRAMES, MOSH_VECTOR_PX
-    notes = []
-    if MOSH_BLEED_MODE not in (
-        "shape_live_colour_held",
-        "shape_held_colour_live",
-        "off",
-    ):
-        notes.append(
-            f"MOSH_BLEED_MODE={MOSH_BLEED_MODE!r} invalid, using 'shape_live_colour_held'"
-        )
-        MOSH_BLEED_MODE = "shape_live_colour_held"
-    if not (1 <= MOSH_VECTOR_PX <= 11):
-        notes.append(f"MOSH_VECTOR_PX={MOSH_VECTOR_PX} outside 1-11, using 7")
-        MOSH_VECTOR_PX = 7
-    if not (1 <= MOSH_HOLD_MIN_FRAMES <= MOSH_HOLD_MAX_FRAMES <= 111):
-        notes.append(
-            "MOSH_HOLD_*_FRAMES must satisfy 1 <= min <= max <= 111, using 6, 33"
-        )
-        MOSH_HOLD_MIN_FRAMES, MOSH_HOLD_MAX_FRAMES = 6, 33
-
-    for msg in notes:
-        logger.warning("[CONFIG] Data Mosh setting adjusted: %s", msg)
-
-
-_validate_mosh_settings()
 
 
 # =========================================================================
@@ -2245,8 +2377,14 @@ class PosterizeEngine:
         self.xs = np.tile(np.arange(W, dtype=np.float32), (H, 1))
         self.mapx = self.xs.copy()
         self.mapy = np.tile(np.arange(H, dtype=np.float32)[:, None], (1, W))
+        # One dilation kernel for each outline thickness the tunables can ask for.
         self.kernels = {
-            px: np.ones((2 * px + 1, 2 * px + 1), dtype=np.uint8) for px in (1, 2, 3)
+            px: np.ones((2 * px + 1, 2 * px + 1), dtype=np.uint8)
+            for px in {
+                POSTERIZE_OUTLINE_MIN_PX,
+                POSTERIZE_OUTLINE_MID_PX,
+                POSTERIZE_OUTLINE_MAX_PX,
+            }
         }
         self.drop_small = z(H // sp, W // sp)
         self.flick_small = z(H // sp, W // sp)
@@ -2644,7 +2782,7 @@ class PosterizeEngine:
         np.copyto(frame, self.poster)
 
 
-_POSTER = PosterizeEngine()
+_POSTER = PosterizeEngine() if "posterize" not in DISABLED_EFFECTS else None
 
 
 def apply_posterize(raw_knob, current_time, ascii_active=False):
@@ -2669,12 +2807,15 @@ EFFECT_HANDLERS = {
 }
 _EFFECT_PLAN = []
 _KNOB_LABELS = [KNOB_EMPTY_LABEL] * 6
+_KNOB_FAILED = [False] * 6  # True: an effect on this knob was switched off at startup
 
 
 def rebuild_effect_plan():
-    global _EFFECT_PLAN, _KNOB_LABELS
+    global _EFFECT_PLAN, _KNOB_LABELS, _KNOB_FAILED
     notes, order, knob_of = [], [], {}
     for effect in EFFECT_ORDER:
+        if effect in DISABLED_EFFECTS:
+            continue  # switched off by the startup check, which already reported it
         if effect not in EFFECT_HANDLERS:
             notes.append(f"EFFECT_ORDER: unknown effect {effect!r} ignored")
         elif effect in order:
@@ -2692,6 +2833,8 @@ def rebuild_effect_plan():
             notes.append(f"KNOB_ATTACHMENTS: knob {knob!r} is not 0-5, ignored")
     for knob in valid_knobs:
         for effect in KNOB_ATTACHMENTS[knob]:
+            if effect in DISABLED_EFFECTS:
+                continue
             if effect not in order:
                 notes.append(
                     f"knob {knob}: {effect!r} is unknown or missing from EFFECT_ORDER, ignored"
@@ -2705,6 +2848,8 @@ def rebuild_effect_plan():
                 by_knob[knob].append(effect)
     windows = {}
     for effect, window in EFFECT_KNOB_WINDOW.items():
+        if effect in DISABLED_EFFECTS:
+            continue
         try:
             lo, hi = float(window[0]), float(window[1])
             valid = 0 <= lo < hi <= 1 and effect in order
@@ -2727,18 +2872,34 @@ def rebuild_effect_plan():
         for effect in order
         if effect in knob_of
     ]
+    # The label names the first effect attached to the knob, including one that the startup
+    # check switched off, so the panel can show its name with a warning.
+    knob_chain = {
+        k: [
+            e
+            for e in (KNOB_ATTACHMENTS.get(k, []) if k in valid_knobs else [])
+            if e in DISABLED_EFFECTS or e in by_knob[k]
+        ]
+        for k in range(6)
+    }
     _KNOB_LABELS = [
-        EFFECT_LABELS.get(by_knob[k][0], by_knob[k][0])
-        if by_knob[k]
+        EFFECT_LABELS.get(knob_chain[k][0], knob_chain[k][0])
+        if knob_chain[k]
         else KNOB_EMPTY_LABEL
         for k in range(6)
     ]
+    _KNOB_FAILED = [any(e in DISABLED_EFFECTS for e in knob_chain[k]) for k in range(6)]
     for note in notes:
         logger.warning("[CONFIG] Effect configuration: %s", note)
 
 
 def get_knob_labels():
     return list(_KNOB_LABELS)
+
+
+def get_knob_failures():
+    # One flag per knob: True when an effect attached to it was switched off at startup.
+    return list(_KNOB_FAILED)
 
 
 def _windowed_raw(raw_knob, window):
@@ -2764,6 +2925,26 @@ def compute_effect_intensity(knobs):
 
 
 rebuild_effect_plan()
+
+
+def _check_effect_tables():
+    # An effect missing from one of these tables silently falls back to a default
+    # (cost weight 0, its raw name as label or statistics name, activity threshold 10).
+    for table_name in (
+        "EFFECT_COST_WEIGHT",
+        "EFFECT_LABELS",
+        "EFFECT_STATS_NAME",
+        "EFFECT_STATS_ACTIVE_FROM",
+    ):
+        table = globals()[table_name]
+        for effect in EFFECT_HANDLERS:
+            if effect not in table:
+                logger.warning(
+                    "[CONFIG] %s has no entry for %r; a default is used", table_name, effect
+                )
+
+
+_check_effect_tables()
 
 
 def get_active_effects(knobs):
@@ -2900,7 +3081,7 @@ def cleanup_sessions(limit=100):
                     ARCHIVE_DIR,
                     limit,
                 )
-    except Exception as e:
+    except Exception:
         logger.exception("[ARCHIVE] Archival pipeline exception")
 
 
@@ -3130,7 +3311,7 @@ def generate_composite_receipt_image(ts: str) -> str:
             )
             return composite_path
 
-    except Exception as comp_err:
+    except Exception:
         logger.exception(
             "[COMPOSITE] Unexpected failure generating composite for %s", ts
         )
@@ -3214,7 +3395,7 @@ def print_booth_receipt(ts, offline_notice=False, on_cut=None):
             time.sleep(0.5)
             logger.info("[PRINTER] Hardware receipt complete for session %s", ts)
 
-        except Exception as e:
+        except Exception:
             logger.exception("[PRINTER] Hardware fault while printing session %s", ts)
         finally:
             if printer is not None:
@@ -3296,6 +3477,8 @@ def upload_clean_capture(ts, attempts=2, poster=None):
     # its result is never used to decide anything: a failed clean upload must not affect the
     # processed upload, the print or the session. Without the clean file the website simply
     # shows no slider for this capture.
+    if not IK_UPLOADS_ENABLED:
+        return False
     local_path = os.path.join(NAKED_DIR, f"{ts}_clean.jpg")
     if not os.path.exists(local_path):
         logger.debug("[CLEAN UPLOAD] No clean file for session %s; skipping", ts)
@@ -3367,6 +3550,16 @@ def idle_sync_worker():
         try:
             if SHUTDOWN_EVENT.wait(timeout=30):
                 break
+
+            if not IK_UPLOADS_ENABLED:
+                log_throttled(
+                    logger,
+                    logging.CRITICAL,
+                    "no-ik-key",
+                    3600.0,
+                    "[IDLE SYNC] IK_PRIVATE_KEY is not set: uploads are OFF, captures stay in the pending list",
+                )
+                continue
 
             if not os.path.exists("pending_uploads.txt"):
                 continue
@@ -3465,7 +3658,7 @@ def idle_sync_worker():
                     except Exception:
                         pass
 
-        except Exception as sync_fault:
+        except Exception:
             log_throttled(
                 logger,
                 logging.ERROR,
@@ -3499,7 +3692,8 @@ def upload_queue_worker():
             upload_success = False
             MAX_UPLOAD_RETRIES = 2
 
-            for attempt in range(MAX_UPLOAD_RETRIES):
+            # Without the key there are no attempts: the capture goes straight to the pending list.
+            for attempt in range(MAX_UPLOAD_RETRIES if IK_UPLOADS_ENABLED else 0):
                 try:
                     upload_url = "https://upload.imagekit.io/api/v1/files/upload"
                     with open(local_color_path, "rb") as f:
@@ -3563,7 +3757,7 @@ def upload_queue_worker():
 
             upload_queue.task_done()
 
-        except Exception as fatal_e:
+        except Exception:
             logger.exception("[UPLOAD WORKER] Worker exception")
             time.sleep(1)
 
@@ -3593,6 +3787,7 @@ def background_loop():
                     for port in SERIAL_PORTS:
                         try:
                             serial_connection = serial.Serial(port, 9600, timeout=0.05)
+                            reset_serial_input()
                             logger.info(
                                 "[HARDWARE LINK] Connected to serial port: %s", port
                             )
@@ -3620,16 +3815,20 @@ def background_loop():
                         )
                     serial_connection = None
 
+            # One snapshot of knobs and button; everything below (the control packet, the
+            # published session knobs, the capture) uses this same epoch. The locks are
+            # taken one after the other, never nested.
+            with hw_state_lock:
+                _knobs = GLOBAL_KNOBS
+                _button = GLOBAL_BUTTON
+
             with mode_lock:
-                ACTIVE_SESSION["knobs"] = list(GLOBAL_KNOBS)
+                ACTIVE_SESSION["knobs"] = list(_knobs)
                 loop_mode = ACTIVE_SESSION["mode"]
                 session_key = ACTIVE_SESSION["session_id"]
                 c_start = ACTIVE_SESSION["countdown_start_time"]
                 latest_since = ACTIVE_SESSION["latest_since"]
 
-            with hw_state_lock:
-                _knobs = GLOBAL_KNOBS
-                _button = GLOBAL_BUTTON
             packet = ControlPacket(_knobs, _button, loop_mode)
             loop_execution_time = time.time()
             loop_monotonic = time.monotonic()
@@ -3682,33 +3881,34 @@ def background_loop():
                     UI_DISPLAY_BUFFER[:] = MUTABLE_PROCESSING_BUFFER[:]
                 UI_FRAME_SEQ += 1
 
-            stream_jpeg_quality = max(35, min(65, int(65 - (effect_intensity * 30))))
-
-            h, w = UI_DISPLAY_BUFFER.shape[:2]
-
-            if effect_intensity >= 0.55:
-                target_preview_width = PREVIEW_DOWNSCALE_WIDTH
-            else:
-                target_preview_width = w
-
-            scale_factor = target_preview_width / w
-
-            if scale_factor < 1.0:
-                preview_matrix = cv2.resize(
-                    UI_DISPLAY_BUFFER,
-                    (target_preview_width, int(h * scale_factor)),
-                    interpolation=cv2.INTER_NEAREST,
-                )
-            else:
-                preview_matrix = UI_DISPLAY_BUFFER
-
             with frame_lock:
                 _viewers = ACTIVE_STREAM_VIEWERS
                 _fid_check = FRAME_ID
             should_encode = (_viewers > 0) or (_fid_check % 15 == 0)
-            quality = stream_jpeg_quality if _viewers > 0 else 20
 
             if should_encode:
+                # The preview is only scaled and encoded when it is actually used.
+                stream_jpeg_quality = max(35, min(65, int(65 - (effect_intensity * 30))))
+                quality = stream_jpeg_quality if _viewers > 0 else 20
+
+                h, w = UI_DISPLAY_BUFFER.shape[:2]
+
+                if effect_intensity >= 0.55:
+                    target_preview_width = PREVIEW_DOWNSCALE_WIDTH
+                else:
+                    target_preview_width = w
+
+                scale_factor = target_preview_width / w
+
+                if scale_factor < 1.0:
+                    preview_matrix = cv2.resize(
+                        UI_DISPLAY_BUFFER,
+                        (target_preview_width, int(h * scale_factor)),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                else:
+                    preview_matrix = UI_DISPLAY_BUFFER
+
                 ret, encoded_jpeg = cv2.imencode(
                     ".jpg",
                     preview_matrix,
@@ -3802,7 +4002,7 @@ def background_loop():
                             high_res_id,
                         )
 
-                        captured_knobs = list(GLOBAL_KNOBS)
+                        captured_knobs = list(packet.knobs)
                         threading.Thread(
                             target=async_storage_worker,
                             args=(
@@ -3872,7 +4072,7 @@ def background_loop():
             if remaining > 0:
                 time.sleep(remaining)
 
-        except Exception as loop_fault:
+        except Exception:
             log_throttled(
                 logger,
                 logging.ERROR,
@@ -3924,8 +4124,6 @@ def generate_frames():
                 time.sleep(0.01)
                 continue
 
-            if FRAME_ID % 1000 == 0:
-                logger.debug("[STREAM] Sending frame %s", FRAME_ID)
             yield (
                 b"--frame\r\n"
                 b"Content-Type: image/jpeg\r\n"
@@ -3938,7 +4136,7 @@ def generate_frames():
 
     except (BrokenPipeError, ConnectionResetError, GeneratorExit):
         return
-    except Exception as e:
+    except Exception:
         logger.exception("[STREAM] Unexpected error in the frame generator")
         return
     finally:
@@ -3987,7 +4185,7 @@ def graceful_shutdown_handler(signum, frame):
                 "[SHUTDOWN] System reboot/poweroff in progress. Skipping TTY rescue."
             )
 
-    except Exception as tty_err:
+    except Exception:
         logger.exception("[SHUTDOWN TTY RESCUE] Terminal rescue routine failed")
 
     # Give background workers a moment to observe SHUTDOWN_EVENT
@@ -4086,7 +4284,7 @@ def latest_page():
         with mode_lock:
             req_id = ACTIVE_SESSION["session_id"]
 
-    if not req_id:
+    if not req_id or not valid_capture_id(req_id):
         return redirect("/")
 
     return render_template("latest.html", latest_id=req_id)
@@ -4102,9 +4300,19 @@ def control_panel():
     return render_template("control.html")
 
 
+def valid_capture_id(value):
+    # Capture ids are millisecond timestamps: ASCII digits only. This is a format check, not
+    # an authorization check.
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 20
+        and re.fullmatch(r"[0-9]+", value) is not None
+    )
+
+
 @app.route("/gallery")
 def gallery():
-    page = int(request.args.get("page", 1))
+    page = request.args.get("page", 1, type=int)  # anything that is not a number: page 1
     per_page = 12
 
     try:
@@ -4114,11 +4322,11 @@ def gallery():
             if f.endswith("_color.jpg"):
                 base = f.replace("_color.jpg", "")
 
-                if base.isdigit():
+                if valid_capture_id(base):
                     modern_files.append(f)
 
         files = sorted(modern_files, reverse=True)
-    except Exception as e:
+    except Exception:
         logger.exception("[GALLERY] Listing error")
         files = []
 
@@ -4135,6 +4343,7 @@ def gallery():
         )
 
     total_pages = max(1, (len(captures) + per_page - 1) // per_page)
+    page = max(1, min(page, total_pages))
     start, end = (page - 1) * per_page, page * per_page
     return render_template(
         "gallery.html", captures=captures[start:end], page=page, total_pages=total_pages
@@ -4143,8 +4352,7 @@ def gallery():
 
 @app.route("/print_capture/<session_id>", methods=["POST"])
 def print_capture(session_id):
-    session_id = secure_filename(session_id)
-    if not session_id:
+    if not valid_capture_id(session_id):
         return (
             jsonify({"status": "error", "message": "Invalid session identifier"}),
             400,
@@ -4195,8 +4403,7 @@ def print_capture(session_id):
 
 @app.route("/delete_capture/<session_id>", methods=["POST"])
 def delete_capture(session_id):
-    session_id = secure_filename(session_id)
-    if not session_id:
+    if not valid_capture_id(session_id):
         return (
             jsonify({"status": "error", "message": "Invalid session identifier"}),
             400,
@@ -4272,21 +4479,30 @@ def state():
         current_print_state = ACTIVE_SESSION["print_state"]
         current_notice = _notice_locked()
 
+    # Each group below is one short snapshot under its own lock (never nested).
+    with hw_state_lock:
+        knobs_now = list(GLOBAL_KNOBS)
+        frame_time_now = last_frame_time
+        fail_count_now = camera_fail_count
+    with frame_lock:
+        frame_id_now = FRAME_ID
+    system_now = SYSTEM_TELEMETRY  # replaced whole by the monitor thread, never edited
+
     is_flash = (
         current_mode == "countdown" and (time.monotonic() - c_start) < FLASH_DURATION
     )
 
     return jsonify(
         {
-            "knobs": list(GLOBAL_KNOBS),
+            "knobs": knobs_now,
             "labels": get_knob_labels(),
-            "ip": SYSTEM_TELEMETRY["ip"],
-            "last_frame_time": last_frame_time,
-            "camera_fail_count": camera_fail_count,
-            "camera_age": time.time() - last_frame_time,
-            "cpu_temp": SYSTEM_TELEMETRY["cpu_temp"],
-            "memory_rss_mb": SYSTEM_TELEMETRY["memory_rss_mb"],
-            "frame_id": FRAME_ID,
+            "ip": system_now["ip"],
+            "last_frame_time": frame_time_now,
+            "camera_fail_count": fail_count_now,
+            "camera_age": time.time() - frame_time_now,
+            "cpu_temp": system_now["cpu_temp"],
+            "memory_rss_mb": system_now["memory_rss_mb"],
+            "frame_id": frame_id_now,
             "upload_status": current_upload_status,
             "print_state": current_print_state,
             "notice": current_notice,
@@ -4408,14 +4624,15 @@ def api_live_telemetry():
     uptime_hours = round((time.time() - telemetry.BOOT_TIMESTAMP) / 3600.0, 1)
 
     camera_status = "OK" if globals().get("cam_thread_alive", True) else "FAULT"
+    system_now = SYSTEM_TELEMETRY  # replaced whole by the monitor thread, never edited
 
     return jsonify(
         {
             "captures": total_captures,
             "uptime_hours": uptime_hours,
             "online": True,
-            "cpu_temp": SYSTEM_TELEMETRY["cpu_temp"],
-            "memory_mb": SYSTEM_TELEMETRY["memory_rss_mb"],
+            "cpu_temp": system_now["cpu_temp"],
+            "memory_mb": system_now["memory_rss_mb"],
             "camera_status": camera_status,
         }
     )

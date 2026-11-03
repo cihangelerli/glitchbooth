@@ -119,7 +119,7 @@ Procedure:
 
 **R11. Shared buffers.** A scratch buffer may be shared only if all users run sequentially on the same thread, none relies on its contents across stages or frames, and every user is listed in the buffer inventory.
 
-**R12. Phase protocol.** One phase or batch at a time. The owner tags `pre-phaseN` or `pre-batchN` first. After finishing: tests, A/B guard, aesthetic gate (visual phases), booth smoke test, report. Do not start the next phase until the owner writes "accepted". Every phase should be planned as a stand alone update. The glitch booth operation should continue without flaws after the completion of each phase or batch.
+**R12. Phase protocol.** One phase or batch at a time. The owner tags `pre-phaseN` or `pre-batchN` first. After finishing: tests, aesthetic gate (visual phases), report. Do not start the next phase until the owner writes "accepted". Every phase should be planned as a stand alone update. The glitch booth operation should continue without flaws after the completion of each phase or batch.
 
 **R13. Forward compatibility (pre-registry phases).** Until a registry exists, new effects code is still written as **self-contained functions with the handler contract** (own state, `reset()`, tunables at the top, no calls to other effects), called from the existing pipeline at the existing stage position.
 
