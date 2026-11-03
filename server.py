@@ -649,11 +649,11 @@ POSTERIZE_OUTLINE_MAX_FROM = 0.99  # strength from which outlines are MAX px thi
 # added tunables in stead of hard-coded magic numbers!
 POSTERIZE_OUTLINE_MAX_PX = 2  # maximum outline thickness (min to mid to max)
 POSTERIZE_OUTLINE_MID_PX = 1  # mid-level outline thickness
-POSTERIZE_OUTLINE_MIN_PX = 1  # minimum outline thickness
+POSTERIZE_OUTLINE_MIN_PX = 1   # minimum outline thickness
 POSTERIZE_SECTION_PX = (
     2  # size of the dropout / flicker sections (must divide 640 and 480)
 )
-POSTERIZE_FRAGMENT_FROM = 0.61  # strength from which fine detail starts to break apart
+POSTERIZE_FRAGMENT_FROM = 0.71  # strength from which fine detail starts to break apart
 POSTERIZE_FRAGMENT_AMOUNT = 3  # grey levels of break-up noise at full strength
 POSTERIZE_ROTATE_SECONDS = (
     5  # 0 = fixed colours; N = the colour assignment shifts every N seconds
@@ -702,14 +702,14 @@ POSTERIZE_HALFTONE_GAP = 0.0  # brightness left between the dots (0 = black)
 POSTERIZE_HALFTONE_FROM = 0.2  # strength (0-1) from which the dots appear
 # Which tone bands get dots (0 = darkest band, 1 = brightest band; the rest stay solid):
 POSTERIZE_HALFTONE_TONE_FROM = 0.0  # e.g. 0.0 / 0.5 = only the darker half gets dots
-POSTERIZE_HALFTONE_TONE_TO = 0.5  # e.g. 0.5 / 1.0 = only the brighter half gets dots
+POSTERIZE_HALFTONE_TONE_TO = 0.4  # e.g. 0.5 / 1.0 = only the brighter half gets dots
 POSTERIZE_HALFTONE_ALTERNATE = False  # True = only every 2nd band inside that range
 
 # Neon edge glow: a halo (and optionally a bright neon core) on the outline.
 POSTERIZE_EDGE_GLOW = False
 POSTERIZE_GLOW_COLOR = (255, 255, 0)
 # (B, G, R) (255, 255, 0) electric cyan, or "palette" = local neon
-POSTERIZE_GLOW_RADIUS_PX = 7  # halo size
+POSTERIZE_GLOW_RADIUS_PX = 5  # halo size
 POSTERIZE_GLOW_GAIN = 1.2  # halo brightness (about 0.6 - 3)
 POSTERIZE_GLOW_CLEAN = 7  # 3, 5, 7: larger = the halo follows only bigger tone borders
 POSTERIZE_GLOW_DIM = (
