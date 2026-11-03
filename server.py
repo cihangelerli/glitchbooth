@@ -2808,10 +2808,11 @@ EFFECT_HANDLERS = {
 _EFFECT_PLAN = []
 _KNOB_LABELS = [KNOB_EMPTY_LABEL] * 6
 _KNOB_FAILED = [False] * 6  # True: an effect on this knob was switched off at startup
+_ASCII_ATTACHMENT = None  # (knob, window) of the ASCII effect while it is in the plan
 
 
 def rebuild_effect_plan():
-    global _EFFECT_PLAN, _KNOB_LABELS, _KNOB_FAILED
+    global _EFFECT_PLAN, _KNOB_LABELS, _KNOB_FAILED, _ASCII_ATTACHMENT
     notes, order, knob_of = [], [], {}
     for effect in EFFECT_ORDER:
         if effect in DISABLED_EFFECTS:
@@ -2872,6 +2873,10 @@ def rebuild_effect_plan():
         for effect in order
         if effect in knob_of
     ]
+    _ASCII_ATTACHMENT = next(
+        ((knob, window) for effect, _h, knob, window, _s in _EFFECT_PLAN if effect == "ascii_matrix"),
+        None,
+    )
     # The label names the first effect attached to the knob, including one that the startup
     # check switched off, so the panel can show its name with a warning.
     knob_chain = {
@@ -2895,6 +2900,16 @@ def rebuild_effect_plan():
 
 def get_knob_labels():
     return list(_KNOB_LABELS)
+
+
+def _ascii_is_active(knobs):
+    # True while the ASCII effect is switched on: it is in the plan and the knob it is attached
+    # to (after its window) is above the same 0.02 dormancy threshold the effect itself uses.
+    # Posterize uses this to switch its outlines to glow.
+    if _ASCII_ATTACHMENT is None:
+        return False
+    knob, window = _ASCII_ATTACHMENT
+    return n(_windowed_raw(knobs[knob], window)) > 0.02
 
 
 def get_knob_failures():
@@ -2988,7 +3003,7 @@ def apply_glitch_pipeline(current_time, control_packet):
     for _effect, handler, knob, window, skip in _EFFECT_PLAN:
         if not (skip and is_warming_up):
             if _effect == "posterize":
-                ascii_active = n(control_packet.knobs[0]) > 0.02
+                ascii_active = _ascii_is_active(control_packet.knobs)
                 handler(
                     _windowed_raw(control_packet.knobs[knob], window),
                     current_time,
