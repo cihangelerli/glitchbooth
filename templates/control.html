@@ -258,7 +258,7 @@
         <div class="nav-links">
           <a href="/">LIVE VIEW</a>
           <a href="/gallery">GALLERY</a>
-          <a href="#" onclick="location.reload(); return false;">REFRESH</a>
+          <!-- <a href="#" onclick="location.reload(); return false;">REFRESH</a> -->
         </div>
       </div>
 
@@ -292,6 +292,22 @@
             <span class="stat-label">MEMORY USAGE</span>
             <span class="stat-value" id="val-mem">-- MB</span>
           </div>
+        </div>
+      </div>
+
+      <!-- PAGE CONTROLS -->
+      <div class="card">
+        <div class="card-title">PAGE CONTROLS</div>
+        <div class="button-stack">
+          <button
+            class="button btn-secondary"
+            onclick="
+              location.reload();
+              return false;
+            "
+          >
+            REFRESH
+          </button>
         </div>
       </div>
 
