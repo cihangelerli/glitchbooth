@@ -66,6 +66,7 @@ ALL_EFFECTS = LEGACY_KNOB_EFFECTS + [
     "data_mosh",
     "packet_corruption",
     "posterize",
+    "slice_glitch",
     "no_glitch",
 ]
 

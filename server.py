@@ -1,4 +1,5 @@
 import base64
+import io
 import json
 import os
 import shutil
@@ -35,6 +36,9 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
+from collections import namedtuple
+from urllib.parse import quote, unquote
 
 import numpy as np
 import qrcode
@@ -368,10 +372,10 @@ if not IK_UPLOADS_ENABLED:
 #    folder). ImageKit creates a missing folder on the first upload into it.
 # 3. THERMAL RECEIPT: Manually update event title, subtitle, and social handles
 #    inside 'print_booth_receipt()' below!
-# 4. PENDING UPLOADS: Ensure 'pending_uploads.txt' is empty or flushed before
-#    switching EVENT_SLUG to prevent previous event captures syncing to the new folder.
-#    To quickly flush/empty in bash:
-#        > pending_uploads.txt      (or: rm -f pending_uploads.txt)
+# 4. PENDING UPLOADS: Nothing to flush. A capture that is not uploaded yet keeps the event it
+#    was taken in (its slug is stored with it as an 'id|slug' line in 'pending_uploads.txt')
+#    and uploads to THAT event's folders, even after EVENT_SLUG has changed. The startup log
+#    lists what is waiting and where it will go.
 # =========================================================================
 
 EVENT_SLUG = os.getenv("EVENT_SLUG", "")
@@ -408,41 +412,91 @@ COUNTDOWN_CORNER = _raw_corner if _raw_corner in _VALID_CORNERS else "bottom-cen
 FLASH_DURATION = _cfg_number("FLASH_DURATION", 0.3, float, minimum=0.0)
 
 
-def get_ik_target_folder() -> str:
+def _normalize_slug(slug) -> str:
+    return (slug or "").strip().strip("/")
 
-    # Computes the ImageKit folder path dynamically at call-time.
+
+def current_event_slug() -> str:
+    return _normalize_slug(EVENT_SLUG)
+
+
+def get_ik_target_folder(slug=None) -> str:
+
+    # Computes the ImageKit folder path dynamically at call-time. 'slug' is the event a
+    # capture was taken in; None means the event running now.
     # - Naked Mode (""):      '/booth_captures'
     # - Event Mode ("slug"):  '/booth_captures/slug'
 
-    slug = (EVENT_SLUG or "").strip().strip("/")
+    slug = current_event_slug() if slug is None else _normalize_slug(slug)
     if slug:
         return f"/{IK_BASE_FOLDER}/{slug}"
     return f"/{IK_BASE_FOLDER}"
 
 
-def get_ik_clean_folder() -> str:
+def get_ik_clean_folder(slug=None) -> str:
 
     # Same structure as get_ik_target_folder(), under the sibling clean base folder.
     # - Naked Mode (""):      '/booth_captures_clean'
     # - Event Mode ("slug"):  '/booth_captures_clean/slug'
 
-    slug = (EVENT_SLUG or "").strip().strip("/")
+    slug = current_event_slug() if slug is None else _normalize_slug(slug)
     if slug:
         return f"/{IK_CLEAN_BASE_FOLDER}/{slug}"
     return f"/{IK_CLEAN_BASE_FOLDER}"
 
 
-def get_landing_url(ts: str) -> str:
+def get_landing_url(ts: str, slug=None) -> str:
 
     # Constructs the landing URL for capture timestamp 'ts'.
     # - Naked Mode (""):      'https://glitchbooth.online/p/{ts}'
     # - Event Mode ("slug"):  'https://glitchbooth.online/slug/p/{ts}'
 
-    slug = (EVENT_SLUG or "").strip().strip("/")
+    slug = current_event_slug() if slug is None else _normalize_slug(slug)
     domain = BASE_DOMAIN.rstrip("/")
     if slug:
         return f"{domain}/{slug}/p/{ts}"
     return f"{domain}/p/{ts}"
+
+
+if not re.fullmatch(r"[A-Za-z0-9._-]*", current_event_slug()):
+    logger.warning(
+        "[CONFIG] EVENT_SLUG=%r contains characters other than letters, digits, '.', '_' and '-'. It is used exactly as written; check that it matches the website's slug.",
+        EVENT_SLUG,
+    )
+
+# UPLOAD DURABILITY TUNABLES
+# ==============================================================================
+IDLE_SYNC_INTERVAL = 30  # seconds between idle sync passes when the last pass uploaded nothing
+IDLE_SYNC_MAX_PER_PASS = 5  # entries tried per idle sync pass
+# Seconds to wait before an upload the cloud REJECTED (HTTP 400, 404, 413 ...) is tried again:
+# after the 1st, 2nd, 3rd and later rejection of the same capture.
+UPLOAD_REJECT_BACKOFF = (300, 1800, 7200)
+UPLOAD_REJECT_LIMIT = 8  # after this many rejections the capture moves to unresolved_uploads.txt
+UPLOAD_AUTH_BACKOFF = 600  # seconds the idle sync waits after ImageKit refused the key (401/403)
+# A pending line without a slug was written before slugs existed. "" = it belongs to no event.
+LEGACY_LEDGER_SLUG = ""
+# Emergency switch: True = an upload only counts when ImageKit answers with a JSON that has a
+# fileId and a filePath ending in the file name. False = HTTP 200 alone counts (old behaviour).
+UPLOAD_VALIDATE_RESPONSE = True
+IK_UPLOAD_URL = "https://upload.imagekit.io/api/v1/files/upload"
+PENDING_LEDGER_PATH = "pending_uploads.txt"
+UNRESOLVED_LEDGER_PATH = "unresolved_uploads.txt"
+
+for _name, _ok in (
+    ("IDLE_SYNC_INTERVAL", IDLE_SYNC_INTERVAL >= 1),
+    ("IDLE_SYNC_MAX_PER_PASS", IDLE_SYNC_MAX_PER_PASS >= 1),
+    ("UPLOAD_REJECT_LIMIT", UPLOAD_REJECT_LIMIT >= 1),
+    ("UPLOAD_AUTH_BACKOFF", UPLOAD_AUTH_BACKOFF >= 0),
+    (
+        "UPLOAD_REJECT_BACKOFF",
+        len(UPLOAD_REJECT_BACKOFF) >= 1 and all(v >= 0 for v in UPLOAD_REJECT_BACKOFF),
+    ),
+):
+    if not _ok:
+        logger.warning(
+            "[CONFIG] %s is outside what the upload code can use; the code treats it as the nearest usable value",
+            _name,
+        )
 
 
 logger.info(
@@ -488,6 +542,7 @@ EFFECT_ORDER = [
     "ascii_matrix",
     "posterize",
     "chroma_shift",
+    "slice_glitch",
 ]
 
 # Knob (0-5) -> effects. The FIRST effect is its visible primary name; remaining
@@ -498,14 +553,18 @@ KNOB_ATTACHMENTS = {
     2: ["posterize"],
     3: ["pixellation"],
     4: ["melt", "data_mosh"],
-    5: ["chroma_shift", "packet_corruption"],
+    5: ["chroma_shift", "slice_glitch", "packet_corruption"],
 }
 
 # Optional range of the knob in which an effect works, as fractions of the knob travel.
 # Inside its window the effect sees the full 0-1023 range; outside it is off.
 # Example: {"chroma_shift": (0.0, 0.7), "packet_corruption": (0.35, 1.0)}
 # EFFECT_KNOB_WINDOW = {"melt": (0.0, 1.0), "data_mosh": (0.49, 1.0)}
-EFFECT_KNOB_WINDOW = {}
+EFFECT_KNOB_WINDOW = {
+    "chroma_shift": (0.20, 1.0),
+    "slice_glitch": (0.0, 1.0),
+    "packet_corruption": (0.0, 1.0),
+}
 
 # Cost weights follow effects when they move between knobs.
 EFFECT_COST_WEIGHT = {
@@ -514,7 +573,8 @@ EFFECT_COST_WEIGHT = {
     "data_mosh": 0.27,
     "pixellation": 0.07,
     "melt": 0.27,
-    "chroma_shift": 0.07,
+    "chroma_shift": 0.05,
+    "slice_glitch": 0.02,
     "packet_corruption": 0.0,
     "posterize": 0.15,
 }
@@ -528,6 +588,7 @@ EFFECT_LABELS = {
     "pixellation": "Pixel Damage",
     "melt": "Data Melt",
     "chroma_shift": "Chroma Shift",
+    "slice_glitch": "Slice Glitch",
     "packet_corruption": "Packet Corruption",
     "posterize": "Posterize",
 }
@@ -553,6 +614,7 @@ EFFECT_STATS_NAME = {
     "pixellation": "pixel_damage",
     "melt": "melt",
     "chroma_shift": "chroma_shift",
+    "slice_glitch": "slice_glitch",
     "packet_corruption": "packet_corruption",
     "posterize": "posterize",
 }
@@ -567,6 +629,7 @@ EFFECT_STATS_ACTIVE_FROM = {
     "melt": 31,  # acts above 0.03
     "data_mosh": 101,  # duplicates MOSH_DORMANT_BELOW (0.02 = knob ~145): change both until it is derived
     "chroma_shift": 11,  # acts above 0.05
+    "slice_glitch": 64,  # the first slice appears at strength 0.0625 (int(sqrt(strength) * 4) >= 1)
     "packet_corruption": 11,  # first damage appears above CORRUPTION_SPAWN_ABOVE (0.012)
     "ascii_matrix": 21,  # acts above 0.02
     "posterize": 13,  # acts above the first non-zero point of POSTERIZE_CURVE (knob 12)
@@ -649,11 +712,11 @@ POSTERIZE_OUTLINE_MAX_FROM = 0.99  # strength from which outlines are MAX px thi
 # added tunables in stead of hard-coded magic numbers!
 POSTERIZE_OUTLINE_MAX_PX = 2  # maximum outline thickness (min to mid to max)
 POSTERIZE_OUTLINE_MID_PX = 1  # mid-level outline thickness
-POSTERIZE_OUTLINE_MIN_PX = 1   # minimum outline thickness
+POSTERIZE_OUTLINE_MIN_PX = 1  # minimum outline thickness
 POSTERIZE_SECTION_PX = (
     2  # size of the dropout / flicker sections (must divide 640 and 480)
 )
-POSTERIZE_FRAGMENT_FROM = 0.71  # strength from which fine detail starts to break apart
+POSTERIZE_FRAGMENT_FROM = 0.61  # strength from which fine detail starts to break apart
 POSTERIZE_FRAGMENT_AMOUNT = 3  # grey levels of break-up noise at full strength
 POSTERIZE_ROTATE_SECONDS = (
     5  # 0 = fixed colours; N = the colour assignment shifts every N seconds
@@ -702,14 +765,14 @@ POSTERIZE_HALFTONE_GAP = 0.0  # brightness left between the dots (0 = black)
 POSTERIZE_HALFTONE_FROM = 0.2  # strength (0-1) from which the dots appear
 # Which tone bands get dots (0 = darkest band, 1 = brightest band; the rest stay solid):
 POSTERIZE_HALFTONE_TONE_FROM = 0.0  # e.g. 0.0 / 0.5 = only the darker half gets dots
-POSTERIZE_HALFTONE_TONE_TO = 0.4  # e.g. 0.5 / 1.0 = only the brighter half gets dots
+POSTERIZE_HALFTONE_TONE_TO = 0.5  # e.g. 0.5 / 1.0 = only the brighter half gets dots
 POSTERIZE_HALFTONE_ALTERNATE = False  # True = only every 2nd band inside that range
 
 # Neon edge glow: a halo (and optionally a bright neon core) on the outline.
 POSTERIZE_EDGE_GLOW = False
 POSTERIZE_GLOW_COLOR = (255, 255, 0)
 # (B, G, R) (255, 255, 0) electric cyan, or "palette" = local neon
-POSTERIZE_GLOW_RADIUS_PX = 5  # halo size
+POSTERIZE_GLOW_RADIUS_PX = 7  # halo size
 POSTERIZE_GLOW_GAIN = 1.2  # halo brightness (about 0.6 - 3)
 POSTERIZE_GLOW_CLEAN = 7  # 3, 5, 7: larger = the halo follows only bigger tone borders
 POSTERIZE_GLOW_DIM = (
@@ -833,6 +896,8 @@ _CRASH_LIMITS = {
     "MELT_STRIDE_MID": (1, "melt", False),
     "MELT_STRIDE_HIGH": (1, "melt", False),
     "MELT_DRIP_WIDTH": (1, "melt", False),
+    "SLICE_MIN_H": (0, "slice_glitch", False),
+    "SLICE_MAX_SHIFT": (1, "slice_glitch", False),
 }
 
 DISABLED_EFFECTS = set()
@@ -865,6 +930,15 @@ def _apply_crash_limits():
     if "posterize" not in DISABLED_EFFECTS and (FRAME_W % sp or FRAME_H % sp):
         _disable_effect(
             "posterize", "POSTERIZE_SECTION_PX", sp, f"must divide {FRAME_W} and {FRAME_H}"
+        )
+    if "slice_glitch" not in DISABLED_EFFECTS and not (
+        SLICE_MIN_H < SLICE_MAX_H < FRAME_H
+    ):
+        _disable_effect(
+            "slice_glitch",
+            "SLICE_MAX_H",
+            SLICE_MAX_H,
+            f"must be above SLICE_MIN_H ({SLICE_MIN_H}) and below {FRAME_H}",
         )
     if MOSH_BLEED_MODE not in (
         "shape_live_colour_held",
@@ -1153,6 +1227,417 @@ def enqueue_print(ts, source, wait=0.0):
             _print_ids.discard(ts)
         return "busy"
     return "queued"
+
+
+# UPLOAD LEDGER, ATOMIC FILE WRITES, UPLOAD RESULTS
+# ==================================================
+# pending_uploads.txt is the single record of captures that are not fully uploaded yet. One
+# line per capture: "<id>|<slug>" (the slug is percent-encoded), or "<id>|<slug>|c" when only
+# the clean photo is left. A bare "<id>" is a legacy line written before slugs existed.
+# Rules for every helper below:
+#   - the whole read-modify-write happens under cache_file_lock, and the lock is never nested;
+#   - no network call is ever made while the lock is held;
+#   - removals rewrite through a temp file in the same folder and os.replace, so a reader (or a
+#     power cut) sees the old file or the complete new one;
+#   - a line only counts once its newline is there (a cut-off last line is never trusted);
+#   - lines that cannot be read are moved to unresolved_uploads.txt, never silently dropped.
+
+LedgerEntry = namedtuple("LedgerEntry", "id slug clean_only legacy")
+_LEDGER_ID_RE = re.compile(r"[0-9]{1,20}")
+
+
+def _fsync_dir(path):
+    fd = os.open(os.path.dirname(os.path.abspath(path)) or ".", os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _fsync_file(path):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def atomic_write_bytes(path, data, fsync=False):
+    # Temp file in the same folder, then os.replace. A plain open() is used (not mkstemp) so the
+    # file gets the same permissions as every other file the booth writes.
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}.tmp"
+    try:
+        with open(tmp, "xb") as f:
+            f.write(data)
+            f.flush()
+            if fsync:
+                os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _ledger_format(entry_id, slug, clean_only=False):
+    return f"{entry_id}|{quote(slug or '', safe='')}" + ("|c" if clean_only else "")
+
+
+def _ledger_parse(line):
+    # A LedgerEntry, None for a blank line, or a string with the reason the line is bad.
+    line = line.strip()
+    if not line:
+        return None
+    parts = line.split("|")
+    if not _LEDGER_ID_RE.fullmatch(parts[0]):
+        return "id is not 1-20 digits"
+    if len(parts) == 1:
+        return LedgerEntry(parts[0], _normalize_slug(LEGACY_LEDGER_SLUG), False, True)
+    if len(parts) == 2:
+        return LedgerEntry(parts[0], unquote(parts[1]), False, False)
+    if len(parts) == 3 and parts[2] == "c":
+        return LedgerEntry(parts[0], unquote(parts[1]), True, False)
+    return "unknown format"
+
+
+def _ledger_read_locked():
+    # (entries without duplicates in file order, [(raw line, reason)] for bad lines)
+    try:
+        with open(PENDING_LEDGER_PATH, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except FileNotFoundError:
+        return [], []
+    entries, bad, index = [], [], {}
+    pieces = text.split("\n")
+    if text and not text.endswith("\n"):
+        # The last piece may be cut off (a power cut in the middle of an append); a cut-off
+        # slug would be wrong, so it is not accepted.
+        bad.append((pieces.pop().strip(), "incomplete last line (no newline)"))
+    for raw in pieces:
+        parsed = _ledger_parse(raw)
+        if parsed is None:
+            continue
+        if isinstance(parsed, str):
+            bad.append((raw.strip(), parsed))
+            continue
+        if parsed.id in index:
+            # The same capture twice: keep the first; "colour still pending" wins.
+            old = entries[index[parsed.id]]
+            entries[index[parsed.id]] = old._replace(
+                clean_only=old.clean_only and parsed.clean_only
+            )
+            continue
+        index[parsed.id] = len(entries)
+        entries.append(parsed)
+    return entries, bad
+
+
+def _unresolved_append_locked(rows):
+    if not rows:
+        return
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    with open(UNRESOLVED_LEDGER_PATH, "a", encoding="utf-8") as f:
+        for ident, slug, reason in rows:
+            f.write(
+                f"{ident}|{quote(slug or '', safe='')}|{quote(reason, safe=' /,:()._-')}|{stamp}\n"
+            )
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def _ledger_write_locked(entries, bad):
+    # Lines that cannot be read go to the unresolved file first, then the ledger is replaced.
+    _unresolved_append_locked(
+        [
+            (quote(raw, safe=""), "", f"unreadable ledger line: {why}")
+            for raw, why in bad
+        ]
+    )
+    data = "".join(
+        _ledger_format(e.id, e.slug, e.clean_only) + "\n" for e in entries
+    ).encode("utf-8")
+    atomic_write_bytes(PENDING_LEDGER_PATH, data, fsync=True)
+    _fsync_dir(PENDING_LEDGER_PATH)
+
+
+def ledger_snapshot():
+    with cache_file_lock:
+        return _ledger_read_locked()[0]
+
+
+def ledger_get(entry_id):
+    for entry in ledger_snapshot():
+        if entry.id == entry_id:
+            return entry
+    return None
+
+
+def ledger_contains(entry_id):
+    return ledger_get(entry_id) is not None
+
+
+def ledger_add(entry_id, slug):
+    # Appends one line and fsyncs it. False when the capture is already in the ledger.
+    with cache_file_lock:
+        entries, bad = _ledger_read_locked()
+        if any(e.id == entry_id for e in entries):
+            return False
+        if bad:
+            _ledger_write_locked(entries, bad)  # clears a cut-off tail first
+        existed = os.path.exists(PENDING_LEDGER_PATH)
+        with open(PENDING_LEDGER_PATH, "a", encoding="utf-8") as f:
+            f.write(_ledger_format(entry_id, slug) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        if not existed:
+            _fsync_dir(PENDING_LEDGER_PATH)
+        return True
+
+
+def ledger_remove(ids):
+    # Removes exactly these ids from the CURRENT file. Returns how many were removed.
+    ids = set(ids)
+    if not ids:
+        return 0
+    with cache_file_lock:
+        entries, bad = _ledger_read_locked()
+        keep = [e for e in entries if e.id not in ids]
+        removed = len(entries) - len(keep)
+        if removed or bad:
+            _ledger_write_locked(keep, bad)
+        return removed
+
+
+def ledger_set_clean_only(entry_id, clean_only):
+    # Marks a capture as "only the clean photo is left" (or back).
+    with cache_file_lock:
+        entries, bad = _ledger_read_locked()
+        out, changed = [], False
+        for e in entries:
+            if e.id == entry_id and e.clean_only != clean_only:
+                e, changed = e._replace(clean_only=clean_only), True
+            out.append(e)
+        if changed or bad:
+            _ledger_write_locked(out, bad)
+        return changed
+
+
+def ledger_to_unresolved(entry_id, slug, reason):
+    # Unresolved list first (fsynced), then out of the ledger.
+    with cache_file_lock:
+        _unresolved_append_locked([(entry_id, slug, reason)])
+        entries, bad = _ledger_read_locked()
+        keep = [e for e in entries if e.id != entry_id]
+        if len(keep) != len(entries) or bad:
+            _ledger_write_locked(keep, bad)
+    logger.error(
+        "[LEDGER] Capture %s (slug %r) moved to %s: %s",
+        entry_id,
+        slug,
+        UNRESOLVED_LEDGER_PATH,
+        reason,
+    )
+
+
+def ledger_startup_check():
+    # Runs once before any worker starts: stale temp files out, unreadable lines to the
+    # unresolved list, legacy bare ids made explicit, and a summary of what is waiting.
+    removed_tmp = 0
+    for directory in (".", CAPTURE_DIR, SAVED_DIR, NAKED_DIR, ARCHIVE_DIR):
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            continue
+        for name in names:
+            stale = name.endswith(".tmp") and (
+                directory != "." or name.startswith("pending_uploads")
+            )
+            if stale or (directory == "." and name == "pending_uploads.tmp"):
+                try:
+                    os.remove(os.path.join(directory, name))
+                    removed_tmp += 1
+                except OSError:
+                    pass
+    with cache_file_lock:
+        entries, bad = _ledger_read_locked()
+        legacy = [e.id for e in entries if e.legacy]
+        for raw, why in bad:
+            logger.error(
+                "[LEDGER] Unreadable line %r (%s): moved to %s",
+                raw,
+                why,
+                UNRESOLVED_LEDGER_PATH,
+            )
+        if legacy:
+            logger.warning(
+                "[LEDGER] %d legacy line(s) without a slug are treated as slug %r: %s",
+                len(legacy),
+                _normalize_slug(LEGACY_LEDGER_SLUG),
+                legacy[:5],
+            )
+        if bad or legacy:
+            _ledger_write_locked([e._replace(legacy=False) for e in entries], bad)
+    by_slug = {}
+    for e in entries:
+        by_slug[e.slug or "no event"] = by_slug.get(e.slug or "no event", 0) + 1
+    unresolved = 0
+    try:
+        with open(UNRESOLVED_LEDGER_PATH, "r", encoding="utf-8", errors="replace") as f:
+            unresolved = sum(1 for line in f if line.strip())
+    except OSError:
+        pass
+    logger.info(
+        "[LEDGER] %d pending (%s), %d line(s) in %s, %d stale temp file(s) removed",
+        len(entries),
+        ", ".join(f"{k}: {v}" for k, v in sorted(by_slug.items())) or "none",
+        unresolved,
+        UNRESOLVED_LEDGER_PATH,
+        removed_tmp,
+    )
+    if unresolved:
+        logger.warning(
+            "[LEDGER] %s holds %d capture(s) that need a look", UNRESOLVED_LEDGER_PATH, unresolved
+        )
+
+
+# In-flight claims: the upload worker and the idle sync must never upload the same capture at
+# the same time. Whoever claims an id uploads it; the other one skips it.
+_inflight_ids = set()
+_inflight_lock = threading.Lock()
+
+
+def claim_upload(entry_id):
+    with _inflight_lock:
+        if entry_id in _inflight_ids:
+            return False
+        _inflight_ids.add(entry_id)
+        return True
+
+
+def release_upload(entry_id):
+    with _inflight_lock:
+        _inflight_ids.discard(entry_id)
+
+
+def inflight_snapshot():
+    with _inflight_lock:
+        return set(_inflight_ids)
+
+
+# Rejections (HTTP 400, 404, 413 ...) per capture: how often, and when it may be tried again.
+_upload_rejects = {}
+_upload_rejects_lock = threading.Lock()
+_auth_blocked_until = 0.0
+
+
+def note_rejection(entry_id):
+    # Returns how many times this capture has been rejected, and starts its backoff.
+    with _upload_rejects_lock:
+        count = _upload_rejects.get(entry_id, (0, 0.0))[0] + 1
+        steps = tuple(UPLOAD_REJECT_BACKOFF) or (300,)
+        wait = steps[min(count, len(steps)) - 1]
+        _upload_rejects[entry_id] = (count, time.monotonic() + wait)
+        return count
+
+
+def backoff_active(entry_id):
+    with _upload_rejects_lock:
+        entry = _upload_rejects.get(entry_id)
+        return bool(entry) and time.monotonic() < entry[1]
+
+
+def clear_rejections(entry_id):
+    with _upload_rejects_lock:
+        _upload_rejects.pop(entry_id, None)
+
+
+def interpret_upload_response(response, remote_filename):
+    # ("ok", fileId) | ("retry", why) | ("auth", why) | ("rejected", why)
+    code = response.status_code
+    if code == 200:
+        if not UPLOAD_VALIDATE_RESPONSE:
+            return "ok", "(answer not checked)"
+        try:
+            data = response.json()
+        except Exception:
+            return "retry", "HTTP 200 but the body is not JSON (captive portal or proxy?)"
+        if not isinstance(data, dict):
+            return "retry", "HTTP 200 but the JSON is not an object"
+        file_id = data.get("fileId")
+        if not isinstance(file_id, str) or not file_id.strip():
+            return "retry", "HTTP 200 but the answer has no fileId"
+        path = data.get("filePath")
+        if not isinstance(path, str) or not path.endswith("/" + remote_filename):
+            return (
+                "retry",
+                f"HTTP 200 but filePath {path!r} does not end with /{remote_filename}",
+            )
+        return "ok", file_id
+    if code in (401, 403):
+        return "auth", f"HTTP {code}: ImageKit refused the key"
+    if code in (408, 429) or code >= 500:
+        return "retry", f"HTTP {code}"
+    return "rejected", f"HTTP {code}"
+
+
+def ik_upload(http, local_path, remote_filename, folder, timeout):
+    # The one upload function (processed photo, clean photo, idle sync).
+    # Returns (result, detail) with result "ok", "retry", "auth" or "rejected".
+    try:
+        with open(local_path, "rb") as f:
+            files = {
+                "file": (remote_filename, f, "image/jpeg"),
+                "fileName": (None, remote_filename),
+                "useUniqueFileName": (None, "false"),
+                "folder": (None, folder),
+            }
+            headers = {"Authorization": f"Basic {IK_AUTH_STRING}"}
+            response = http.post(
+                IK_UPLOAD_URL, headers=headers, files=files, timeout=timeout
+            )
+    except Exception as exc:
+        return "retry", f"{type(exc).__name__}: {exc}"
+    result, detail = interpret_upload_response(response, remote_filename)
+    if result == "retry" and response.status_code == 200:
+        log_throttled(
+            logger,
+            logging.WARNING,
+            "upload-bad-answer",
+            300.0,
+            "[UPLOAD] Unexpected answer from ImageKit (%s). Body starts: %r",
+            detail,
+            response.text[:200],
+        )
+    elif result == "ok" and UPLOAD_VALIDATE_RESPONSE:
+        try:
+            returned = response.json().get("filePath", "")
+        except Exception:
+            returned = ""
+        if returned != f"{folder}/{remote_filename}":
+            log_throttled(
+                logger,
+                logging.WARNING,
+                "upload-path-differs",
+                300.0,
+                "[UPLOAD] ImageKit stored %r but %r was expected",
+                returned,
+                f"{folder}/{remote_filename}",
+            )
+    return result, detail
+
+
+def jpeg_file_usable(path):
+    # Exists, is not empty and starts with the JPEG marker (a file that was not fsynced may not
+    # have survived a power cut intact).
+    try:
+        if os.path.getsize(path) <= 0:
+            return False
+        with open(path, "rb") as f:
+            return f.read(2) == b"\xff\xd8"
+    except OSError:
+        return False
 
 
 # ASCII TILES
@@ -2185,26 +2670,34 @@ def apply_chroma_shift(raw_knob, current_time):
             0,
             dst=MUTABLE_PROCESSING_BUFFER,
         )
-    if int(current_time * 15) % 3 == 0:
-        # Gives a smoother curve where low values yield slices much sooner
-        num_slices = int((ana_val**0.5) * 4)
 
-        for _ in range(int(num_slices)):
-            y, height, shift = (
-                np.random.randint(0, h - SLICE_MAX_H),
-                np.random.randint(SLICE_MIN_H, SLICE_MAX_H),
-                np.random.randint(-SLICE_MAX_SHIFT, SLICE_MAX_SHIFT),
-            )
-            if shift:
-                view = MUTABLE_PROCESSING_BUFFER[y : y + height]
-                s = abs(shift) % w
-                if s:
-                    scratch = SLICE_SHIFT_BUFFER[:height, :w]
-                    if shift > 0:
-                        scratch[:, :s], scratch[:, s:] = view[:, -s:], view[:, :-s]
-                    else:
-                        scratch[:, :-s], scratch[:, -s:] = view[:, s:], view[:, :s]
-                    view[:] = scratch
+
+def apply_slice_glitch(raw_knob, current_time):
+    val = n(raw_knob)
+    if val <= 0.02:
+        return
+    if int(current_time * 15) % 3 != 0:
+        return
+    h, w = FRAME_H, FRAME_W
+    # Gives a smoother curve where low values yield slices much sooner
+    num_slices = int((val**0.5) * 4)
+
+    for _ in range(int(num_slices)):
+        y, height, shift = (
+            np.random.randint(0, h - SLICE_MAX_H),
+            np.random.randint(SLICE_MIN_H, SLICE_MAX_H),
+            np.random.randint(-SLICE_MAX_SHIFT, SLICE_MAX_SHIFT),
+        )
+        if shift:
+            view = MUTABLE_PROCESSING_BUFFER[y : y + height]
+            s = abs(shift) % w
+            if s:
+                scratch = SLICE_SHIFT_BUFFER[:height, :w]
+                if shift > 0:
+                    scratch[:, :s], scratch[:, s:] = view[:, -s:], view[:, :-s]
+                else:
+                    scratch[:, :-s], scratch[:, -s:] = view[:, s:], view[:, :s]
+                view[:] = scratch
 
 
 def apply_signal_drift(raw_knob, current_time):
@@ -2799,6 +3292,7 @@ EFFECT_HANDLERS = {
     "pixellation": apply_pixellation,
     "posterize": apply_posterize,
     "chroma_shift": apply_chroma_shift,
+    "slice_glitch": apply_slice_glitch,
     "signal_drift": apply_signal_drift,
     "melt": apply_melt,
     "data_mosh": apply_data_mosh,
@@ -3022,89 +3516,129 @@ def apply_glitch_pipeline(current_time, control_packet):
 
 
 def _write_naked_capture(disk_id, frame):
-    # Write the clean (unprocessed) frame without affecting capture success.
+    # Write the clean (unprocessed) frame without affecting capture success. Encoded in memory,
+    # written through a temp file and renamed (no fsync: the clean photo is optional).
     if frame is None:
         return False
     try:
-        ok = cv2.imwrite(
-            os.path.join(NAKED_DIR, f"{disk_id}_clean.jpg"),
-            frame,
-            [int(cv2.IMWRITE_JPEG_QUALITY), CLEAN_JPEG_QUALITY],
+        ok, buf = cv2.imencode(
+            ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), CLEAN_JPEG_QUALITY]
         )
         if not ok:
             logger.error(
-                "[CLEAN] could not write clean capture for session %s", disk_id
+                "[CLEAN] could not encode clean capture for session %s", disk_id
             )
-        return bool(ok)
+            return False
+        atomic_write_bytes(
+            os.path.join(NAKED_DIR, f"{disk_id}_clean.jpg"), buf.tobytes()
+        )
+        return True
     except Exception as exc:
         logger.error("[CLEAN] clean capture failed for session %s: %s", disk_id, exc)
         return False
 
 
-def cleanup_sessions(limit=100):
+_cleanup_guard = threading.Lock()
+_COLOR_FILE_RE = re.compile(r"([0-9]{1,20})_color\.jpg")
+
+
+def _protected_capture_ids():
+    # Captures that must stay where they are: still pending, being uploaded, the active session,
+    # queued or running in the print worker. Each snapshot is taken briefly and on its own.
+    protected = {entry.id for entry in ledger_snapshot()}
+    protected |= inflight_snapshot()
+    with mode_lock:
+        active = ACTIVE_SESSION["session_id"]
+    if active:
+        protected.add(str(active))
+    with _print_ids_lock:
+        protected |= set(_print_ids)
+    return protected
+
+
+def _archive_color_file(src, dst):
+    # Copy to a temp name in the archive, fsync, os.replace over the destination, then remove
+    # the source. Any failure leaves the source and the old archive copy untouched.
+    tmp = f"{dst}.{os.getpid()}.{threading.get_ident()}.tmp"
     try:
-        files = os.listdir(CAPTURE_DIR)
-        timestamps = sorted(
-            [f.replace("_color.jpg", "") for f in files if "_color.jpg" in f]
+        shutil.copyfile(src, tmp)
+        _fsync_file(tmp)
+        os.replace(tmp, dst)
+        _fsync_dir(dst)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    os.remove(src)
+
+
+def cleanup_sessions(limit=100):
+    if not _cleanup_guard.acquire(blocking=False):
+        return  # another cleanup is running
+    try:
+        ids = sorted(
+            (m.group(1) for f in os.listdir(CAPTURE_DIR) if (m := _COLOR_FILE_RE.fullmatch(f))),
+            key=int,
         )
-        if len(timestamps) > limit:
-            to_archive = timestamps[:-limit]
-            archived_count = 0
-            for ts in to_archive:
-                # 1. Safely move the Color capture to the Archive folder
-                src_color = os.path.join(CAPTURE_DIR, f"{ts}_color.jpg")
-                dst_color = os.path.join(ARCHIVE_DIR, f"{ts}_color.jpg")
-                if os.path.exists(src_color):
-                    try:
-                        if os.path.exists(dst_color):
-                            os.remove(dst_color)
-                        shutil.move(src_color, dst_color)
-                        archived_count += 1
-                    except Exception as move_err:
-                        logger.error(
-                            "[ARCHIVE] Failed to archive %s: %s", src_color, move_err
-                        )
-
-                # 2. Delete Black & White receipt print file
-                bw_path = os.path.join(CAPTURE_DIR, f"{ts}_bw.jpg")
-                if os.path.exists(bw_path):
-                    try:
-                        os.remove(bw_path)
-                    except Exception:
-                        pass
-
-                # 3. Delete saved QR code image
-                qr_path = os.path.join(SAVED_DIR, f"{ts}_qr.png")
-                if os.path.exists(qr_path):
-                    try:
-                        os.remove(qr_path)
-                    except Exception:
-                        pass
-
-                # 4. Delete composite receipt image
-                comp_png = os.path.join(CAPTURE_DIR, f"{ts}_composite.png")
-                if os.path.exists(comp_png):
-                    try:
-                        os.remove(comp_png)
-                    except Exception:
-                        pass
-
-            if archived_count > 0:
-                logger.info(
-                    "[ARCHIVE] Relocated %d excess captures to %s (kept newest %d)",
-                    archived_count,
-                    ARCHIVE_DIR,
-                    limit,
+        if len(ids) <= limit:
+            return
+        protected = _protected_capture_ids()
+        archived = skipped = 0
+        for ts in ids[:-limit]:
+            if ts in protected:
+                skipped += 1
+                continue
+            name = f"{ts}_color.jpg"
+            try:
+                _archive_color_file(
+                    os.path.join(CAPTURE_DIR, name), os.path.join(ARCHIVE_DIR, name)
                 )
+            except Exception as move_err:
+                logger.error(
+                    "[ARCHIVE] Failed to archive %s: %s (left in place)", name, move_err
+                )
+                continue
+            archived += 1
+            # The other files of a capture go only together with its colour file.
+            for path in (
+                os.path.join(CAPTURE_DIR, f"{ts}_bw.jpg"),
+                os.path.join(SAVED_DIR, f"{ts}_qr.png"),
+                os.path.join(CAPTURE_DIR, f"{ts}_composite.png"),
+            ):
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    pass
+                except OSError as rm_err:
+                    logger.warning("[ARCHIVE] Could not remove %s: %s", path, rm_err)
+        if archived or skipped:
+            logger.info(
+                "[ARCHIVE] Relocated %d excess captures to %s (kept newest %d, %d left in place because they are pending, uploading, active or printing)",
+                archived,
+                ARCHIVE_DIR,
+                limit,
+                skipped,
+            )
     except Exception:
         logger.exception("[ARCHIVE] Archival pipeline exception")
+    finally:
+        _cleanup_guard.release()
+
+
+def _save_qr_png(url, path):
+    # Encoded in memory, then written through a temp file and renamed.
+    buf = io.BytesIO()
+    qrcode.make(url).save(buf, format="PNG")
+    atomic_write_bytes(path, buf.getvalue())
 
 
 def prepare_receipt_assets(ts):
     # QR code and lossless composite of the receipt, made before the print starts.
     # Returns True when the composite is ready; otherwise the print falls back to the plain photo.
     try:
-        qrcode.make(get_landing_url(ts)).save(os.path.join(SAVED_DIR, f"{ts}_qr.png"))
+        _save_qr_png(get_landing_url(ts), os.path.join(SAVED_DIR, f"{ts}_qr.png"))
     except Exception as qr_err:
         logger.error("[CAPTURE] QR creation failed for session %s: %s", ts, qr_err)
         return False
@@ -3116,15 +3650,65 @@ def prepare_receipt_assets(ts):
     return False
 
 
-def _store_capture(disk_id, color_mat, bw_mat, active_knobs, naked_mat):
-    color_ok = cv2.imwrite(os.path.join(CAPTURE_DIR, f"{disk_id}_color.jpg"), color_mat)
-    bw_ok = cv2.imwrite(os.path.join(CAPTURE_DIR, f"{disk_id}_bw.jpg"), bw_mat)
+def _write_capture_image(path, mat):
+    # Encoded in memory, written through a temp file and renamed; one retry. No fsync here:
+    # that happens after the print is queued (see _store_capture).
+    for attempt in (1, 2):
+        try:
+            ok, buf = cv2.imencode(".jpg", mat)
+            if ok:
+                atomic_write_bytes(path, buf.tobytes())
+                return True
+        except OSError as exc:
+            logger.warning(
+                "[CAPTURE] Writing %s failed (attempt %d of 2): %s", path, attempt, exc
+            )
+        if attempt == 1:
+            time.sleep(0.3)
+    return False
 
-    if not color_ok or not bw_ok:
-        logger.error(
-            "[STATE ENGINE] Disk IO failure writing session %s. color_ok=%s bw_ok=%s",
+
+def _register_capture(disk_id, slug):
+    # Colour file and folder fsynced, then one ledger line appended and fsynced. Returns True
+    # when the capture is durably recorded as pending.
+    color_path = os.path.join(CAPTURE_DIR, f"{disk_id}_color.jpg")
+    try:
+        _fsync_file(color_path)
+        _fsync_dir(color_path)
+    except OSError as exc:
+        logger.warning("[CAPTURE] Could not fsync %s: %s", color_path, exc)
+    for attempt in range(1, 4):
+        try:
+            ledger_add(disk_id, slug)
+            return True
+        except Exception as exc:
+            logger.error(
+                "[LEDGER] Could not record session %s (attempt %d of 3): %s",
+                disk_id,
+                attempt,
+                exc,
+            )
+            time.sleep(0.5)
+    logger.critical(
+        "[LEDGER] Session %s is NOT recorded as pending: if the upload fails it will not be retried",
+        disk_id,
+    )
+    return False
+
+
+def _store_capture(disk_id, color_mat, bw_mat, active_knobs, naked_mat):
+    def since_capture():
+        return int(time.time() * 1000) - int(disk_id)
+
+    slug = current_event_slug()
+    color_path = os.path.join(CAPTURE_DIR, f"{disk_id}_color.jpg")
+    color_ok = _write_capture_image(color_path, color_mat)
+    bw_ok = _write_capture_image(os.path.join(CAPTURE_DIR, f"{disk_id}_bw.jpg"), bw_mat)
+
+    if not color_ok:
+        logger.critical(
+            "[STATE ENGINE] Disk IO failure writing the colour photo of session %s (bw_ok=%s); nothing to upload or print",
             disk_id,
-            color_ok,
             bw_ok,
         )
         session_update(
@@ -3142,46 +3726,61 @@ def _store_capture(disk_id, color_mat, bw_mat, active_knobs, naked_mat):
         color_ok,
         bw_ok,
     )
+    t_files = since_capture()
 
-    # Everything the print needs is made first, then the print is queued.
-    prepare_receipt_assets(disk_id)
-    queued = enqueue_print(disk_id, "capture", wait=5.0)
-    if queued != "queued":
-        logger.error(
-            "[PRINTER] Could not queue session %s for printing (%s)", disk_id, queued
-        )
+    # Everything the print needs is made first, then the print is queued. If only the B&W file
+    # failed, the colour photo is still registered and uploaded below; only the print fails.
+    t_print = None
+    try:
+        if bw_ok:
+            prepare_receipt_assets(disk_id)
+            queued = enqueue_print(disk_id, "capture", wait=5.0)
+            t_print = since_capture()
+        else:
+            queued = "no black and white file"
+        if queued != "queued":
+            logger.error(
+                "[PRINTER] Could not queue session %s for printing (%s)", disk_id, queued
+            )
+            session_update(
+                disk_id,
+                print_state="failed",
+                notice=MSG_PRINT_FAILED,
+                notice_until=None,
+            )
+    except Exception:
+        logger.exception("[CAPTURE] Print preparation failed for session %s", disk_id)
         session_update(
-            disk_id,
-            print_state="failed",
-            notice=MSG_PRINT_FAILED,
-            notice_until=None,
+            disk_id, print_state="failed", notice=MSG_PRINT_FAILED, notice_until=None
         )
 
-    # Bookkeeping, off the print path. The clean frame is written before the upload is
-    # queued, because the clean upload reads it.
+    # Bookkeeping, in parallel with the printing. The clean frame is written before the upload
+    # hint is queued, because the clean upload reads it.
     _write_naked_capture(disk_id, naked_mat)
+    recorded = _register_capture(disk_id, slug)
+    t_ledger = since_capture()
 
     try:
-        upload_queue.put(disk_id, block=False)
+        upload_queue.put((disk_id, slug, recorded), block=False)
         logger.info("[UPLOAD QUEUE] Session queued for upload: %s", disk_id)
-        cleanup_sessions(limit=100)
     except queue.Full:
         logger.warning(
-            "[STATE ENGINE] Upload queue full. Enqueuing %s directly to the offline cache file.",
+            "[STATE ENGINE] Upload queue full; session %s waits for the idle sync.",
             disk_id,
         )
-        try:
-            with cache_file_lock:
-                with open("pending_uploads.txt", "a") as cache_log:
-                    cache_log.write(f"{disk_id}\n")
-        except Exception as cache_err:
-            logger.critical(
-                "[STATE ENGINE] Failed to write the queue fallback to the offline cache: %s",
-                cache_err,
-            )
-
+        if not recorded:
+            _register_capture(disk_id, slug)
         NETWORK_OFFLINE.set()
         session_update(disk_id, upload_status="FAILED")
+    t_hint = since_capture()
+    logger.info(
+        "[CAPTURE] %s timeline: files +%dms, print queued +%sms, ledger registered +%dms, upload hint +%dms",
+        disk_id,
+        t_files,
+        t_print if t_print is not None else "-",
+        t_ledger,
+        t_hint,
+    )
 
     if TELEMETRY_ENABLED:
         try:
@@ -3199,6 +3798,8 @@ def _store_capture(disk_id, color_mat, bw_mat, active_knobs, naked_mat):
                 telemetry_fault,
                 exc_info=True,
             )
+
+    cleanup_sessions(limit=100)
 
 
 def async_storage_worker(disk_id, color_mat, bw_mat, active_knobs, naked_mat=None):
@@ -3238,8 +3839,7 @@ def generate_composite_receipt_image(ts: str) -> str:
     if not os.path.exists(qr_path):
         try:
             landing_url = get_landing_url(ts)
-            qr_img = qrcode.make(landing_url)
-            qr_img.save(qr_path)
+            _save_qr_png(landing_url, qr_path)
             logger.info("[COMPOSITE] QR code generated on demand for session %s", ts)
         except Exception as qr_err:
             logger.error("[COMPOSITE] QR generation failed for %s: %s", ts, qr_err)
@@ -3307,7 +3907,9 @@ def generate_composite_receipt_image(ts: str) -> str:
             composite.paste(qr_rotated, (x_pos, y_pos))
 
             # 7. Save as lossless PNG to avoid compression artifacts on print edges
-            composite.save(composite_path, format="PNG")
+            png_buffer = io.BytesIO()
+            composite.save(png_buffer, format="PNG")
+            atomic_write_bytes(composite_path, png_buffer.getvalue())
 
             # Final validation check
             if (
@@ -3424,18 +4026,10 @@ def print_booth_receipt(ts, offline_notice=False, on_cut=None):
     return printed
 
 
-def _in_pending_list(ts):
-    try:
-        with open("pending_uploads.txt", "r") as cache_log:
-            return ts in cache_log.read()
-    except Exception:
-        return False
-
-
 def _run_print_job(ts, source):
     # A capture print uses the live network state for the receipt text; a reprint from the
     # gallery uses whether that capture is still waiting for its upload.
-    offline = NETWORK_OFFLINE.is_set() if source == "capture" else _in_pending_list(ts)
+    offline = NETWORK_OFFLINE.is_set() if source == "capture" else ledger_contains(ts)
 
     def mark_done():
         session_update(ts, print_state="done", notice="", notice_until=None)
@@ -3487,84 +4081,227 @@ def print_worker():
             print_queue.task_done()
 
 
-def upload_clean_capture(ts, attempts=2, poster=None):
-    # Best-effort upload of <ts>_clean.jpg to the clean ImageKit folder. It never raises and
-    # its result is never used to decide anything: a failed clean upload must not affect the
-    # processed upload, the print or the session. Without the clean file the website simply
-    # shows no slider for this capture.
-    if not IK_UPLOADS_ENABLED:
-        return False
-    local_path = os.path.join(NAKED_DIR, f"{ts}_clean.jpg")
-    if not os.path.exists(local_path):
-        logger.debug("[CLEAN UPLOAD] No clean file for session %s; skipping", ts)
-        return False
+def _clean_file_path(ts):
+    return os.path.join(NAKED_DIR, f"{ts}_clean.jpg")
 
-    remote_filename = f"{ts}_clean.jpg"
-    poster = poster or requests
-    for attempt in range(attempts):
+
+def upload_clean_capture(ts, slug, http, attempts=2):
+    # Uploads <ts>_clean.jpg to the clean ImageKit folder of the capture's event. Returns "none"
+    # (no usable clean file: nothing to upload), "ok", "retry", "auth" or "rejected". It never
+    # raises; a failed clean upload never affects the processed upload, the print or the session.
+    path = _clean_file_path(ts)
+    if not jpeg_file_usable(path):
+        logger.debug("[CLEAN UPLOAD] No usable clean file for session %s; skipping", ts)
+        return "none"
+    if not IK_UPLOADS_ENABLED:
+        return "retry"
+    result, detail = "retry", ""
+    for attempt in range(1, attempts + 1):
         try:
-            with open(local_path, "rb") as f:
-                files = {
-                    "file": (remote_filename, f, "image/jpeg"),
-                    "fileName": (None, remote_filename),
-                    "useUniqueFileName": (None, "false"),
-                    "folder": (None, get_ik_clean_folder()),
-                }
-                headers = {"Authorization": f"Basic {IK_AUTH_STRING}"}
-                response = poster.post(
-                    "https://upload.imagekit.io/api/v1/files/upload",
-                    headers=headers,
-                    files=files,
-                    timeout=(3, 8),
-                )
-            if response.status_code == 200:
-                logger.info("[CLEAN UPLOAD] Session %s uploaded", ts)
-                return True
-            logger.warning(
-                "[CLEAN UPLOAD] Session %s rejected by the cloud: HTTP %s (attempt %s of %s)",
-                ts,
-                response.status_code,
-                attempt + 1,
-                attempts,
+            result, detail = ik_upload(
+                http, path, f"{ts}_clean.jpg", get_ik_clean_folder(slug), (3, 8)
             )
         except Exception as exc:
-            logger.warning(
-                "[CLEAN UPLOAD] Session %s network failure: %s (attempt %s of %s)",
-                ts,
-                exc,
-                attempt + 1,
-                attempts,
-            )
-        if attempt + 1 < attempts:
-            time.sleep(2)
+            result, detail = "retry", f"{type(exc).__name__}: {exc}"
+        if result == "ok":
+            logger.info("[CLEAN UPLOAD] Session %s uploaded", ts)
+            return "ok"
+        logger.warning(
+            "[CLEAN UPLOAD] Session %s not confirmed: %s (attempt %d of %d)",
+            ts,
+            detail,
+            attempt,
+            attempts,
+        )
+        if result != "retry" or attempt >= attempts:
+            break
+        time.sleep(2)
+    return result
 
-    logger.warning(
-        "[CLEAN UPLOAD] Giving up on the clean photo for session %s; the website will show no slider for it",
-        ts,
-    )
+
+def _clean_stage_needed(ts):
+    # The processed photo is confirmed. If there is a usable clean photo, the capture stays in the
+    # ledger as "clean only" until that is confirmed too; otherwise it is finished.
+    if jpeg_file_usable(_clean_file_path(ts)):
+        ledger_set_clean_only(ts, True)
+        return True
+    ledger_remove({ts})
     return False
 
 
-def upload_clean_capture_in_background(ts):
-    # Own short-lived thread, so even a hanging clean upload cannot delay the upload worker
-    # (and with it the next capture's QR and composite).
-    threading.Thread(
-        target=upload_clean_capture, args=(ts,), name="CleanUpload", daemon=True
-    ).start()
+def _finish_clean(ts, slug, result):
+    # Applies the result of a clean upload to the ledger.
+    if result in ("ok", "none"):
+        ledger_remove({ts})
+        clear_rejections(ts)
+    elif result == "rejected":
+        if note_rejection(ts) >= UPLOAD_REJECT_LIMIT:
+            ledger_to_unresolved(
+                ts, slug, f"clean photo rejected {UPLOAD_REJECT_LIMIT} times"
+            )
+    else:
+        logger.warning(
+            "[CLEAN UPLOAD] Session %s: the clean photo stays pending; the idle sync retries it",
+            ts,
+        )
+
+
+def _clean_upload_job(ts, slug):
+    # Own short-lived thread, so even a hanging clean upload cannot delay the upload worker.
+    # The upload worker hands its claim on this capture over to this thread.
+    http = requests.Session()
+    try:
+        _finish_clean(ts, slug, upload_clean_capture(ts, slug, http))
+    except Exception:
+        logger.exception("[CLEAN UPLOAD] Unexpected failure for session %s", ts)
+    finally:
+        release_upload(ts)
+        http.close()
+
+
+def _booth_idle_for_sync():
+    # The idle sync only runs while the booth is in live mode and no upload is waiting, so a
+    # visitor's own upload never competes with a backlog for bandwidth.
+    if not upload_queue.empty():
+        return False
+    with mode_lock:
+        return ACTIVE_SESSION["mode"] == "live"
+
+
+def _find_color_file(ts):
+    for folder in (CAPTURE_DIR, ARCHIVE_DIR):
+        path = os.path.join(folder, f"{ts}_color.jpg")
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def _sync_failure(entry, result, detail):
+    # Turns a failed upload into an outcome for the pass: "retry", "auth" or "rejected".
+    global _auth_blocked_until
+    if result == "retry":
+        NETWORK_OFFLINE.set()
+        log_throttled(
+            logger,
+            logging.WARNING,
+            "idle-sync-retry",
+            300.0,
+            "[IDLE SYNC] Upload of session %s not confirmed: %s",
+            entry.id,
+            detail,
+        )
+        return "retry"
+    if result == "auth":
+        _auth_blocked_until = time.monotonic() + max(0, UPLOAD_AUTH_BACKOFF)
+        log_throttled(
+            logger,
+            logging.CRITICAL,
+            "ik-auth",
+            3600.0,
+            "[IDLE SYNC] ImageKit refused the key (%s): uploads are blocked, captures stay pending",
+            detail,
+        )
+        return "auth"
+    count = note_rejection(entry.id)
+    log_throttled(
+        logger,
+        logging.WARNING,
+        f"idle-sync-rejected-{entry.id}",
+        300.0,
+        "[IDLE SYNC] Upload of session %s rejected (%s); rejection %d of %d",
+        entry.id,
+        detail,
+        count,
+        UPLOAD_REJECT_LIMIT,
+    )
+    if count >= UPLOAD_REJECT_LIMIT:
+        ledger_to_unresolved(
+            entry.id, entry.slug, f"rejected {count} times, last: {detail}"
+        )
+    return "rejected"
+
+
+def _sync_entry(http, entry):
+    # Uploads one pending capture. Returns (outcome, progressed): outcome is "ok", "retry",
+    # "auth", "rejected" or "unresolved"; progressed is True if something was confirmed.
+    progressed = False
+    if not entry.clean_only:
+        path = _find_color_file(entry.id)
+        if path is None:
+            ledger_to_unresolved(
+                entry.id,
+                entry.slug,
+                "colour file not found in captures/ or captures_archive/",
+            )
+            return "unresolved", False
+        if not jpeg_file_usable(path):
+            ledger_to_unresolved(
+                entry.id, entry.slug, f"colour file is empty or not a JPEG: {path}"
+            )
+            return "unresolved", False
+        result, detail = ik_upload(
+            http,
+            path,
+            f"{entry.id}_color.jpg",
+            get_ik_target_folder(entry.slug),
+            (4, 10),
+        )
+        if result != "ok":
+            return _sync_failure(entry, result, detail), False
+        NETWORK_OFFLINE.clear()
+        clear_rejections(entry.id)
+        progressed = True
+        logger.info("[IDLE SYNC] Session %s uploaded (fileId %s)", entry.id, detail)
+        if not _clean_stage_needed(entry.id):
+            return "ok", True
+    result = upload_clean_capture(entry.id, entry.slug, http, attempts=1)
+    if result in ("ok", "none"):
+        _finish_clean(entry.id, entry.slug, result)
+        return "ok", True
+    if result == "rejected":
+        _finish_clean(entry.id, entry.slug, result)
+        return "rejected", progressed
+    return _sync_failure(entry, result, "clean photo"), progressed
+
+
+def _idle_sync_pass(http):
+    # One pass over the ledger: a snapshot, uploads outside every lock, and each confirmed
+    # capture removed from the CURRENT ledger (entries added meanwhile survive).
+    progressed = False
+    attempted = 0
+    for entry in ledger_snapshot():
+        if attempted >= max(1, int(IDLE_SYNC_MAX_PER_PASS)) or SHUTDOWN_EVENT.is_set():
+            break
+        if not _booth_idle_for_sync():
+            break  # a visitor started: stop between entries
+        if backoff_active(entry.id) or not claim_upload(entry.id):
+            continue
+        attempted += 1
+        try:
+            outcome, did = _sync_entry(http, entry)
+        finally:
+            release_upload(entry.id)
+        progressed = progressed or did
+        if outcome in ("retry", "auth"):
+            break  # the network or the service is the problem: stop this pass
+    return progressed
 
 
 def idle_sync_worker():
 
-    # Low-priority background worker that scans for offline captures cached in
-    # pending_uploads.txt and re-attempts synchronization when grid link recovers.
+    # Low-priority background worker that retries the captures recorded in pending_uploads.txt
+    # when the link recovers (and after a restart).
 
-    logger.info("[INIT] Idle sync worker (offline cache upload retries): active.")
+    logger.info("[INIT] Idle sync worker (pending upload retries): active.")
     http = requests.Session()
+    interval = max(1.0, float(IDLE_SYNC_INTERVAL))
+    next_wait = interval
 
     while not SHUTDOWN_EVENT.is_set():
         try:
-            if SHUTDOWN_EVENT.wait(timeout=30):
+            if SHUTDOWN_EVENT.wait(timeout=next_wait):
                 break
+            next_wait = interval
 
             if not IK_UPLOADS_ENABLED:
                 log_throttled(
@@ -3575,103 +4312,13 @@ def idle_sync_worker():
                     "[IDLE SYNC] IK_PRIVATE_KEY is not set: uploads are OFF, captures stay in the pending list",
                 )
                 continue
-
-            if not os.path.exists("pending_uploads.txt"):
+            if time.monotonic() < _auth_blocked_until:
                 continue
-
-            with open("pending_uploads.txt", "r") as cache_log:
-                backlog = [line.strip() for line in cache_log if line.strip()]
-
-            if not backlog:
+            if not _booth_idle_for_sync():
+                next_wait = min(interval, 5.0)
                 continue
-
-            still_pending = []
-            for ts in backlog:
-                local_color_path = f"{CAPTURE_DIR}/{ts}_color.jpg"
-                remote_filename = f"{ts}_color.jpg"
-
-                if not os.path.exists(local_color_path):
-                    logger.warning(
-                        "[IDLE SYNC] Local file for session %s is missing; dropping it from the pending list.",
-                        ts,
-                    )
-                    continue
-
-                try:
-                    upload_url = "https://upload.imagekit.io/api/v1/files/upload"
-                    with open(local_color_path, "rb") as f:
-                        files = {
-                            "file": (remote_filename, f, "image/jpeg"),
-                            "fileName": (None, remote_filename),
-                            "useUniqueFileName": (None, "false"),
-                            "folder": (None, get_ik_target_folder()),
-                        }
-                        headers = {"Authorization": f"Basic {IK_AUTH_STRING}"}
-
-                        # Check network dynamically by issuing a timeout-protected post request
-                        response = http.post(
-                            upload_url, headers=headers, files=files, timeout=(4, 10)
-                        )
-
-                    if response.status_code == 200:
-                        logger.info(
-                            "[IDLE SYNC] Session %s uploaded; removing it from the pending list.",
-                            ts,
-                        )
-                        NETWORK_OFFLINE.clear()
-                        # Best effort: its result never keeps the entry in the pending list.
-                        upload_clean_capture(ts, attempts=1, poster=http)
-                    else:
-                        log_throttled(
-                            logger,
-                            logging.WARNING,
-                            "idle-sync-http",
-                            300.0,
-                            "[IDLE SYNC] Upload of session %s rejected: HTTP %s",
-                            ts,
-                            response.status_code,
-                        )
-                        still_pending.append(ts)
-                except Exception as upload_err:
-                    NETWORK_OFFLINE.set()
-                    log_throttled(
-                        logger,
-                        logging.WARNING,
-                        "idle-sync-net",
-                        300.0,
-                        "[IDLE SYNC] Upload of session %s failed: %s",
-                        ts,
-                        upload_err,
-                    )
-                    still_pending.append(ts)
-
-            if len(still_pending) != len(backlog):
-                tmp_path = "pending_uploads.tmp"
-                final_path = "pending_uploads.txt"
-
-                try:
-                    with cache_file_lock:
-                        with open(tmp_path, "w") as tmp_log:
-                            for ts in still_pending:
-                                tmp_log.write(f"{ts}\n")
-                            tmp_log.flush()
-                            os.fsync(tmp_log.fileno())
-                        os.replace(tmp_path, final_path)
-
-                    logger.info(
-                        "[OFFLINE CACHE] Pending list updated. Remaining: %s",
-                        len(still_pending),
-                    )
-                except Exception as file_err:
-                    logger.critical(
-                        "[OFFLINE CACHE] Atomic write of the pending list failed: %s",
-                        file_err,
-                    )
-                if os.path.exists(tmp_path):
-                    try:
-                        os.remove(tmp_path)
-                    except Exception:
-                        pass
+            if _idle_sync_pass(http):
+                next_wait = 2.0  # a backlog drains without waiting a full interval
 
         except Exception:
             log_throttled(
@@ -3688,93 +4335,131 @@ def idle_sync_worker():
 # ==================================================
 
 
+MAX_UPLOAD_ATTEMPTS = 2
+
+
+def _upload_processed(http, ts, slug, recorded):
+    # Uploads the processed photo of one capture. Returns True when the claim on the capture was
+    # handed over to a clean-upload thread (which then releases it).
+    local_path = os.path.join(CAPTURE_DIR, f"{ts}_color.jpg")
+    session_update(ts, upload_status="UPLOADING")
+    result, detail = "retry", "uploads are off (no IK_PRIVATE_KEY)"
+
+    if IK_UPLOADS_ENABLED:
+        if not jpeg_file_usable(local_path):
+            logger.error("[UPLOAD] Colour file of session %s is missing or empty", ts)
+            session_update(ts, upload_status="FAILED")
+            if recorded:
+                ledger_to_unresolved(ts, slug, "colour file is missing or empty")
+            return False
+        for attempt in range(1, MAX_UPLOAD_ATTEMPTS + 1):
+            result, detail = ik_upload(
+                http, local_path, f"{ts}_color.jpg", get_ik_target_folder(slug), (3, 8)
+            )
+            if result == "ok":
+                break
+            logger.warning(
+                "[UPLOAD] Session %s not confirmed: %s (attempt %d of %d)",
+                ts,
+                detail,
+                attempt,
+                MAX_UPLOAD_ATTEMPTS,
+            )
+            if result != "retry" or attempt >= MAX_UPLOAD_ATTEMPTS:
+                break
+            time.sleep(1)
+
+    if result == "ok":
+        NETWORK_OFFLINE.clear()
+        clear_rejections(ts)
+        session_update(ts, upload_status="SUCCESS")
+        logger.info("[UPLOAD] Session %s uploaded (fileId %s)", ts, detail)
+        if _clean_stage_needed(ts):
+            threading.Thread(
+                target=_clean_upload_job, args=(ts, slug), name="CleanUpload", daemon=True
+            ).start()
+            return True
+        return False
+
+    # Not confirmed. The capture is already in the ledger, so nothing is lost; the idle sync
+    # retries it.
+    NETWORK_OFFLINE.set()
+    session_update(ts, upload_status="FAILED")
+    if result == "auth":
+        log_throttled(
+            logger,
+            logging.CRITICAL,
+            "ik-auth",
+            3600.0,
+            "[UPLOAD] ImageKit refused the key (%s): uploads are blocked, captures stay pending",
+            detail,
+        )
+    elif result == "rejected":
+        if note_rejection(ts) >= UPLOAD_REJECT_LIMIT and recorded:
+            ledger_to_unresolved(ts, slug, f"rejected {UPLOAD_REJECT_LIMIT} times: {detail}")
+    if not recorded:
+        try:
+            ledger_add(ts, slug)  # safety net: the registration at capture time had failed
+        except Exception as fallback_err:
+            logger.critical(
+                "[OFFLINE CACHE] Could not record session %s in the pending list: %s",
+                ts,
+                fallback_err,
+            )
+    logger.warning(
+        "[OFFLINE FALLBACK] Session %s is not uploaded yet; it stays in the pending list.",
+        ts,
+    )
+    return False
+
+
 def upload_queue_worker():
     logger.info("[INIT] Cloud Upload Worker: Active and bound.")
     http = requests.Session()
 
     while not SHUTDOWN_EVENT.is_set():
         try:
-            try:
-                ts = upload_queue.get(timeout=1.0)
-            except queue.Empty:
+            hint = upload_queue.get(timeout=1.0)
+        except queue.Empty:
+            continue
+
+        # The queue only carries hints; the ledger is the record. A hint is (id, slug, recorded).
+        ts = None
+        claimed = False
+        handed_over = False
+        try:
+            ts, slug, recorded = hint
+            entry = None
+            if recorded:
+                entry = ledger_get(ts)
+                if entry is None:
+                    logger.info(
+                        "[UPLOAD] Session %s is no longer pending (deleted or already confirmed); skipping",
+                        ts,
+                    )
+                    continue
+                slug = entry.slug
+            if not claim_upload(ts):
+                logger.info("[UPLOAD] Session %s is already being uploaded; skipping", ts)
                 continue
-            local_color_path = f"{CAPTURE_DIR}/{ts}_color.jpg"
-            remote_filename = f"{ts}_color.jpg"
-
-            # The QR code and the composite are already made by the capture job; this
-            # worker only uploads, in parallel with the print.
-            session_update(ts, upload_status="UPLOADING")
-            upload_success = False
-            MAX_UPLOAD_RETRIES = 2
-
-            # Without the key there are no attempts: the capture goes straight to the pending list.
-            for attempt in range(MAX_UPLOAD_RETRIES if IK_UPLOADS_ENABLED else 0):
-                try:
-                    upload_url = "https://upload.imagekit.io/api/v1/files/upload"
-                    with open(local_color_path, "rb") as f:
-                        files = {
-                            "file": (remote_filename, f, "image/jpeg"),
-                            "fileName": (None, remote_filename),
-                            "useUniqueFileName": (None, "false"),
-                            "folder": (None, get_ik_target_folder()),
-                        }
-                        headers = {"Authorization": f"Basic {IK_AUTH_STRING}"}
-
-                        response = http.post(
-                            upload_url, headers=headers, files=files, timeout=(3, 8)
-                        )
-
-                    if response.status_code == 200:
-                        upload_success = True
-                        NETWORK_OFFLINE.clear()
-                        session_update(ts, upload_status="SUCCESS")
-                        logger.info("[UPLOAD] Session %s uploaded", ts)
-                        # Best effort, off the critical path.
-                        upload_clean_capture_in_background(ts)
-                        break
-                    else:
-                        logger.warning(
-                            "[UPLOAD] Session %s rejected by the cloud: HTTP %s (attempt %s)",
-                            ts,
-                            response.status_code,
-                            attempt + 1,
-                        )
-                        time.sleep(1)
-
-                except Exception as e:
-                    logger.warning(
-                        "[UPLOAD] Session %s network failure: %s (attempt %s)",
-                        ts,
-                        e,
-                        attempt + 1,
-                    )
-                    time.sleep(1)
-
-            if not upload_success:
-                NETWORK_OFFLINE.set()
-                session_update(ts, upload_status="FAILED")
-
-                try:
-                    with cache_file_lock:
-                        with open("pending_uploads.txt", "a") as cache_log:
-                            cache_log.write(f"{ts}\n")
-
-                    logger.warning(
-                        "[OFFLINE FALLBACK] Link offline. Cached session %s locally.",
-                        ts,
-                    )
-                except Exception as fallback_err:
-                    logger.critical(
-                        "[OFFLINE CACHE] Could not record session %s in the pending list: %s",
-                        ts,
-                        fallback_err,
-                    )
-
-            upload_queue.task_done()
-
+            claimed = True
+            if entry is not None and entry.clean_only:
+                threading.Thread(
+                    target=_clean_upload_job,
+                    args=(ts, slug),
+                    name="CleanUpload",
+                    daemon=True,
+                ).start()
+                handed_over = True
+                continue
+            handed_over = _upload_processed(http, ts, slug, recorded)
         except Exception:
             logger.exception("[UPLOAD WORKER] Worker exception")
             time.sleep(1)
+        finally:
+            if claimed and not handed_over:
+                release_upload(ts)
+            upload_queue.task_done()
 
 
 # SYNCHRONOUS MATERIALIZATION BARRIER CORE LOOP
@@ -4231,6 +4916,11 @@ def start_backend_engine(blocking=True):
     if TELEMETRY_ENABLED:
         telemetry.compile_summary_stats()
 
+    try:
+        ledger_startup_check()
+    except Exception:
+        logger.exception("[LEDGER] Startup check failed")
+
     worker_configs = [
         ("UploadWorker", upload_queue_worker),
         ("PrintWorker", print_worker),
@@ -4424,6 +5114,23 @@ def delete_capture(session_id):
             400,
         )
 
+    # A capture that is printing (or queued to print) or is on the booth screen right now is
+    # not deleted from under the print job.
+    with _print_ids_lock:
+        printing = session_id in _print_ids
+    with mode_lock:
+        on_screen = ACTIVE_SESSION["session_id"] == session_id
+    if printing or on_screen:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "message": "This capture is printing or on screen right now; try again in a moment",
+                }
+            ),
+            409,
+        )
+
     color_path = os.path.join(CAPTURE_DIR, f"{session_id}_color.jpg")
     bw_path = os.path.join(CAPTURE_DIR, f"{session_id}_bw.jpg")
     qr_path = os.path.join(SAVED_DIR, f"{session_id}_qr.png")
@@ -4438,6 +5145,14 @@ def delete_capture(session_id):
                 deleted_any = True
             except Exception as e:
                 logger.error("[GALLERY] Failed to delete file asset %s: %s", path, e)
+
+    # A deleted capture must not stay in the upload ledger (it would only end up unresolved).
+    try:
+        if ledger_remove({session_id}):
+            deleted_any = True
+        clear_rejections(session_id)
+    except Exception:
+        logger.exception("[GALLERY] Could not remove session %s from the ledger", session_id)
 
     if deleted_any:
         return jsonify(
