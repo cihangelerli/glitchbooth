@@ -37,6 +37,7 @@ capture_log.jsonl
 stats.json
 
 # Persistent storage symlinks
+logs
 captures
 saved
 telemetry
