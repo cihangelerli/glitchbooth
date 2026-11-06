@@ -8,6 +8,7 @@ saved/
 backup-files/
 captures_naked/
 captures_archive/
+naked_archive/
 
 # Python Virtual Environment
 venv/
@@ -30,7 +31,6 @@ build/
 dist/
 coverage/
 .DS_Store
-captures_naked
 *.log
 !.env.example
 capture_log.jsonl
@@ -44,3 +44,4 @@ telemetry
 pending_uploads.txt
 captures_archive
 captures_naked
+naked_archive
