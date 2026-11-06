@@ -440,31 +440,127 @@
       }
 
       // Action Functions
+      // The booth's real answer is shown: a refusal or an error is never reported as success.
+      async function readMessage(response, fallback) {
+        try {
+          const data = await response.json();
+          return data.message || fallback;
+        } catch (err) {
+          return fallback;
+        }
+      }
+
+      function showOverlayResult(overlayId, title, text, color, withClose) {
+        const box = document.querySelector("#" + overlayId + " .overlay-content");
+        box.innerHTML = "";
+        const h = document.createElement("h2");
+        h.textContent = title;
+        if (color) h.style.color = color;
+        const p = document.createElement("p");
+        p.id = overlayId + "-text";
+        p.textContent = text;
+        box.appendChild(h);
+        box.appendChild(p);
+        if (withClose) {
+          const wrap = document.createElement("div");
+          wrap.className = "overlay-buttons";
+          const btn = document.createElement("button");
+          btn.className = "button";
+          btn.textContent = "CLOSE";
+          btn.onclick = () => location.reload();
+          wrap.appendChild(btn);
+          box.appendChild(wrap);
+        }
+      }
+
+      // After a reboot: wait until the booth stops answering and then answers again, then reload.
+      async function waitForBooth(overlayId) {
+        let wasDown = false;
+        const started = Date.now();
+        await new Promise((r) => setTimeout(r, 3000));
+        while (Date.now() - started < 180000) {
+          try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 2500);
+            const response = await fetch("/ping?t=" + Date.now(), {
+              signal: controller.signal,
+            });
+            clearTimeout(timer);
+            if (response.ok && wasDown) {
+              location.reload();
+              return;
+            }
+          } catch (err) {
+            wasDown = true;
+          }
+          await new Promise((r) => setTimeout(r, 2000));
+        }
+        const p = document.getElementById(overlayId + "-text");
+        if (p)
+          p.textContent =
+            "The booth did not answer again within 3 minutes. Check the booth, then reload this page.";
+      }
+
       async function rebootSystem() {
         try {
           const response = await fetch("/reboot", { method: "POST" });
+          const message = await readMessage(response, "");
           if (response.ok) {
-            document.querySelector(
-              "#rebootOverlay .overlay-content",
-            ).innerHTML =
-              "<h2>REBOOTING</h2><p>Wait 60 seconds then refresh this page.</p>";
+            showOverlayResult(
+              "rebootOverlay",
+              "REBOOTING",
+              (message || "System restarting.") +
+                " Waiting for the booth to come back (this page reloads by itself)...",
+            );
+            waitForBooth("rebootOverlay");
+          } else {
+            showOverlayResult(
+              "rebootOverlay",
+              "REBOOT NOT STARTED",
+              message || "The booth refused the command (HTTP " + response.status + ").",
+              "#ff3377",
+              true,
+            );
           }
         } catch (err) {
-          alert("Could not contact server.");
+          showOverlayResult(
+            "rebootOverlay",
+            "NO ANSWER",
+            "The booth did not answer. It may be restarting already; wait a minute, then reload this page.",
+            null,
+            true,
+          );
         }
       }
 
       async function shutdownSystem() {
         try {
           const response = await fetch("/shutdown", { method: "POST" });
+          const message = await readMessage(response, "");
           if (response.ok) {
-            document.querySelector(
-              "#shutdownOverlay .overlay-content",
-            ).innerHTML =
-              "<h2>SHUTTING DOWN</h2><p>Wait 10 seconds before disconnecting power.</p>";
+            showOverlayResult(
+              "shutdownOverlay",
+              "SHUTTING DOWN",
+              (message || "Powering off.") +
+                " Wait until the monitor is dark before disconnecting power.",
+            );
+          } else {
+            showOverlayResult(
+              "shutdownOverlay",
+              "POWER OFF NOT STARTED",
+              message || "The booth refused the command (HTTP " + response.status + ").",
+              "#ff3377",
+              true,
+            );
           }
         } catch (err) {
-          alert("Could not contact server.");
+          showOverlayResult(
+            "shutdownOverlay",
+            "NO ANSWER",
+            "The booth did not answer. It may already be shutting down; do not unplug it until the monitor is dark.",
+            null,
+            true,
+          );
         }
       }
 
@@ -479,13 +575,24 @@
 
         try {
           const response = await fetch("/service/disable", { method: "POST" });
-          const data = await response.json();
-          alert(data.message);
-          // Refresh to show the offline state
-          location.reload();
+          const message = await readMessage(response, "");
+          if (response.ok) {
+            alert(
+              (message || "Kiosk service disabled.") +
+                "\nSSH is required to restart the booth.",
+            );
+          } else {
+            alert(
+              "NOT DISABLED: " +
+                (message || "The booth refused the command (HTTP " + response.status + ")."),
+            );
+            location.reload();
+          }
         } catch (err) {
-          // Since the server kills itself instantly, a network error here means it succeeded!
-          alert("Kiosk service stopped successfully. Screen released.");
+          // No answer is NOT proof that it worked: the booth may not have received the request.
+          alert(
+            "No answer from the booth, so it is not known whether the service was disabled. Wait a minute and check the booth.",
+          );
         }
       }
 

@@ -3,6 +3,12 @@ Description=Glitch Booth Release Candidate 01 (Pygame Kiosk)
 After=network.target
 Wants=network.target
 Conflicts=getty@tty1.service
+# Batch 4: after 5 failed starts within 2 minutes systemd stops trying and
+# OnFailure hands the screen to a login prompt. Normal restarts after a single crash
+# (Restart=on-failure below) never get near this limit.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+OnFailure=getty@tty1.service
 
 [Service]
 Type=simple
@@ -21,6 +27,13 @@ TTYVHangup=yes
 
 Restart=on-failure
 RestartSec=2
+
+# Batch 4: the booth's own shutdown is bounded by 10 s; this is only the backstop.
+TimeoutStopSec=30
+# Batch 4: last-resort layer. The booth's health monitor sends WATCHDOG=1 every second while
+# everything is healthy. If the whole process freezes, the pings stop and systemd restarts it.
+WatchdogSec=30
+NotifyAccess=main
 
 Environment=PYTHONUNBUFFERED=1
 Environment=SDL_VIDEODRIVER=kmsdrm

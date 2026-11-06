@@ -31,11 +31,13 @@ import logging.handlers
 import math
 import queue
 import re
+import signal
 import socket
 import subprocess
 import sys
 import threading
 import time
+import urllib.request
 import uuid
 from collections import namedtuple
 from urllib.parse import quote, unquote
@@ -1109,7 +1111,6 @@ if TELEMETRY_ENABLED:
 STREAM_SEMAPHORE = threading.Semaphore(4)
 ACTIVE_STREAM_VIEWERS = 0
 
-cam_thread_alive = True
 capture_lock_until = 0
 
 last_good_camera = time.time()
@@ -1781,28 +1782,45 @@ def telemetry_worker():
 
 def open_camera():
     for index in [0, 1, 2]:
-        cap = cv2.VideoCapture(index, cv2.CAP_V4L2)
-        if cap.isOpened():
-            ret, frame = cap.read()
-            if ret and frame is not None:
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
-                cap.set(cv2.CAP_PROP_FPS, 10)
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                # --- TRACK HARDWARE NEGOTIATION ---
-                actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                logger.info(
-                    "SUCCESS: V4L2 pipeline pinned to index %s | Requested %sx%s, Negotiated %sx%s",
-                    index,
-                    FRAME_W,
-                    FRAME_H,
-                    actual_w,
-                    actual_h,
-                )
-                return cap
-            else:
-                cap.release()
+        cap = None
+        try:
+            cap = cv2.VideoCapture(index, cv2.CAP_V4L2)
+            if cap.isOpened():
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
+                    cap.set(cv2.CAP_PROP_FPS, 10)
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    # --- TRACK HARDWARE NEGOTIATION ---
+                    actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    logger.info(
+                        "SUCCESS: V4L2 pipeline pinned to index %s | Requested %sx%s, Negotiated %sx%s",
+                        index,
+                        FRAME_W,
+                        FRAME_H,
+                        actual_w,
+                        actual_h,
+                    )
+                    return cap
+            cap.release()
+        except Exception:
+            # Whatever went wrong, the half-opened device must not stay open.
+            log_throttled(
+                logger,
+                logging.ERROR,
+                "camera-open-fault",
+                30.0,
+                "[CAMERA] Opening the camera at index %s raised an error",
+                index,
+                exc_info=True,
+            )
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
     log_throttled(
         logger,
         logging.ERROR,
@@ -1814,14 +1832,32 @@ def open_camera():
 
 
 def camera_io_worker():
-    global last_good_camera, camera_started_at, cam_thread_alive
+    # The camera thread. Whatever happens, the camera is released when it ends.
+    cap = None
+    try:
+        cap = open_camera()
+        cap = _camera_loop(cap)
+    except Exception:
+        logger.exception("[CAMERA] Camera worker died unexpectedly")
+    finally:
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:
+                pass
+        logger.info("[SHUTDOWN] Camera worker ended; the camera is released.")
+
+
+def _camera_loop(cap):
+    # Returns the camera that is open when the loop ends (or None).
+    global last_good_camera, camera_started_at, CAMERA_HEARTBEAT
     global LATEST_CAMERA_FRAME
     global last_frame_time, camera_fail_count
-    cap = open_camera()
     consecutive_failures = 0
     camera_down_since = None
 
-    while cam_thread_alive and not SHUTDOWN_EVENT.is_set():
+    while not SHUTDOWN_EVENT.is_set():
+        CAMERA_HEARTBEAT = time.monotonic()
         try:
             if cap is None or not cap.isOpened():
                 if camera_down_since is None:
@@ -1835,7 +1871,8 @@ def camera_io_worker():
                         "[CAMERA] Still no camera after %.0f s; the booth cannot take photos",
                         time.monotonic() - camera_down_since,
                     )
-                time.sleep(2)
+                if SHUTDOWN_EVENT.wait(2):
+                    break
                 cap = open_camera()
                 continue
             camera_down_since = None
@@ -1895,10 +1932,10 @@ def camera_io_worker():
                 if cap is not None:
                     try:
                         cap.release()
-                        del cap
                     except Exception:
                         pass
-                time.sleep(0.3)
+                    cap = None
+                SHUTDOWN_EVENT.wait(0.3)
                 cap = open_camera()
                 consecutive_failures = 0
                 last_good_camera = time.time()
@@ -1912,7 +1949,8 @@ def camera_io_worker():
                 "[CAMERA] Camera worker exception",
                 exc_info=True,
             )
-            time.sleep(1)
+            SHUTDOWN_EVENT.wait(1)
+    return cap
 
 
 _serial_rx = bytearray()  # received bytes that do not yet form a complete line
@@ -4071,11 +4109,14 @@ def print_worker():
             ts, source = print_queue.get(timeout=1.0)
         except queue.Empty:
             continue
+        global PRINT_JOB_STARTED
+        PRINT_JOB_STARTED = time.monotonic()  # the health monitor watches for a job that never ends
         try:
             _run_print_job(ts, source)
         except Exception:
             logger.exception("[PRINTER] Print worker exception for session %s", ts)
         finally:
+            PRINT_JOB_STARTED = None
             with _print_ids_lock:
                 _print_ids.discard(ts)
             print_queue.task_done()
@@ -4471,12 +4512,18 @@ def background_loop():
     global UI_FRAME_SEQ
     global SHARED_JPEG_STREAM_BUFFER, SHARED_JPEG_ARRAY
     global PRINT_ALPHA, PRINT_BETA
-    threading.Thread(target=camera_io_worker, daemon=True).start()
+    global CAMERA_THREAD, LOOP_HEARTBEAT
+    CAMERA_THREAD = threading.Thread(
+        target=camera_io_worker, name="CameraThread", daemon=True
+    )
+    CAMERA_THREAD.start()
 
     serial_connection = None
     last_serial_retry = 0.0
+    loop_faults = FaultCounter(LOOP_FAULT_LIMIT)
 
-    while True:
+    while not SHUTDOWN_EVENT.is_set():
+        LOOP_HEARTBEAT = time.monotonic()
         frame_start = time.time()
 
         try:
@@ -4704,6 +4751,7 @@ def background_loop():
 
                         captured_knobs = list(packet.knobs)
                         threading.Thread(
+                            name=f"CaptureStorage-{high_res_id}",
                             target=async_storage_worker,
                             args=(
                                 high_res_id,
@@ -4769,8 +4817,9 @@ def background_loop():
             elapsed = time.time() - frame_start
             remaining = target_dt - elapsed
 
+            loop_faults.ok()
             if remaining > 0:
-                time.sleep(remaining)
+                SHUTDOWN_EVENT.wait(remaining)
 
         except Exception:
             log_throttled(
@@ -4781,7 +4830,25 @@ def background_loop():
                 "[STATE ENGINE] Core loop exception",
                 exc_info=True,
             )
-            time.sleep(1.0)
+            if loop_faults.fault():
+                logger.critical(
+                    "[STATE ENGINE] The core loop failed %d passes in a row",
+                    loop_faults.count,
+                )
+                request_shutdown(
+                    "fault",
+                    1,
+                    f"the core loop failed {loop_faults.count} passes in a row",
+                )
+            SHUTDOWN_EVENT.wait(1.0)
+
+    # The loop ended because of a shutdown request: leave the hardware as it was found.
+    if serial_connection is not None:
+        try:
+            serial_connection.close()
+        except Exception as exc:
+            logger.debug("[HARDWARE LINK] Error while closing the serial port: %s", exc)
+    logger.info("[SHUTDOWN] Core loop ended; the serial port is closed.")
 
 
 # READ-ISOLATED MJPEG STREAM GATEWAY
@@ -4800,10 +4867,10 @@ def generate_frames():
         with frame_lock:
             ACTIVE_STREAM_VIEWERS += 1
 
-        while True:
+        while not SHUTDOWN_EVENT.is_set():
             now = time.time()
             if now - last_sent < frame_interval:
-                time.sleep(0.005)
+                SHUTDOWN_EVENT.wait(0.005)
                 continue
 
             with frame_lock:
@@ -4815,13 +4882,13 @@ def generate_frames():
                     local_jpeg_payload = SHARED_JPEG_STREAM_BUFFER
 
             if frame_is_stale:
-                time.sleep(0.01)
+                SHUTDOWN_EVENT.wait(0.01)
                 continue
 
             last_sent = now
 
             if not len(local_jpeg_payload):
-                time.sleep(0.01)
+                SHUTDOWN_EVENT.wait(0.01)
                 continue
 
             yield (
@@ -4844,71 +4911,496 @@ def generate_frames():
             ACTIVE_STREAM_VIEWERS = max(0, ACTIVE_STREAM_VIEWERS - 1)
 
 
-# GRACEFUL SHUTDOWN HANDLER
+# LIFECYCLE: SHUTDOWN OWNERSHIP, SIGNALS, HEALTH MONITOR
 # ==================================================
+# Only the OWNER of the process (the display, or the standalone entry point at the bottom of
+# this file) installs the signal handlers and runs the shutdown sequence, and it does so once.
+# Everything else only REQUESTS a shutdown with request_shutdown(). A request with reason
+# "fault" makes the process exit with code 1, so systemd (Restart=on-failure) restarts the
+# kiosk; every other reason exits with code 0.
+
+# LIFECYCLE TUNABLES
+SHUTDOWN_JOIN_BUDGET = 10.0  # seconds all workers together get to finish at shutdown
+HEALTH_CHECK_INTERVAL = 1.0  # seconds between health checks
+LOOP_HEARTBEAT_MAX_AGE = 10.0  # the core loop has not completed a pass for this long = hung
+CAMERA_HEARTBEAT_MAX_AGE = 15.0  # the camera thread is stuck (a read that never returns)
+DISPLAY_HEARTBEAT_MAX_AGE = 15.0  # the screen loop is stuck
+PRINT_STUCK_SECONDS = 120.0  # one print job running this long = stuck printer
+FAULT_WAIT_FOR_LIVE = 30.0  # a visitor's session is not interrupted for a thread problem
+#                             unless the problem lasts this long
+HARD_EXIT_GRACE = 15.0  # after a fault request the process is ended from here if it is still up
+#                        (must be longer than SHUTDOWN_JOIN_BUDGET, or it cuts the orderly shutdown short)
+LOOP_FAULT_LIMIT = 30  # consecutive failed passes of the core loop before the booth restarts
+POWER_ACTION_CANCEL_SECONDS = 30.0  # a power action that systemd has not carried out by then is cancelled
+WEB_SELF_CHECK_ENABLED = True  # the monitor asks the booth's own web server /ping now and then
+WEB_SELF_CHECK_INTERVAL = 10.0
+WEB_SELF_CHECK_FAILURES = 3  # misses in a row that count as a fault
+WEB_SELF_CHECK_URL = "http://127.0.0.1:5000/ping"
+SERVICE_UNIT_NAME = "glitchbooth.service"
+FAULT_RECORD_PATH = "last_fault.json"
+POWER_ACTION_MESSAGES = {
+    # Shown on the kiosk screen (and in /state) while a power action is on its way.
+    "poweroff": "SİSTEM KAPATILIYOR...",
+    "reboot": "SİSTEM YENİDEN BAŞLATILIYOR...",
+    "service_disabled": "SERVİS DEVRE DIŞI, KONSOLA DÖNÜLÜYOR...",
+}
+
+for _name, _ok in (
+    ("SHUTDOWN_JOIN_BUDGET", SHUTDOWN_JOIN_BUDGET > 0),
+    ("HEALTH_CHECK_INTERVAL", HEALTH_CHECK_INTERVAL >= 0.1),
+    ("LOOP_HEARTBEAT_MAX_AGE", LOOP_HEARTBEAT_MAX_AGE > 0),
+    ("CAMERA_HEARTBEAT_MAX_AGE", CAMERA_HEARTBEAT_MAX_AGE > 0),
+    ("DISPLAY_HEARTBEAT_MAX_AGE", DISPLAY_HEARTBEAT_MAX_AGE > 0),
+    ("PRINT_STUCK_SECONDS", PRINT_STUCK_SECONDS > 0),
+    ("LOOP_FAULT_LIMIT", LOOP_FAULT_LIMIT >= 1),
+    ("HARD_EXIT_GRACE", HARD_EXIT_GRACE > SHUTDOWN_JOIN_BUDGET),
+    ("WEB_SELF_CHECK_INTERVAL", WEB_SELF_CHECK_INTERVAL >= 1),
+    ("WEB_SELF_CHECK_FAILURES", WEB_SELF_CHECK_FAILURES >= 1),
+):
+    if not _ok:
+        logger.warning(
+            "[CONFIG] %s is outside what the lifecycle code can use; the code treats it as the nearest usable value",
+            _name,
+        )
+
+# Reasons after which the console is handed back to a login prompt. A fault exits with a
+# failure code and systemd restarts the kiosk within seconds, so the console stays as it is.
+RESCUE_REASONS = ("exit_to_terminal", "signal")
+
+_shutdown_lock = threading.Lock()
+SHUTDOWN_REASON = None  # the first request wins
+SHUTDOWN_DETAIL = ""
+EXIT_CODE = 0
+PENDING_POWER_ACTION = None  # "poweroff" | "reboot" | "service_disabled"
+_signal_received = None
+_sequence_done = False
+_sequence_lock = threading.Lock()
+PROCESS_STARTED = time.monotonic()
+PREVIOUS_FAULT = None  # the fault record of the previous run, loaded at start
+
+# Heartbeats: one float assignment each, written by the thread they describe.
+LOOP_HEARTBEAT = None
+CAMERA_HEARTBEAT = None
+DISPLAY_HEARTBEAT = None  # set by the display; None when the booth runs without one
+PRINT_JOB_STARTED = None
+CAMERA_THREAD = None
 
 
-def graceful_shutdown_handler(signum, frame):
-    logger.info("[SHUTDOWN] Signal intercepted! Initiating formal teardown...")
+def request_shutdown(reason, exit_code=0, detail=""):
+    # Callable from any thread, any number of times. The first reason wins.
+    global SHUTDOWN_REASON, SHUTDOWN_DETAIL, EXIT_CODE
+    with _shutdown_lock:
+        if SHUTDOWN_REASON is None:
+            SHUTDOWN_REASON, SHUTDOWN_DETAIL, EXIT_CODE = reason, detail, exit_code
     SHUTDOWN_EVENT.set()
 
-    if TELEMETRY_ENABLED:
-        try:
-            telemetry.request_shutdown()
-        except Exception as e:
-            logger.warning("[SHUTDOWN] Failed to request the telemetry shutdown: %s", e)
 
+def announce_power_action(action):
+    # A web route is about to ask systemd for a power action. This does NOT stop anything: the
+    # shutdown starts when systemd's SIGTERM arrives. It only tells /state, the health monitor
+    # and the exit path which kind of shutdown is coming. Returns False if one is already announced.
+    global PENDING_POWER_ACTION
+    with _shutdown_lock:
+        if PENDING_POWER_ACTION is not None:
+            return False
+        PENDING_POWER_ACTION = action
+        return True
+
+
+def cancel_power_action(why):
+    global PENDING_POWER_ACTION
+    with _shutdown_lock:
+        was, PENDING_POWER_ACTION = PENDING_POWER_ACTION, None
+    if was:
+        logger.error(
+            "[POWER] %s did not happen (%s); the booth carries on normally", was, why
+        )
+
+
+def pending_power_action():
+    with _shutdown_lock:
+        return PENDING_POWER_ACTION
+
+
+def _on_signal(signum, frame):
+    # Only sets flags: no logging, no locks held for long, no sleeping, no sys.exit inside a
+    # signal handler (it could unwind into the middle of anything).
+    global _signal_received
+    _signal_received = signum
+    request_shutdown(PENDING_POWER_ACTION or "signal", 0)
+
+
+def install_signal_handlers():
+    # Called once by the owner of the process, from the main thread.
+    if threading.current_thread() is not threading.main_thread():
+        raise RuntimeError("signal handlers can only be installed from the main thread")
+    signal.signal(signal.SIGINT, _on_signal)
+    signal.signal(signal.SIGTERM, _on_signal)
+
+
+def _record_fault(reason, detail):
+    # The next run reads this to say why the booth restarted by itself.
     try:
-        # If disable was requested via web route, handle it now
-        if ACTIVE_SESSION.get("disable_service_on_exit", False):
-            logger.info(
-                "[SHUTDOWN] Softly disabling glitchbooth.service for next boot..."
-            )
-            subprocess.run(
-                ["sudo", "systemctl", "disable", "glitchbooth.service"], check=False
-            )
-
-        # ONLY run TTY/getty rescue if we are exiting to terminal (NOT powering off or rebooting)
-        if ACTIVE_SESSION.get("exit_to_terminal", False):
-            logger.info("[SHUTDOWN TTY RESCUE] Resetting console input streams...")
-            subprocess.run(["stty", "sane"], check=False)
-            subprocess.run(["sudo", "kbd_mode", "-a"], check=False)
-
-            logger.info("[SHUTDOWN TTY RESCUE] Spawning fresh login prompt on tty1...")
-            subprocess.run(
-                ["sudo", "systemctl", "start", "getty@tty1.service"], check=False
-            )
-            subprocess.run(["sudo", "chvt", "1"], check=False)
-            logger.info("[SHUTDOWN TTY RESCUE] Local terminal login prompt restored")
-        else:
-            logger.info(
-                "[SHUTDOWN] System reboot/poweroff in progress. Skipping TTY rescue."
-            )
-
+        data = json.dumps(
+            {
+                "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "reason": reason,
+                "detail": detail,
+            }
+        ).encode("utf-8")
+        atomic_write_bytes(FAULT_RECORD_PATH, data, fsync=True)
     except Exception:
-        logger.exception("[SHUTDOWN TTY RESCUE] Terminal rescue routine failed")
+        logger.exception("[HEALTH] Could not write %s", FAULT_RECORD_PATH)
 
-    # Give background workers a moment to observe SHUTDOWN_EVENT
-    time.sleep(1.5)
-    logger.info("[SYSTEM EXIT] Teardown complete. Process terminated.")
+
+def _load_previous_fault():
+    global PREVIOUS_FAULT
+    try:
+        with open(FAULT_RECORD_PATH, "r", encoding="utf-8") as f:
+            PREVIOUS_FAULT = json.load(f)
+    except FileNotFoundError:
+        return
+    except Exception:
+        logger.exception("[HEALTH] Could not read %s", FAULT_RECORD_PATH)
+        return
+    logger.warning(
+        "[HEALTH] An earlier run ended with a fault at %s: %s (%s)",
+        PREVIOUS_FAULT.get("time"),
+        PREVIOUS_FAULT.get("reason"),
+        PREVIOUS_FAULT.get("detail"),
+    )
+
+
+def _terminal_rescue():
+    # Hands the console back to a login prompt (the unit has Conflicts=getty@tty1.service, so
+    # nothing else starts it). Every command is non-interactive and has a timeout.
+    logger.info("[SHUTDOWN TTY RESCUE] Resetting console input streams and starting a login prompt on tty1")
+    for argv in (
+        ["stty", "sane"],
+        ["sudo", "-n", "kbd_mode", "-a"],
+        ["sudo", "-n", "systemctl", "start", "getty@tty1.service"],
+        ["sudo", "-n", "chvt", "1"],
+    ):
+        try:
+            result = subprocess.run(
+                argv, check=False, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+            )
+            if result.returncode != 0:
+                logger.warning(
+                    "[SHUTDOWN TTY RESCUE] %s returned %d: %s",
+                    " ".join(argv),
+                    result.returncode,
+                    result.stderr.decode("utf-8", "replace").strip()[:200],
+                )
+        except Exception as exc:
+            logger.warning("[SHUTDOWN TTY RESCUE] %s failed: %s", " ".join(argv), exc)
+
+
+def join_threads(threads, total_timeout):
+    # One shared deadline for all of them. Returns the names of the threads still alive.
+    deadline = time.monotonic() + total_timeout
+    for t in threads:
+        t.join(max(0.0, deadline - time.monotonic()))
+    return [t.name for t in threads if t.is_alive()]
+
+
+def _threads_named(*names, prefixes=()):
+    me = threading.current_thread()
+    return [
+        t
+        for t in threading.enumerate()
+        if t is not me and (t.name in names or t.name.startswith(tuple(prefixes)))
+    ]
+
+
+def _shutdown_steps():
+    def join_step(label, selector, before=None):
+        def step(left):
+            if before is not None:
+                before()
+            alive = join_threads(selector(), left)
+            if alive:
+                logger.warning(
+                    "[SHUTDOWN] Still running after the wait (%s): %s", label, ", ".join(alive)
+                )
+
+        return label, step
+
+    def telemetry_request():
+        if TELEMETRY_ENABLED:
+            try:
+                telemetry.request_shutdown()
+            except Exception as exc:
+                logger.warning("[SHUTDOWN] Failed to request the telemetry shutdown: %s", exc)
+
+    # Order matters: the core loop stops first (no new captures); a capture that is being stored
+    # finishes (it also queues its telemetry record); only then is telemetry told to flush; a
+    # running print finishes; uploads come last because the ledger keeps whatever is unfinished.
+    return [
+        join_step("core loop and camera", lambda: _threads_named("BackgroundLoop", "CameraThread")),
+        join_step(
+            "capture storage and clean uploads",
+            lambda: _threads_named(prefixes=("CaptureStorage-", "CleanUpload")),
+        ),
+        join_step(
+            "telemetry",
+            lambda: _threads_named("TelemetryQueueConsumer", "TelemetryCloudSyncWorker", "TelemetryWorker"),
+            before=telemetry_request,
+        ),
+        join_step("printing", lambda: _threads_named("PrintWorker")),
+        join_step("uploads", lambda: _threads_named("UploadWorker", "IdleSyncWorker")),
+    ]
+
+
+def run_shutdown_sequence(budget=None):
+    # Runs once (a second call returns at once). Returns the process exit code.
+    global _sequence_done
+    with _sequence_lock:
+        if _sequence_done:
+            return EXIT_CODE
+        _sequence_done = True
+    budget = SHUTDOWN_JOIN_BUDGET if budget is None else budget
+    started = time.monotonic()
+    logger.info(
+        "[SHUTDOWN] Reason: %s%s%s",
+        SHUTDOWN_REASON or "unknown",
+        f" (signal {_signal_received})" if _signal_received else "",
+        f" - {SHUTDOWN_DETAIL}" if SHUTDOWN_DETAIL else "",
+    )
+    if SHUTDOWN_REASON == "fault":
+        _record_fault(SHUTDOWN_REASON, SHUTDOWN_DETAIL)
+    for label, step in _shutdown_steps():
+        left = budget - (time.monotonic() - started)
+        try:
+            step(max(0.2, left))
+        except Exception:
+            logger.exception("[SHUTDOWN] Step '%s' failed", label)
+    if SHUTDOWN_REASON in RESCUE_REASONS:
+        try:
+            _terminal_rescue()
+        except Exception:
+            logger.exception("[SHUTDOWN TTY RESCUE] Terminal rescue routine failed")
+    else:
+        logger.info("[SHUTDOWN] No terminal rescue needed for reason '%s'", SHUTDOWN_REASON)
+    logger.info(
+        "[SYSTEM EXIT] Teardown complete in %.1f s, exit code %d",
+        time.monotonic() - started,
+        EXIT_CODE,
+    )
     shutdown_logging()
-    # sys.exit runs atexit handlers and finally blocks; os._exit does not
-    sys.exit(0)
+    return EXIT_CODE
+
+
+def sd_notify(message):
+    # Tells systemd something (here: WATCHDOG=1) without any library. False outside systemd.
+    path = os.environ.get("NOTIFY_SOCKET")
+    if not path:
+        return False
+    if path.startswith("@"):
+        path = "\0" + path[1:]
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
+        s.settimeout(1.0)
+        s.connect(path)
+        s.sendall(message.encode())
+    return True
+
+
+class FaultCounter:
+    # Consecutive failed passes of a loop. A success resets it.
+    def __init__(self, limit):
+        self.limit, self.count = max(1, int(limit)), 0
+
+    def ok(self):
+        self.count = 0
+
+    def fault(self):
+        self.count += 1
+        return self.count >= self.limit
+
+
+def _hard_exit(code):
+    # Last resort, used when the main thread did not get out after a fault request.
+    logger.critical("[HEALTH] The shutdown did not complete; ending the process with code %d", code)
+    _record_fault(SHUTDOWN_REASON or "fault", SHUTDOWN_DETAIL or "shutdown did not complete")
+    try:
+        fault_file = _log_state.get("fault_file")
+        if fault_file is not None:
+            fault_file.write("\n--- thread dump taken by the health monitor before a forced exit ---\n")
+            fault_file.flush()
+            faulthandler.dump_traceback(file=fault_file, all_threads=True)
+            fault_file.flush()
+    except Exception:
+        pass
+    try:
+        shutdown_logging()
+    except Exception:
+        pass
+    os._exit(code)
+
+
+def booth_is_live():
+    with mode_lock:
+        return ACTIVE_SESSION["mode"] == "live"
+
+
+class HealthMonitor(threading.Thread):
+    # Once a second: are the critical threads alive, are the loops still ticking? A problem
+    # requests a shutdown with a failure code, so systemd restarts the kiosk. A visitor's
+    # session is not interrupted for a thread problem unless it lasts FAULT_WAIT_FOR_LIVE.
+
+    def __init__(self, notify=None, hard_exit=_hard_exit, clock=time.monotonic):
+        super().__init__(name="HealthMonitor", daemon=True)
+        self.notify, self.hard_exit, self.clock = notify, hard_exit, clock
+        self._first_problem = None
+        self._fault_requested_at = None
+        self._web_misses = 0
+        self._last_web_check = clock()
+        self._t_created = clock()
+
+    def _critical_threads(self):
+        threads = list(CRITICAL_WORKERS)
+        if CAMERA_THREAD is not None:
+            threads.append(CAMERA_THREAD)
+        return threads
+
+    def _heartbeats(self):
+        beats = {}
+        if LOOP_HEARTBEAT is not None:
+            beats["core loop"] = (LOOP_HEARTBEAT, LOOP_HEARTBEAT_MAX_AGE, "has not completed a pass for")
+        if CAMERA_HEARTBEAT is not None:
+            beats["camera thread"] = (CAMERA_HEARTBEAT, CAMERA_HEARTBEAT_MAX_AGE, "has not reported for")
+        if DISPLAY_HEARTBEAT is not None:
+            beats["display loop"] = (DISPLAY_HEARTBEAT, DISPLAY_HEARTBEAT_MAX_AGE, "has not drawn a frame for")
+        started = PRINT_JOB_STARTED
+        if started is not None:
+            beats["print job"] = (started, PRINT_STUCK_SECONDS, "has been running for")
+        return beats
+
+    def _web_check(self, now):
+        if not WEB_SELF_CHECK_ENABLED or now - self._t_created < 30.0:
+            return None
+        if now - self._last_web_check < max(1.0, WEB_SELF_CHECK_INTERVAL):
+            return None
+        self._last_web_check = now
+        try:
+            with urllib.request.urlopen(WEB_SELF_CHECK_URL, timeout=2.0) as response:
+                ok = response.status == 200
+        except Exception:
+            ok = False
+        self._web_misses = 0 if ok else self._web_misses + 1
+        if self._web_misses >= max(1, WEB_SELF_CHECK_FAILURES):
+            return f"the web server did not answer {self._web_misses} checks in a row"
+        return None
+
+    def problem(self):
+        for t in self._critical_threads():
+            if not t.is_alive():
+                return f"thread {t.name} is not running"
+        now = self.clock()
+        for name, (last, max_age, text) in self._heartbeats().items():
+            if now - last > max_age:
+                return f"{name} {text} {now - last:.0f} s"
+        return self._web_check(now)
+
+    def check_once(self):
+        if SHUTDOWN_EVENT.is_set():
+            if self._fault_requested_at and self.clock() - self._fault_requested_at > max(1.0, HARD_EXIT_GRACE):
+                self.hard_exit(EXIT_CODE or 1)
+            return
+        if pending_power_action():
+            return  # a power action is on its way; threads may legitimately be stopping
+        problem = self.problem()
+        if problem is None:
+            self._first_problem = None
+            if self.notify:
+                try:
+                    self.notify()
+                except Exception:
+                    log_throttled(
+                        logger, logging.WARNING, "sd-notify", 600.0,
+                        "[HEALTH] Could not notify systemd", exc_info=True,
+                    )
+            return
+        now = self.clock()
+        if self._first_problem is None:
+            self._first_problem = now
+            logger.critical("[HEALTH] %s", problem)
+        if booth_is_live() or now - self._first_problem >= FAULT_WAIT_FOR_LIVE:
+            self._fault_requested_at = now
+            logger.critical("[HEALTH] Restarting the booth: %s", problem)
+            request_shutdown("fault", 1, problem)
+
+    def run(self):
+        while True:
+            try:
+                self.check_once()
+            except Exception:
+                log_throttled(
+                    logger, logging.ERROR, "health-monitor-fault", 60.0,
+                    "[HEALTH] The health monitor itself failed", exc_info=True,
+                )
+            time.sleep(max(0.1, HEALTH_CHECK_INTERVAL))
+
+
+def current_notice():
+    # The notice shown to visitors: a timed session notice, else a power action in progress,
+    # else (in live mode) the camera message while the camera has no fresh picture.
+    with mode_lock:
+        text = _notice_locked()
+        live = ACTIVE_SESSION["mode"] == "live"
+    if text:
+        return text
+    action = pending_power_action()
+    if action:
+        return POWER_ACTION_MESSAGES.get(action, "")
+    if live and not camera_is_fresh()[0]:
+        return MSG_CAMERA
+    return ""
+
+
+def check_service_unit():
+    # One WARNING at start if the unit that the power routes address does not exist.
+    try:
+        result = subprocess.run(
+            ["systemctl", "cat", SERVICE_UNIT_NAME],
+            check=False, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "[CONFIG] systemd has no unit called %s (%s); the 'service disabled' action will fail",
+                SERVICE_UNIT_NAME,
+                result.stderr.decode("utf-8", "replace").strip()[:120],
+            )
+    except Exception as exc:
+        logger.warning("[CONFIG] Could not check the systemd unit %s: %s", SERVICE_UNIT_NAME, exc)
+
 
 
 # BACKEND ENGINE STARTING ANd OWNING ALL THE WORKERS
 # ==================================================
 
 
-def start_backend_engine(blocking=True):
+_engine_lock = threading.Lock()
+_engine_started = False
 
-    # Set blocking=True for standalone server operation.
-    # Set blocking=False when embedded inside Pygame.
 
-    import signal
+def start_backend_engine(blocking=False):
 
-    signal.signal(signal.SIGINT, graceful_shutdown_handler)
-    signal.signal(signal.SIGTERM, graceful_shutdown_handler)
+    # Starts every worker and the web server. Call it once. It does NOT install signal handlers:
+    # the owner of the process does that (install_signal_handlers()).
+    # blocking=True is for standalone operation: it waits for a shutdown request, runs the
+    # shutdown sequence and exits the process. blocking=False returns after the start (embedded
+    # in the display, which owns the process).
+
+    global _engine_started
+    with _engine_lock:
+        if _engine_started:
+            logger.error("[SERVER] start_backend_engine was called twice; ignoring the second call")
+            return
+        _engine_started = True
+
+    if blocking:
+        install_signal_handlers()
 
     if CRT_ENABLED:
         initialize_crt_mask()
@@ -4920,6 +5412,8 @@ def start_backend_engine(blocking=True):
         ledger_startup_check()
     except Exception:
         logger.exception("[LEDGER] Startup check failed")
+
+    _load_previous_fault()
 
     worker_configs = [
         ("UploadWorker", upload_queue_worker),
@@ -4954,23 +5448,26 @@ def start_backend_engine(blocking=True):
         CRITICAL_WORKERS.append(t)
         t.start()
 
-    # Web server: blocking when standalone, in a daemon thread when embedded in the display.
+    # Web server: always in a daemon thread, so the main thread belongs to the owner.
     from waitress import serve
 
+    logger.info("[SERVER] Starting the Waitress web server in its own thread...")
+    web_thread = threading.Thread(
+        target=lambda: serve(app, host="0.0.0.0", port=5000, threads=8),
+        name="WaitressWebServer",
+        daemon=True,
+    )
+    CRITICAL_WORKERS.append(web_thread)
+    web_thread.start()
+
+    # The health monitor starts last: every thread it watches exists by now.
+    HealthMonitor(notify=lambda: sd_notify("WATCHDOG=1")).start()
+    threading.Thread(target=check_service_unit, name="UnitCheck", daemon=True).start()
+
     if blocking:
-        logger.info("[SERVER] Starting Waitress web server in blocking mode...")
-        serve(app, host="0.0.0.0", port=5000, threads=8)
-    else:
-        logger.info(
-            "[SERVER] Starting Waitress web server asynchronously behind Pygame..."
-        )
-        web_thread = threading.Thread(
-            target=lambda: serve(app, host="0.0.0.0", port=5000, threads=8),
-            name="WaitressWebServer",
-            daemon=True,
-        )
-        CRITICAL_WORKERS.append(web_thread)
-        web_thread.start()
+        while not SHUTDOWN_EVENT.wait(1.0):
+            pass
+        sys.exit(run_shutdown_sequence())
 
 
 # APPLICATION SERVER WEB ENDPOINTS
@@ -5207,7 +5704,6 @@ def state():
         c_start = ACTIVE_SESSION["countdown_start_time"]
         current_upload_status = ACTIVE_SESSION["upload_status"]
         current_print_state = ACTIVE_SESSION["print_state"]
-        current_notice = _notice_locked()
 
     # Each group below is one short snapshot under its own lock (never nested).
     with hw_state_lock:
@@ -5217,10 +5713,19 @@ def state():
     with frame_lock:
         frame_id_now = FRAME_ID
     system_now = SYSTEM_TELEMETRY  # replaced whole by the monitor thread, never edited
+    notice_now = current_notice()
+    power_action = pending_power_action()
 
     is_flash = (
         current_mode == "countdown" and (time.monotonic() - c_start) < FLASH_DURATION
     )
+    camera_age_now = time.time() - frame_time_now
+    # While a power action is on its way the pages are told so: "shutdown" for power off,
+    # "restart" for a reboot (and for the service-disabled reboot); shutdown_reason says which.
+    if power_action:
+        mode_out = "shutdown" if power_action == "poweroff" else "restart"
+    else:
+        mode_out = current_mode
 
     return jsonify(
         {
@@ -5229,14 +5734,16 @@ def state():
             "ip": system_now["ip"],
             "last_frame_time": frame_time_now,
             "camera_fail_count": fail_count_now,
-            "camera_age": time.time() - frame_time_now,
+            "camera_age": camera_age_now,
+            "camera_ok": camera_age_now <= CAMERA_FRESH_MAX_AGE,
             "cpu_temp": system_now["cpu_temp"],
             "memory_rss_mb": system_now["memory_rss_mb"],
             "frame_id": frame_id_now,
             "upload_status": current_upload_status,
             "print_state": current_print_state,
-            "notice": current_notice,
-            "mode": current_mode,
+            "notice": notice_now,
+            "mode": mode_out,
+            "shutdown_reason": power_action or "",
             "is_flash": is_flash,
             "countdown_seconds": countdown_secs,
             "countdown_corner": COUNTDOWN_CORNER,  # Injected for web UI positioning
@@ -5256,62 +5763,172 @@ def captures(filename):
     return send_from_directory(CAPTURE_DIR, filename)
 
 
+def _power_error(message, status=500):
+    return jsonify({"status": "error", "message": message}), status
+
+
+def _sudo_systemctl(*args, timeout=15):
+    return subprocess.run(
+        ["sudo", "-n", "systemctl", *args],
+        check=False,
+        timeout=timeout,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _sudo_allowed(*args):
+    # Asks sudo (without running anything) whether this exact command is allowed without a
+    # password. Returns (allowed, detail).
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", "-l", "systemctl", *args],
+            check=False,
+            timeout=5,
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode == 0, (result.stderr or result.stdout).strip()[:160]
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def _run_power_command(args, undo_args=None):
+    # Runs after the HTTP response has gone out. systemd then stops the booth with SIGTERM; the
+    # announced action only tells /state and the shutdown which kind of stop it is.
+    time.sleep(0.5)
+    try:
+        result = _sudo_systemctl(*args)
+        failed = result.returncode != 0
+        detail = (result.stderr or result.stdout).strip()[:200]
+    except Exception as exc:
+        failed, detail = True, f"{type(exc).__name__}: {exc}"
+    if failed:
+        logger.error("[POWER] 'systemctl %s' failed: %s", " ".join(args), detail)
+        if undo_args:
+            try:
+                undone = _sudo_systemctl(*undo_args)
+                logger.critical(
+                    "[POWER] Undid the earlier change with 'systemctl %s' (exit %d)",
+                    " ".join(undo_args),
+                    undone.returncode,
+                )
+            except Exception:
+                logger.critical(
+                    "[POWER] Could NOT undo the earlier change: run 'sudo systemctl %s' by hand",
+                    " ".join(undo_args),
+                    exc_info=True,
+                )
+        cancel_power_action(f"systemctl {' '.join(args)} failed")
+        return
+    if not SHUTDOWN_EVENT.wait(POWER_ACTION_CANCEL_SECONDS):
+        logger.critical(
+            "[POWER] 'systemctl %s' was accepted but systemd has not stopped the booth after %.0f s",
+            " ".join(args),
+            POWER_ACTION_CANCEL_SECONDS,
+        )
+        cancel_power_action("systemd did not stop the booth in time")
+
+
+def _power_route(action, args, label, ok_status, ok_message):
+    client_ip = request.remote_addr if request else "unknown"
+    logger.warning("[REMOTE CONTROL] %s requested from %s", label, client_ip)
+    if pending_power_action() or SHUTDOWN_EVENT.is_set():
+        return _power_error("A power action is already in progress", 409)
+    allowed, detail = _sudo_allowed(*args)
+    if not allowed:
+        logger.error(
+            "[POWER] %s refused: sudo does not allow 'systemctl %s' without a password (%s)",
+            label,
+            " ".join(args),
+            detail,
+        )
+        return _power_error(
+            f"Not possible: sudo does not allow 'systemctl {' '.join(args)}' for the booth's user. Nothing was changed."
+        )
+    if not announce_power_action(action):
+        return _power_error("A power action is already in progress", 409)
+    threading.Thread(
+        target=_run_power_command, args=(args,), name="PowerAction", daemon=True
+    ).start()
+    return jsonify({"status": ok_status, "message": ok_message})
+
+
 @app.route("/shutdown", methods=["POST"])
 def remote_shutdown():
-    global cam_thread_alive
-    cam_thread_alive = False
-    client_ip = request.remote_addr if request else "unknown"
-    logger.warning("[REMOTE CONTROL] Shutdown requested from %s", client_ip)
-
-    def delayed_poweroff():
-        time.sleep(0.5)  # Allow HTTP response to flush back to client first
-        subprocess.run(["sudo", "systemctl", "poweroff"], check=False)
-
-    threading.Thread(target=delayed_poweroff, daemon=True).start()
-
-    return jsonify({"status": "shutting_down", "message": "Powering off now..."})
+    return _power_route(
+        "poweroff", ["poweroff"], "Shutdown", "shutting_down", "Powering off now..."
+    )
 
 
 @app.route("/reboot", methods=["POST"])
 def remote_reboot():
-    global cam_thread_alive
-    cam_thread_alive = False
-    client_ip = request.remote_addr if request else "unknown"
-    logger.warning("[REMOTE CONTROL] Reboot requested from %s", client_ip)
-
-    def delayed_reboot():
-        time.sleep(0.5)  # Allow HTTP response to flush back to client first
-        subprocess.run(["sudo", "systemctl", "reboot"], check=False)
-
-    threading.Thread(target=delayed_reboot, daemon=True).start()
-
-    return jsonify({"status": "rebooting", "message": "Rebooting system now..."})
+    return _power_route(
+        "reboot", ["reboot"], "Reboot", "rebooting", "Rebooting system now..."
+    )
 
 
 @app.route("/service/disable", methods=["POST"])
 def remote_service_disable():
-    global cam_thread_alive
-    cam_thread_alive = False
     client_ip = request.remote_addr if request else "unknown"
     logger.warning(
         "[REMOTE CONTROL] Service disable & reboot requested from %s", client_ip
     )
+    unit = SERVICE_UNIT_NAME
+    if pending_power_action() or SHUTDOWN_EVENT.is_set():
+        return _power_error("A power action is already in progress", 409)
+    for args in (["disable", unit], ["enable", unit], ["reboot"]):
+        allowed, detail = _sudo_allowed(*args)
+        if not allowed:
+            logger.error(
+                "[POWER] Service disable refused: sudo does not allow 'systemctl %s' (%s)",
+                " ".join(args),
+                detail,
+            )
+            return _power_error(
+                f"Not possible: sudo does not allow 'systemctl {' '.join(args)}' for the booth's user. Nothing was changed."
+            )
+    if not announce_power_action("service_disabled"):
+        return _power_error("A power action is already in progress", 409)
 
-    def delayed_disable_and_reboot():
-        time.sleep(
-            0.8
-        )  # Allows HTTP response packet to transmit cleanly back to phone/browser
-        subprocess.run(
-            ["sudo", "systemctl", "disable", "glitchbooth.service"], check=False
+    # The disable happens NOW and is verified, so the answer is true. Only then the reboot.
+    try:
+        result = _sudo_systemctl("disable", unit)
+        if result.returncode != 0:
+            raise RuntimeError(
+                (result.stderr or result.stdout).strip()[:200] or f"exit {result.returncode}"
+            )
+        verify = subprocess.run(
+            ["systemctl", "is-enabled", unit],
+            check=False,
+            timeout=5,
+            capture_output=True,
+            text=True,
         )
-        subprocess.run(["sudo", "systemctl", "reboot"], check=False)
-
-    threading.Thread(target=delayed_disable_and_reboot, daemon=True).start()
-
+        state_text = (verify.stdout or "").strip()
+        if state_text != "disabled":
+            raise RuntimeError(f"'systemctl is-enabled' says '{state_text or verify.stderr.strip()}'")
+    except Exception as exc:
+        logger.error("[POWER] Could not disable %s: %s", unit, exc)
+        cancel_power_action(f"disabling {unit} failed")
+        return _power_error(
+            f"The kiosk service could NOT be disabled ({exc}). Nothing was changed, no reboot."
+        )
+    logger.warning(
+        "[POWER] %s is disabled and verified. Rebooting to the console. To restore the kiosk: sudo systemctl enable %s, then reboot.",
+        unit,
+        unit.replace(".service", ""),
+    )
+    threading.Thread(
+        target=_run_power_command,
+        args=(["reboot"], ["enable", unit]),
+        name="PowerAction",
+        daemon=True,
+    ).start()
     return jsonify(
         {
             "status": "disabling_and_rebooting",
-            "message": "Kiosk disabled. Rebooting Pi to console login. SSH or manual restart required to restore!",
+            "message": "Kiosk service disabled (verified). Rebooting to the console login. To restore: sudo systemctl enable glitchbooth, then reboot.",
         }
     )
 
@@ -5353,7 +5970,8 @@ def api_live_telemetry():
 
     uptime_hours = round((time.time() - telemetry.BOOT_TIMESTAMP) / 3600.0, 1)
 
-    camera_status = "OK" if globals().get("cam_thread_alive", True) else "FAULT"
+    camera_fresh, camera_age_now = camera_is_fresh()
+    camera_status = "OK" if camera_fresh else "FAULT"
     system_now = SYSTEM_TELEMETRY  # replaced whole by the monitor thread, never edited
 
     return jsonify(
@@ -5364,6 +5982,55 @@ def api_live_telemetry():
             "cpu_temp": system_now["cpu_temp"],
             "memory_mb": system_now["memory_rss_mb"],
             "camera_status": camera_status,
+            "camera_age": camera_age_now,
+        }
+    )
+
+
+@app.route("/api/health", methods=["GET"])
+def api_health():
+    """Everything the control page's health card shows: read from memory and the ledger only."""
+    camera_fresh, camera_age_now = camera_is_fresh()
+    try:
+        pending = len(ledger_snapshot())
+    except Exception:
+        pending = -1
+    try:
+        with open(UNRESOLVED_LEDGER_PATH, "r", encoding="utf-8", errors="replace") as f:
+            unresolved = sum(1 for line in f if line.strip())
+    except OSError:
+        unresolved = 0
+    captures_total, last_capture = 0, None
+    if TELEMETRY_ENABLED:
+        try:
+            captures_total = telemetry.LIVE_STATS.get("total_captures", 0)
+            last_capture = telemetry.LIVE_STATS.get("last_capture_iso")
+        except Exception:
+            pass
+    try:
+        usage = shutil.disk_usage(CAPTURE_DIR)
+        disk_free_gb = round(usage.free / 1e9, 1)
+        disk_used_percent = round(100.0 * usage.used / usage.total, 1)
+    except OSError:
+        disk_free_gb = disk_used_percent = None
+    workers_ok = all(t.is_alive() for t in CRITICAL_WORKERS) and (
+        CAMERA_THREAD is None or CAMERA_THREAD.is_alive()
+    )
+    return jsonify(
+        {
+            "camera_ok": camera_fresh,
+            "camera_age": camera_age_now,
+            "uptime_s": int(time.monotonic() - PROCESS_STARTED),
+            "captures_total": captures_total,
+            "last_capture": last_capture,
+            "pending_uploads": pending,
+            "unresolved_uploads": unresolved,
+            "offline": NETWORK_OFFLINE.is_set(),
+            "uploads_enabled": IK_UPLOADS_ENABLED,
+            "disk_free_gb": disk_free_gb,
+            "disk_used_percent": disk_used_percent,
+            "workers_ok": workers_ok,
+            "previous_fault": PREVIOUS_FAULT,
         }
     )
 
@@ -5391,5 +6058,5 @@ def server_local_stats_page():
 
 
 if __name__ == "__main__":
-    # Running independently: block on Waitress natively
+    # Running independently: this process is its own owner (signals, shutdown, exit code).
     start_backend_engine(blocking=True)

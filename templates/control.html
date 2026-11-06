@@ -122,6 +122,12 @@
         font-size: 14px;
         word-break: break-all;
       }
+      .stat-value.warn {
+        color: #ffaa00;
+      }
+      .stat-value.bad {
+        color: #ff3377;
+      }
 
       /* BUTTONS */
       .button-stack {
@@ -295,6 +301,49 @@
         </div>
       </div>
 
+      <!-- BOOTH HEALTH -->
+      <div class="card">
+        <div class="card-title">BOOTH HEALTH</div>
+        <div class="stat-grid">
+          <div class="stat-item">
+            <span class="stat-label">CAMERA</span>
+            <span class="stat-value" id="h-camera">...</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">WORKERS</span>
+            <span class="stat-value" id="h-workers">...</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">UPTIME</span>
+            <span class="stat-value" id="h-uptime">...</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">CAPTURES (TOTAL)</span>
+            <span class="stat-value" id="h-captures">...</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">LAST CAPTURE</span>
+            <span class="stat-value" id="h-last">...</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">PENDING UPLOADS</span>
+            <span class="stat-value" id="h-pending">...</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">UNRESOLVED UPLOADS</span>
+            <span class="stat-value" id="h-unresolved">...</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">DISK</span>
+            <span class="stat-value" id="h-disk">...</span>
+          </div>
+          <div class="stat-item" style="grid-column: 1 / span 2">
+            <span class="stat-label">LAST AUTOMATIC RESTART (FAULT)</span>
+            <span class="stat-value" id="h-fault">...</span>
+          </div>
+        </div>
+      </div>
+
       <!-- PAGE CONTROLS -->
       <div class="card">
         <div class="card-title">PAGE CONTROLS</div>
@@ -434,7 +483,7 @@
             if (xhr.status >= 200 && xhr.status < 300) {
               if (onSuccess) onSuccess(xhr.responseText);
             } else {
-              if (onError) onError(xhr.status);
+              if (onError) onError(xhr.status, xhr.responseText);
             }
           }
         };
@@ -472,15 +521,112 @@
       }
 
       // --- ACTION DISPATCHERS ---
+      // The booth's real answer is shown: a refusal or an error is never reported as success.
+      function serverMessage(text, fallback) {
+        try {
+          var d = JSON.parse(text);
+          if (d && d.message) return d.message;
+        } catch (e) {}
+        return fallback;
+      }
+
+      function showModalResult(modalId, title, text, color, withClose) {
+        var box = document.querySelector("#" + modalId + " .overlay-content");
+        while (box.firstChild) box.removeChild(box.firstChild);
+        var h = document.createElement("h2");
+        h.textContent = title;
+        if (color) h.style.color = color;
+        var p = document.createElement("p");
+        p.id = modalId + "-text";
+        p.textContent = text;
+        box.appendChild(h);
+        box.appendChild(p);
+        if (withClose) {
+          var wrap = document.createElement("div");
+          wrap.className = "overlay-buttons";
+          var btn = document.createElement("button");
+          btn.className = "button btn-secondary";
+          btn.textContent = "CLOSE";
+          btn.onclick = function () {
+            location.reload();
+          };
+          wrap.appendChild(btn);
+          box.appendChild(wrap);
+        }
+      }
+
+      // After a reboot: wait until the booth stops answering and then answers again, then reload.
+      function waitForBooth(modalId) {
+        var wasDown = false;
+        var started = new Date().getTime();
+        function tick() {
+          var xhr = new XMLHttpRequest();
+          xhr.open("GET", "/ping?t=" + new Date().getTime(), true);
+          xhr.timeout = 2500;
+          var handled = false;
+          function again(ok) {
+            if (handled) return;
+            handled = true;
+            if (ok && wasDown) {
+              location.reload();
+              return;
+            }
+            if (!ok) wasDown = true;
+            if (new Date().getTime() - started > 180000) {
+              var p = document.getElementById(modalId + "-text");
+              if (p)
+                p.textContent =
+                  "The booth did not answer again within 3 minutes. Check the booth, then reload this page.";
+              return;
+            }
+            setTimeout(tick, 2000);
+          }
+          xhr.onreadystatechange = function () {
+            if (xhr.readyState === 4) again(xhr.status === 200);
+          };
+          xhr.onerror = function () {
+            again(false);
+          };
+          xhr.ontimeout = function () {
+            again(false);
+          };
+          xhr.send();
+        }
+        setTimeout(tick, 3000);
+      }
+
       function triggerReboot() {
         sendPost(
           "/reboot",
-          function () {
-            document.querySelector("#rebootModal .overlay-content").innerHTML =
-              "<h2>REBOOTING</h2><p>System restarting. Wait 60 seconds then refresh.</p>";
+          function (text) {
+            showModalResult(
+              "rebootModal",
+              "REBOOTING",
+              serverMessage(text, "System restarting.") +
+                " Waiting for the booth to come back (this page reloads by itself)...",
+              null,
+              false,
+            );
+            waitForBooth("rebootModal");
           },
-          function () {
-            alert("Server did not acknowledge reboot command.");
+          function (status, text) {
+            if (status === 0) {
+              showModalResult(
+                "rebootModal",
+                "NO ANSWER",
+                "The booth did not answer. It may be restarting already; wait a minute, then reload this page.",
+                null,
+                true,
+              );
+            } else {
+              showModalResult(
+                "rebootModal",
+                "REBOOT NOT STARTED",
+                serverMessage(text, "The booth refused the command (HTTP " + status + ")."),
+                "#ff3377",
+                true,
+              );
+            }
           },
         );
       }
@@ -488,14 +634,34 @@
       function triggerShutdown() {
         sendPost(
           "/shutdown",
-          function () {
-            document.querySelector(
-              "#shutdownModal .overlay-content",
-            ).innerHTML =
-              "<h2>SHUTTING DOWN</h2><p>Safe to disconnect power once monitor is dark (10 seconds).</p>";
+          function (text) {
+            showModalResult(
+              "shutdownModal",
+              "SHUTTING DOWN",
+              serverMessage(text, "Powering off.") +
+                " Safe to disconnect power once the monitor is dark (10 seconds).",
+              null,
+              false,
+            );
           },
-          function () {
-            alert("Server did not acknowledge power off command.");
+          function (status, text) {
+            if (status === 0) {
+              showModalResult(
+                "shutdownModal",
+                "NO ANSWER",
+                "The booth did not answer. It may already be shutting down; do not unplug it until the monitor is dark.",
+                null,
+                true,
+              );
+            } else {
+              showModalResult(
+                "shutdownModal",
+                "POWER OFF NOT STARTED",
+                serverMessage(text, "The booth refused the command (HTTP " + status + ")."),
+                "#ff3377",
+                true,
+              );
+            }
           },
         );
       }
@@ -503,16 +669,86 @@
       function triggerDisableAndReboot() {
         sendPost(
           "/service/disable",
-          function () {
-            document.querySelector("#disableModal .overlay-content").innerHTML =
-              "<h2 style='color: #ff3377;'>REBOOTING TO CONSOLE</h2><p>Kiosk service disabled. Pi is restarting to terminal login prompt.<br><br>SSH is required to restart booth!</p>";
+          function (text) {
+            showModalResult(
+              "disableModal",
+              "REBOOTING TO CONSOLE",
+              serverMessage(text, "Kiosk service disabled.") +
+                " SSH is required to restart the booth!",
+              "#ff3377",
+              false,
+            );
           },
-          function () {
-            // Even on immediate network drop, the server initiates the reboot sequence
-            document.querySelector("#disableModal .overlay-content").innerHTML =
-              "<h2>DISPATCHED</h2><p>Signal received. Pi is restarting to console.</p>";
+          function (status, text) {
+            if (status === 0) {
+              showModalResult(
+                "disableModal",
+                "NO ANSWER",
+                "The booth did not answer, so it is not known whether the service was disabled. Wait a minute and check the booth.",
+                "#ff3377",
+                true,
+              );
+            } else {
+              showModalResult(
+                "disableModal",
+                "NOT DISABLED",
+                serverMessage(text, "The booth refused the command (HTTP " + status + ")."),
+                "#ff3377",
+                true,
+              );
+            }
           },
         );
+      }
+
+      // --- HEALTH CARD ---
+      function setHealth(id, text, level) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.innerText = text;
+        el.className = "stat-value" + (level ? " " + level : "");
+      }
+
+      function updateHealth() {
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", "/api/health", true);
+        xhr.timeout = 4000;
+        xhr.onreadystatechange = function () {
+          if (xhr.readyState !== 4 || xhr.status !== 200) return;
+          try {
+            var h = JSON.parse(xhr.responseText);
+            setHealth(
+              "h-camera",
+              h.camera_ok ? "OK" : "NO PICTURE (" + Math.round(h.camera_age) + " s)",
+              h.camera_ok ? "" : "bad",
+            );
+            setHealth("h-workers", h.workers_ok ? "ALL RUNNING" : "A WORKER IS DOWN", h.workers_ok ? "" : "bad");
+            var mins = Math.floor(h.uptime_s / 60);
+            setHealth("h-uptime", Math.floor(mins / 60) + " h " + (mins % 60) + " min", "");
+            setHealth("h-captures", String(h.captures_total), "");
+            setHealth("h-last", h.last_capture ? String(h.last_capture).replace("T", " ").substring(0, 16) : "--", "");
+            var pending = h.pending_uploads < 0 ? "?" : String(h.pending_uploads);
+            if (!h.uploads_enabled) setHealth("h-pending", pending + " (UPLOADS OFF: NO KEY)", "bad");
+            else if (h.offline) setHealth("h-pending", pending + " (OFFLINE)", "warn");
+            else setHealth("h-pending", pending, h.pending_uploads > 0 ? "warn" : "");
+            setHealth("h-unresolved", String(h.unresolved_uploads), h.unresolved_uploads > 0 ? "warn" : "");
+            if (h.disk_free_gb === null) setHealth("h-disk", "--", "");
+            else
+              setHealth(
+                "h-disk",
+                h.disk_free_gb + " GB free (" + h.disk_used_percent + "% used)",
+                h.disk_free_gb < 2 || h.disk_used_percent > 90 ? "bad" : "",
+              );
+            if (h.previous_fault)
+              setHealth(
+                "h-fault",
+                h.previous_fault.time + ": " + h.previous_fault.reason + " (" + h.previous_fault.detail + ")",
+                "warn",
+              );
+            else setHealth("h-fault", "none recorded", "");
+          } catch (e) {}
+        };
+        xhr.send();
       }
 
       function forceLiveMode() {
@@ -551,9 +787,11 @@
         document.body.removeChild(textArea);
       }
 
-      // Initial poll + 3-second cycle
+      // Initial poll + 3-second cycle (health card: every 5 seconds)
       updateTelemetry();
       setInterval(updateTelemetry, 3000);
+      updateHealth();
+      setInterval(updateHealth, 5000);
     </script>
   </body>
 </html>

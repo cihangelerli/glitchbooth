@@ -490,6 +490,7 @@ EFFECT_ORDER = [
     "ascii_matrix",
     "posterize",
     "chroma_shift",
+    "slice_glitch",
 ]
 
 # Knob (0-5) -> effects. The FIRST effect is its visible primary name; remaining
@@ -500,14 +501,18 @@ KNOB_ATTACHMENTS = {
     2: ["posterize"],
     3: ["pixellation"],
     4: ["melt", "data_mosh"],
-    5: ["chroma_shift", "packet_corruption"],
+    5: ["chroma_shift", "slice_glitch", "packet_corruption"],
 }
 
 # Optional range of the knob in which an effect works, as fractions of the knob travel.
 # Inside its window the effect sees the full 0-1023 range; outside it is off.
 # Example: {"chroma_shift": (0.0, 0.7), "packet_corruption": (0.35, 1.0)}
 # EFFECT_KNOB_WINDOW = {"melt": (0.0, 1.0), "data_mosh": (0.49, 1.0)}
-EFFECT_KNOB_WINDOW = {}
+EFFECT_KNOB_WINDOW = {
+    "chroma_shift": (0.20, 1.0),
+    "slice_glitch": (0.0, 1.0),
+    "packet_corruption": (0.0, 1.0),
+}
 
 # Cost weights follow effects when they move between knobs.
 EFFECT_COST_WEIGHT = {
@@ -516,7 +521,8 @@ EFFECT_COST_WEIGHT = {
     "data_mosh": 0.27,
     "pixellation": 0.07,
     "melt": 0.27,
-    "chroma_shift": 0.07,
+    "chroma_shift": 0.05,
+    "slice_glitch": 0.02,
     "packet_corruption": 0.0,
     "posterize": 0.15,
 }
@@ -530,6 +536,7 @@ EFFECT_LABELS = {
     "pixellation": "Pixel Damage",
     "melt": "Data Melt",
     "chroma_shift": "Chroma Shift",
+    "slice_glitch": "Slice Glitch",
     "packet_corruption": "Packet Corruption",
     "posterize": "Posterize",
 }
@@ -555,6 +562,7 @@ EFFECT_STATS_NAME = {
     "pixellation": "pixel_damage",
     "melt": "melt",
     "chroma_shift": "chroma_shift",
+    "slice_glitch": "slice_glitch",
     "packet_corruption": "packet_corruption",
     "posterize": "posterize",
 }
@@ -566,11 +574,12 @@ EFFECT_STATS_NAME = {
 EFFECT_STATS_ACTIVE_FROM = {
     "pixellation": 11,  # acts above 0
     "signal_drift": 11,  # acts above 0
-    "melt": 31,  # acts above 0.03
-    "data_mosh": 101,  # duplicates MOSH_DORMANT_BELOW (0.02 = knob ~145): change both until it is derived
-    "chroma_shift": 11,  # acts above 0.05
+    "melt": 11,  # acts above 0
+    "data_mosh": 11,  # duplicates MOSH_DORMANT_BELOW (0.02 = knob ~145): change both until it is derived
+    "chroma_shift": 11,  # acts above 0
+    "slice_glitch": 11,  # acts above 0
     "packet_corruption": 11,  # first damage appears above CORRUPTION_SPAWN_ABOVE (0.012)
-    "ascii_matrix": 21,  # acts above 0.02
+    "ascii_matrix": 11,  # acts above 0
     "posterize": 13,  # acts above the first non-zero point of POSTERIZE_CURVE (knob 12)
 }
 
@@ -2201,26 +2210,33 @@ def apply_chroma_shift(raw_knob, current_time):
             0,
             dst=MUTABLE_PROCESSING_BUFFER,
         )
-    if int(current_time * 15) % 3 == 0:
-        # Gives a smoother curve where low values yield slices much sooner
-        num_slices = int((ana_val**0.5) * 4)
 
-        for _ in range(int(num_slices)):
-            y, height, shift = (
-                np.random.randint(0, h - SLICE_MAX_H),
-                np.random.randint(SLICE_MIN_H, SLICE_MAX_H),
-                np.random.randint(-SLICE_MAX_SHIFT, SLICE_MAX_SHIFT),
-            )
-            if shift:
-                view = MUTABLE_PROCESSING_BUFFER[y : y + height]
-                s = abs(shift) % w
-                if s:
-                    scratch = SLICE_SHIFT_BUFFER[:height, :w]
-                    if shift > 0:
-                        scratch[:, :s], scratch[:, s:] = view[:, -s:], view[:, :-s]
-                    else:
-                        scratch[:, :-s], scratch[:, -s:] = view[:, s:], view[:, :s]
-                    view[:] = scratch
+
+def apply_slice_glitch(raw_knob, current_time):
+    val = n(raw_knob)
+    if val <= 0.02:
+        return
+    if int(current_time * 15) % 3 != 0:
+        return
+    h, w = FRAME_H, FRAME_W
+    num_slices = int((val**0.5) * 4)
+
+    for _ in range(int(num_slices)):
+        y, height, shift = (
+            np.random.randint(0, h - SLICE_MAX_H),
+            np.random.randint(SLICE_MIN_H, SLICE_MAX_H),
+            np.random.randint(-SLICE_MAX_SHIFT, SLICE_MAX_SHIFT),
+        )
+        if shift:
+            view = MUTABLE_PROCESSING_BUFFER[y : y + height]
+            s = abs(shift) % w
+            if s:
+                scratch = SLICE_SHIFT_BUFFER[:height, :w]
+                if shift > 0:
+                    scratch[:, :s], scratch[:, s:] = view[:, -s:], view[:, :-s]
+                else:
+                    scratch[:, :-s], scratch[:, -s:] = view[:, s:], view[:, :s]
+                view[:] = scratch
 
 
 def apply_signal_drift(raw_knob, current_time):
@@ -2815,6 +2831,7 @@ EFFECT_HANDLERS = {
     "pixellation": apply_pixellation,
     "posterize": apply_posterize,
     "chroma_shift": apply_chroma_shift,
+    "slice_glitch": apply_slice_glitch,
     "signal_drift": apply_signal_drift,
     "melt": apply_melt,
     "data_mosh": apply_data_mosh,

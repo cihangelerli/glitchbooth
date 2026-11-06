@@ -389,7 +389,19 @@ function reconnectFeed() {
     feed.src = "/video_feed?t=" + Date.now();
 }
 
-/* Used ONLY for deliberate shutdown/restart */
+/* A reboot: the overlay stays, polling goes on, and the page reloads once the booth answers normally again */
+var powerOverlayShown = false;
+function showPowerOverlay(message) {
+    var shutEl = document.getElementById('shutdownOverlay');
+    var msgEl = document.getElementById('shutdownMessage');
+    if (shutEl && msgEl) {
+        msgEl.innerHTML = "> " + message;
+        shutEl.style.display = "block";
+    }
+    powerOverlayShown = true;
+}
+
+/* Used ONLY for a deliberate shutdown (or a reboot that will not come back on its own) */
 function killBoothLoop(message) {
     var shutEl = document.getElementById('shutdownOverlay');
     var msgEl = document.getElementById('shutdownMessage');
@@ -449,9 +461,26 @@ function update(){
                     requestHandled = true;
                     hideRecoveryOverlay();
 
-                    /* DELIBERATE REMOTE SHUTDOWN/RESTART (Triggered via gallery.html) */
+                    /* DELIBERATE REMOTE POWER ACTION (started from the gallery or control page).
+                       The server reports mode "shutdown" or "restart" and shutdown_reason while it is on its way. */
                     if(d.mode === "shutdown" || d.mode === "restart"){
-                        killBoothLoop("SERVER_SHUTDOWN_SEQUENCE... SAFE TO POWER OFF BOOTH");
+                        if(d.shutdown_reason === "poweroff"){
+                            killBoothLoop("SYSTEM SHUTTING DOWN... SAFE TO POWER OFF ONCE THE SCREEN IS DARK");
+                            return;
+                        }
+                        if(d.shutdown_reason === "service_disabled"){
+                            killBoothLoop("REBOOTING TO CONSOLE... KIOSK SERVICE DISABLED. SSH IS NEEDED TO RESTORE IT");
+                            return;
+                        }
+                        /* A reboot: keep polling; the page reconnects by itself when the booth is back */
+                        showPowerOverlay("BOOTH RESTARTING... PLEASE WAIT");
+                        clearTimeout(updateTimer);
+                        updateTimer = setTimeout(update, 1000);
+                        return;
+                    }
+                    if(powerOverlayShown){
+                        /* The booth is back after a restart: start from a clean page */
+                        location.reload();
                         return;
                     }
 
