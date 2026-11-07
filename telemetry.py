@@ -60,6 +60,15 @@ LEGACY_KNOB_EFFECTS = [
     "chroma_shift",
 ]
 
+# Notes shipped inside stats.json ("notes") so a reader of the numbers knows how they were counted.
+# Counting rule since Batch 5: an effect is counted when it is acting at the knob value (server.py
+# acting()), and its knob is at 11 or more. Captures recorded before that are not recounted.
+STATS_NOTES = [
+    "Since November 2026 an effect is counted only when it visibly acts at the knob position. "
+    "Earlier captures were counted from a lower knob position for Chroma Shift, Data Mosh, "
+    "Signal Drift and Packet Corruption, so their older counts are slightly too high."
+]
+
 # Names that always appear in stats.json (the website draws one bar per name, in this order).
 # Names not listed here that show up in the ledger are added automatically.
 ALL_EFFECTS = LEGACY_KNOB_EFFECTS + [
@@ -290,6 +299,7 @@ def compile_summary_stats():
             eff: effect_counts_snapshot.get(eff, 0) for eff in stats_names
         },
         "most_popular_combo": most_popular_combo,
+        "notes": list(STATS_NOTES),
     }
 
     try:

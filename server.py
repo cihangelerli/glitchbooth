@@ -344,12 +344,30 @@ os.makedirs(ARCHIVE_DIR, exist_ok=True)
 NAKED_DIR = "captures_naked"
 os.makedirs(NAKED_DIR, exist_ok=True)
 
+# Where the files of a capture live:
+#   captures/           newest captures: <id>_color.jpg, <id>_bw.jpg, <id>_composite.png
+#   saved/              <id>_qr.png
+#   captures_naked/     <id>_clean.jpg of the newest captures
+#   captures_archive/   <id>_color.jpg of older captures (the cleanup keeps the newest 100 in captures/)
+#   naked_archive/      <id>_clean.jpg of those older captures: a clean photo follows its capture
+# Nothing is ever deleted by the cleanup; B&W, QR and composite are recreated from nothing, so they
+# are the only files it removes. A capture deleted from the gallery loses all of its files.
+NAKED_ARCHIVE_DIR = "naked_archive"
+try:
+    os.makedirs(NAKED_ARCHIVE_DIR, exist_ok=True)
+except (
+    OSError
+) as _exc:  # the booth must still start; moving clean photos then fails with a warning
+    logger.error("[CONFIG] Could not create %s: %s", NAKED_ARCHIVE_DIR, _exc)
+
 IK_PRIVATE_KEY = os.getenv("IK_PRIVATE_KEY")
 # Without the key the booth still runs and prints; nothing is uploaded, and every capture
 # stays in the pending list until the key is set and the service restarted.
 IK_UPLOADS_ENABLED = bool(IK_PRIVATE_KEY)
 IK_AUTH_STRING = (
-    base64.b64encode(f"{IK_PRIVATE_KEY}:".encode()).decode() if IK_UPLOADS_ENABLED else ""
+    base64.b64encode(f"{IK_PRIVATE_KEY}:".encode()).decode()
+    if IK_UPLOADS_ENABLED
+    else ""
 )
 if not IK_UPLOADS_ENABLED:
     logger.critical(
@@ -468,13 +486,19 @@ if not re.fullmatch(r"[A-Za-z0-9._-]*", current_event_slug()):
 
 # UPLOAD DURABILITY TUNABLES
 # ==============================================================================
-IDLE_SYNC_INTERVAL = 30  # seconds between idle sync passes when the last pass uploaded nothing
+IDLE_SYNC_INTERVAL = (
+    30  # seconds between idle sync passes when the last pass uploaded nothing
+)
 IDLE_SYNC_MAX_PER_PASS = 5  # entries tried per idle sync pass
 # Seconds to wait before an upload the cloud REJECTED (HTTP 400, 404, 413 ...) is tried again:
 # after the 1st, 2nd, 3rd and later rejection of the same capture.
 UPLOAD_REJECT_BACKOFF = (300, 1800, 7200)
-UPLOAD_REJECT_LIMIT = 8  # after this many rejections the capture moves to unresolved_uploads.txt
-UPLOAD_AUTH_BACKOFF = 600  # seconds the idle sync waits after ImageKit refused the key (401/403)
+UPLOAD_REJECT_LIMIT = (
+    8  # after this many rejections the capture moves to unresolved_uploads.txt
+)
+UPLOAD_AUTH_BACKOFF = (
+    600  # seconds the idle sync waits after ImageKit refused the key (401/403)
+)
 # A pending line without a slug was written before slugs existed. "" = it belongs to no event.
 LEGACY_LEDGER_SLUG = ""
 # Emergency switch: True = an upload only counts when ImageKit answers with a JSON that has a
@@ -561,7 +585,6 @@ KNOB_ATTACHMENTS = {
 # Optional range of the knob in which an effect works, as fractions of the knob travel.
 # Inside its window the effect sees the full 0-1023 range; outside it is off.
 # Example: {"chroma_shift": (0.0, 0.7), "packet_corruption": (0.35, 1.0)}
-# EFFECT_KNOB_WINDOW = {"melt": (0.0, 1.0), "data_mosh": (0.49, 1.0)}
 EFFECT_KNOB_WINDOW = {
     "chroma_shift": (0.20, 1.0),
     "slice_glitch": (0.0, 1.0),
@@ -606,7 +629,8 @@ TELEMETRY_ENABLED = (
 
 # STATISTICS TUNABLES
 # ==============================================================================
-# Every capture is counted by effect NAME (all attached effects, primary and hidden).
+# Every capture is counted by effect NAME (all attached effects, primary and hidden), when the
+# effect was acting (see EFFECT ACTIVITY below).
 # Name under which each effect is counted in stats.json and in the capture ledger.
 # Keep these stable: renaming one splits its history. Pixellation keeps its historical key.
 EFFECT_STATS_NAME = {
@@ -621,21 +645,29 @@ EFFECT_STATS_NAME = {
     "posterize": "posterize",
 }
 
-# From which strength (0-1023, after the effect's knob window) an effect counts as "used".
-# The values are where each effect really starts to act (its own dormancy threshold), so the
-# statistics reflect what the visitor could actually see. Set them all to 10 to count like the
-# old statistics did (knob at 10 or more). If you change a threshold inside an effect, change it here.
-EFFECT_STATS_ACTIVE_FROM = {
-    "pixellation": 11,  # acts above 0
-    "signal_drift": 11,  # acts above 0
-    "melt": 31,  # acts above 0.03
-    "data_mosh": 101,  # duplicates MOSH_DORMANT_BELOW (0.02 = knob ~145): change both until it is derived
-    "chroma_shift": 11,  # acts above 0.05
-    "slice_glitch": 64,  # the first slice appears at strength 0.0625 (int(sqrt(strength) * 4) >= 1)
-    "packet_corruption": 11,  # first damage appears above CORRUPTION_SPAWN_ABOVE (0.012)
-    "ascii_matrix": 21,  # acts above 0.02
-    "posterize": 13,  # acts above the first non-zero point of POSTERIZE_CURVE (knob 12)
-}
+# EFFECT ACTIVITY: ONE DEFINITION OF "THIS EFFECT IS ACTING"
+# ------------------------------------------------------------------------------
+# The effect handlers, the statistics and Posterize's ASCII check all ask the same question,
+# acting(effect, raw_knob) (defined next to the effect handlers), and it is answered from the
+# numbers below and from each effect's own tunables (MOSH_DORMANT_BELOW, CORRUPTION_SPAWN_ABOVE,
+# POSTERIZE_CURVE, DRIFT_MAX_AMOUNT). "Acting" means the picture really changes. Change a number
+# here and the effect and its statistics move together. Strengths are the knob after its window,
+# as a share of the travel (0-1), unless the name says KNOB (units 0-1023).
+PIXELLATION_ACTIVE_ABOVE = 0.0  # acts above this strength (0 = from knob 1)
+ASCII_ACTIVE_ABOVE = 0.02  # knob ~21
+MELT_ACTIVE_ABOVE = 0.03  # knob ~31
+CHROMA_ACTIVE_ABOVE = 0.05  # knob ~52
+SLICE_ACTIVE_FROM_KNOB = 11  # first slice appears at this knob value (0-1023)
+DRIFT_AMOUNT_SCALE = 0.6  # sideways drift in px = strength * DRIFT_MAX_AMOUNT * this
+DRIFT_MIN_AMOUNT = (
+    2  # smaller amounts round to a 0 px shift, so drift starts acting at this
+)
+# Signal Drift's vertical roll above this strength acts whatever the sideways amount is.
+DRIFT_ROLL_ABOVE = 0.85
+
+# Statistics count an effect only when it is acting AND its (windowed) knob is at least this,
+# so a knob resting at 1-10 (electrical noise) does not count Pixel Damage or Drift as used.
+EFFECT_STATS_MIN_KNOB = 11
 
 # NEON_PALETTES defined in native OpenCV BGR format: [Blue, Green, Red]
 # these palettes are shared by Melt and Posterize, CORRECT hexcodes should ALWAYS be here for reference.
@@ -704,14 +736,21 @@ POSTERIZE_MIX_START = 0.05  # neon share at the weakest strength ...
 POSTERIZE_MIX_FULL_AT = 0.43  # ... reaching 1.0 at this strength (0-1)
 POSTERIZE_DROPOUT_LOW = 0.05  # share of the outline that is missing (weak) ...
 POSTERIZE_DROPOUT_HIGH = 0.01  # ... and at full strength
-POSTERIZE_JITTER_MAX_PX = 0  # outline rows shift sideways by up to 1 .. this many px
-POSTERIZE_FLICKER_PROB = 0.005  # share of outline sections that flash white-hot
+POSTERIZE_JITTER_MAX_PX = (
+    0  # outline rows shift sideways by up to 1 .. this many px (0 = off, step skipped)
+)
+# Flashing outline sections (the "flicker"): a share of the outline sections lights up for one frame.
+POSTERIZE_FLICKER_ENABLED = (
+    True  # False = no flashing sections at all (the whole step is skipped)
+)
+POSTERIZE_FLICKER_PROB = 0.005  # share of outline sections that flash
+# "neon" = each flashing section takes a random colour of the neon palette, "white" = white-hot
+POSTERIZE_FLICKER_COLOUR = "neon"
+POSTERIZE_ASCII_DETAIL = 0.95  # brightness detail kept in the neon fill while ASCII is acting (glow outlines)
 # Outline colour: "glow" = the brightest neon next to the border (often near-white), "white", "black" (ink)
 POSTERIZE_OUTLINE_STYLE = "black"
-# corrected for names of the tunables below
 POSTERIZE_OUTLINE_MID_FROM = 0.85  # strength from which outlines are MID px thick
 POSTERIZE_OUTLINE_MAX_FROM = 0.99  # strength from which outlines are MAX px thick
-# added tunables in stead of hard-coded magic numbers!
 POSTERIZE_OUTLINE_MAX_PX = 2  # maximum outline thickness (min to mid to max)
 POSTERIZE_OUTLINE_MID_PX = 1  # mid-level outline thickness
 POSTERIZE_OUTLINE_MIN_PX = 1  # minimum outline thickness
@@ -725,16 +764,34 @@ POSTERIZE_ROTATE_SECONDS = (
 )
 
 # ------------------------------------------------------------------------------
-# OPTIONAL LOOKS (all OFF / "bands" by default = exactly the old Posterize).
-# They are read every frame, so they can be switched live (set the module variable);
-# only the halftone pitch / angle rebuild a small table when they change.
+# OPTIONAL LOOKS. They are read every frame, so they can be switched live (set the module
+# variable); only the halftone pitch / angle rebuild a small table when they change.
 # ------------------------------------------------------------------------------
 # Colour mode of the neon fill:
 #   "bands"    = hard tone bands from the neon palette (the original Posterize)
 #   "gradient" = smooth gradient map through the neon palette (dark -> bright)
 #   "thermal"  = fixed thermal-camera ramp (ignores the neon palette)
-POSTERIZE_COLOR_MODE = "bands"  # used when POSTERIZE_MODE_SCHEDULE is empty
-# Timed mode changes, like POSTERIZE_ROTATE_SECONDS but per mode: (mode, seconds) pairs
+POSTERIZE_COLOR_MODE = "bands"  # used by POSTERIZE_MODE_SOURCE = "fixed" (and when a table below is invalid)
+# What chooses the colour mode:
+#   "knob"     = the position of the Posterize knob (POSTERIZE_KNOB_MODES below)
+#   "schedule" = time (POSTERIZE_MODE_SCHEDULE below)
+#   "fixed"    = always POSTERIZE_COLOR_MODE
+POSTERIZE_MODE_SOURCE = "knob"
+# Mode by knob position: (lower edge, upper edge, mode), edges as a share of the knob travel
+# (0.0 = knob fully down, 1.0 = fully up; 0.35 is about knob value 358). Where the ranges of two
+# entries OVERLAP the two modes are blended across the overlap (a gradual change); where they only
+# touch the mode changes at once. A mode can itself be an overlay of two, "bands+thermal"
+# (shown mixed by POSTERIZE_OVERLAY_MIX). Example with blending: ((0.0, 0.40, "bands"),
+# (0.30, 0.75, "gradient"), (0.65, 1.0, "thermal")). A gap between two entries keeps the mode below it.
+POSTERIZE_KNOB_MODES = (
+    (0.0, 0.45, "bands"),  # knob 0 - 35 %
+    (0.35, 0.75, "gradient"),  # 35 - 75 %
+    (0.75, 1.0, "thermal"),  # 75 - 100 %
+)
+# The knob must move this far (share of the travel) before the mode selection follows, so a knob
+# resting on an edge does not flip the mode back and forth. 0 = off.
+POSTERIZE_KNOB_MODE_HYSTERESIS = 0.01
+# Timed mode changes, like POSTERIZE_ROTATE_SECONDS but per mode: (mode, seconds) pairs (used by "schedule")
 # played in a loop. Use 2 or 3 of the modes, with any duration each. A mode can also be an
 # overlay of two modes, written "bands+thermal" (shown mixed by POSTERIZE_OVERLAY_MIX).
 # Example: (("bands", 40), ("thermal", 15), ("gradient", 5)).   () = fixed mode above.
@@ -792,7 +849,9 @@ POSTERIZE_GLOW_FROM = 0.0  # strength (0-1) from which the glow appears
 MOSH_DORMANT_BELOW = (
     0.02  # strength = (knob/1023)**2 below this cancels everything at once
 )
-MOSH_THRESH_BASE = 37  # motion threshold = BASE + (1 - strength) * SPAN   (37 .. 90 now)
+MOSH_THRESH_BASE = (
+    37  # motion threshold = BASE + (1 - strength) * SPAN   (37 .. 90 now)
+)
 MOSH_THRESH_SPAN = 53
 MOSH_HOLD_MIN_FRAMES = 17  # hold time (frames) rises from MIN to MAX with strength
 MOSH_HOLD_MAX_FRAMES = 49
@@ -924,14 +983,22 @@ def _apply_crash_limits():
         if value < minimum or (strict and value <= minimum):
             above = "above" if strict else "at least"
             _disable_effect(
-                effect, name, value, f"would crash the booth (must be {above} {minimum})"
+                effect,
+                name,
+                value,
+                f"would crash the booth (must be {above} {minimum})",
             )
             if not strict:
-                globals()[name] = minimum  # placeholder so the buffers below can be built
+                globals()[name] = (
+                    minimum  # placeholder so the buffers below can be built
+                )
     sp = POSTERIZE_SECTION_PX
     if "posterize" not in DISABLED_EFFECTS and (FRAME_W % sp or FRAME_H % sp):
         _disable_effect(
-            "posterize", "POSTERIZE_SECTION_PX", sp, f"must divide {FRAME_W} and {FRAME_H}"
+            "posterize",
+            "POSTERIZE_SECTION_PX",
+            sp,
+            f"must divide {FRAME_W} and {FRAME_H}",
         )
     if "slice_glitch" not in DISABLED_EFFECTS and not (
         SLICE_MIN_H < SLICE_MAX_H < FRAME_H
@@ -967,6 +1034,22 @@ GLOBAL_NOISE_BUFFER = np.empty(
     (CORRUPTION_CELL_H, CORRUPTION_CELL_W, 3), dtype=np.uint8, order="C"
 )
 
+# WHO TOUCHES THE FRAME BUFFERS (a reading aid; nothing here needs a change)
+#   LATEST_CAMERA_FRAME        written by the camera thread, copied by the processing loop, both
+#                              under cam_raw_lock.
+#   MUTABLE_PROCESSING_BUFFER  owned by the processing loop thread (effects run in it). So are
+#                              the effect scratch buffers and NAKED_FRAME_BUFFER.
+#   UI_DISPLAY_BUFFER          written by the processing loop under frame_lock, copied by the
+#                              display thread under frame_lock.
+#   FROZEN_DISPLAY_BUFFER      written by the processing loop at the moment of capture, WITHOUT
+#                              frame_lock; read by the processing loop (countdown / review) and by
+#                              the display thread under frame_lock (pygame_display.py, review
+#                              fallback). That is safe only because of the order: the capture
+#                              writes it while the mode is "pre-capture-countdown", BEFORE the mode
+#                              becomes "countdown"; the display reads it only in "countdown" and
+#                              "latest"; the next write needs a new capture, which starts from
+#                              "live". Anyone adding a second writer, or a write in another mode,
+#                              must take frame_lock around it.
 LATEST_CAMERA_FRAME = np.zeros((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
 MUTABLE_PROCESSING_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
 UI_DISPLAY_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
@@ -1446,7 +1529,14 @@ def ledger_startup_check():
     # Runs once before any worker starts: stale temp files out, unreadable lines to the
     # unresolved list, legacy bare ids made explicit, and a summary of what is waiting.
     removed_tmp = 0
-    for directory in (".", CAPTURE_DIR, SAVED_DIR, NAKED_DIR, ARCHIVE_DIR):
+    for directory in (
+        ".",
+        CAPTURE_DIR,
+        SAVED_DIR,
+        NAKED_DIR,
+        ARCHIVE_DIR,
+        NAKED_ARCHIVE_DIR,
+    ):
         try:
             names = os.listdir(directory)
         except OSError:
@@ -1499,7 +1589,9 @@ def ledger_startup_check():
     )
     if unresolved:
         logger.warning(
-            "[LEDGER] %s holds %d capture(s) that need a look", UNRESOLVED_LEDGER_PATH, unresolved
+            "[LEDGER] %s holds %d capture(s) that need a look",
+            UNRESOLVED_LEDGER_PATH,
+            unresolved,
         )
 
 
@@ -1563,7 +1655,10 @@ def interpret_upload_response(response, remote_filename):
         try:
             data = response.json()
         except Exception:
-            return "retry", "HTTP 200 but the body is not JSON (captive portal or proxy?)"
+            return (
+                "retry",
+                "HTTP 200 but the body is not JSON (captive portal or proxy?)",
+            )
         if not isinstance(data, dict):
             return "retry", "HTTP 200 but the JSON is not an object"
         file_id = data.get("fileId")
@@ -1954,7 +2049,9 @@ def _camera_loop(cap):
 
 
 _serial_rx = bytearray()  # received bytes that do not yet form a complete line
-_serial_synced = False  # False until the first (possibly cut-off) line after a connect is dropped
+_serial_synced = (
+    False  # False until the first (possibly cut-off) line after a connect is dropped
+)
 _serial_bad_packets = 0
 
 
@@ -2126,7 +2223,9 @@ class DataMoshEngine:
         # Apply one frame of Data Mosh to `frame` (modified in place).
         gh, gw, H, W = MOSH_GRID_H, MOSH_GRID_W, FRAME_H, FRAME_W
 
-        vec = max(0, min(MOSH_VECTOR_PX, FRAME_H))  # longer than the frame or negative would crash
+        vec = max(
+            0, min(MOSH_VECTOR_PX, FRAME_H)
+        )  # longer than the frame or negative would crash
 
         motion_samples = frame[
             _MOSH_SAMPLE_Y0::MOSH_CELL_H, _MOSH_SAMPLE_X0::MOSH_CELL_W
@@ -2311,12 +2410,11 @@ _MOSH = DataMoshEngine() if "data_mosh" not in DISABLED_EFFECTS else None
 
 def apply_data_mosh(raw_knob, current_time):
     # Data Mosh entry point. raw_knob 0-1023. Modifies MUTABLE_PROCESSING_BUFFER in place.
-    strength = n(raw_knob) ** 2
-    if strength < MOSH_DORMANT_BELOW:
+    if not _acts_data_mosh(raw_knob):  # below MOSH_DORMANT_BELOW
         if _MOSH.is_dirty():  # lowering the knob cancels all moshing at once
             _MOSH.reset()
         return
-    _MOSH.step(MUTABLE_PROCESSING_BUFFER, strength)
+    _MOSH.step(MUTABLE_PROCESSING_BUFFER, n(raw_knob) ** 2)
 
 
 # =========================================================================
@@ -2630,9 +2728,7 @@ def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
 
 
 def apply_melt_pass(melt_raw: float, current_time: float):
-    # Melt entry point.
-    if melt_raw <= 0.03:
-        return
+    # Melt entry point (apply_melt has already checked that Melt is acting).
     STATIC_MELT_SNAPSHOT[:] = MUTABLE_PROCESSING_BUFFER[:]
     cv2.cvtColor(STATIC_MELT_SNAPSHOT, cv2.COLOR_BGR2GRAY, dst=STATIC_MELT_GRAY_BUFFER)
     drips = _collect_melt_drips(melt_raw, current_time)
@@ -2653,7 +2749,7 @@ def n(val):
 # =========================================================================
 def apply_pixellation(raw_knob, current_time):
     comp = n(raw_knob)
-    if comp > 0:
+    if _acts_pixellation(raw_knob):
         tile = int(COMPRESSION_TILE_BASE + comp * COMPRESSION_TILE_SCALE)
         tw, th = max(1, FRAME_W // tile), max(1, FRAME_H // tile)
         sub = COMPRESSION_STAGE_BUFFER[:th, :tw]
@@ -2672,9 +2768,9 @@ def apply_pixellation(raw_knob, current_time):
 
 
 def apply_chroma_shift(raw_knob, current_time):
-    ana_val = n(raw_knob)
-    if ana_val <= 0.05:
+    if not _acts_chroma_shift(raw_knob):
         return
+    ana_val = n(raw_knob)
     h, w = FRAME_H, FRAME_W
     shift = int(ana_val * ANA_SHIFT_MAX)
     red = MUTABLE_PROCESSING_BUFFER[:, :, 2]
@@ -2711,14 +2807,15 @@ def apply_chroma_shift(raw_knob, current_time):
 
 
 def apply_slice_glitch(raw_knob, current_time):
-    val = n(raw_knob)
-    if val <= 0.02:
+    if not _acts_slice_glitch(raw_knob):
         return
     if int(current_time * 15) % 3 != 0:
         return
+    val = n(raw_knob)
     h, w = FRAME_H, FRAME_W
-    # Gives a smoother curve where low values yield slices much sooner
-    num_slices = int((val**0.5) * 4)
+    # Gives a smoother curve where low values yield slices much sooner; the first slice
+    # appears as soon as the effect acts (SLICE_ACTIVE_FROM_KNOB)
+    num_slices = max(1, int((val**0.5) * 4))
 
     for _ in range(int(num_slices)):
         y, height, shift = (
@@ -2740,17 +2837,19 @@ def apply_slice_glitch(raw_knob, current_time):
 
 def apply_signal_drift(raw_knob, current_time):
     global STATIC_V_BUFFER
-    drift = n(raw_knob)
-    if drift <= 0:
+    if not _acts_signal_drift(raw_knob):
         return
+    drift = n(raw_knob)
     h, w = MUTABLE_PROCESSING_BUFFER.shape[:2]
     if STATIC_V_BUFFER is None:
         STATIC_V_BUFFER = np.zeros(
             (h // 2, w) + MUTABLE_PROCESSING_BUFFER.shape[2:],
             dtype=MUTABLE_PROCESSING_BUFFER.dtype,
         )
-    if drift > 0.85:
-        v_shift = int(((drift - 0.85) / 0.15) * (h // 2))
+    if drift > DRIFT_ROLL_ABOVE:
+        v_shift = int(
+            ((drift - DRIFT_ROLL_ABOVE) / (1.0 - DRIFT_ROLL_ABOVE)) * (h // 2)
+        )
         if v_shift:
             STATIC_V_BUFFER[:v_shift] = MUTABLE_PROCESSING_BUFFER[:v_shift]
             MUTABLE_PROCESSING_BUFFER[:-v_shift] = MUTABLE_PROCESSING_BUFFER[v_shift:]
@@ -2759,7 +2858,7 @@ def apply_signal_drift(raw_knob, current_time):
             MUTABLE_PROCESSING_BUFFER[
                 max(0, seam - thickness // 2) : min(h, seam + thickness // 2)
             ] = 0
-    amount = int(drift * DRIFT_MAX_AMOUNT * 0.6)
+    amount = int(drift * DRIFT_MAX_AMOUNT * DRIFT_AMOUNT_SCALE)
     for i in range(h):
         shift = int(math.sin(i * 0.05 + current_time * 0.15) * amount)
         if shift > 0:
@@ -2777,14 +2876,15 @@ def apply_signal_drift(raw_knob, current_time):
 
 
 def apply_melt(raw_knob, current_time):
-    apply_melt_pass(n(raw_knob), current_time)
+    if _acts_melt(raw_knob):
+        apply_melt_pass(n(raw_knob), current_time)
 
 
 def apply_ascii_matrix(raw_knob, current_time):
     global SPARK_COUNTER, SPARK_INTERVAL
-    ascii_val = n(raw_knob)
-    if ascii_val <= 0.02:
+    if not _acts_ascii_matrix(raw_knob):
         return
+    ascii_val = n(raw_knob)
     cv2.cvtColor(MUTABLE_PROCESSING_BUFFER, cv2.COLOR_BGR2GRAY, dst=ASCII_UPRES_GRAY)
     ASCII_UPRES_GRAY[:] = clahe.apply(ASCII_UPRES_GRAY)
     cv2.resize(
@@ -2859,7 +2959,7 @@ def apply_crt_overlay():
 # =========================================================================
 # Colour effect: it does not move pixels. Blacks stay untouched; every other tone becomes a
 # neon colour of the Melt palette (dark tones get the deep hues, bright tones the bright ones);
-# the borders between tone bands get a 1-3 px outline that is broken up, jittered and flickers,
+# the borders between tone bands get a 1-3 px outline that is broken up, can be shifted sideways (jitter, off at 0) and flashes,
 # so it looks like damaged video, not like pop art.
 #
 # Per frame it makes a fixed number of large OpenCV calls (about 35) in preallocated buffers,
@@ -2919,7 +3019,15 @@ class PosterizeEngine:
         }
         self.drop_small = z(H // sp, W // sp)
         self.flick_small = z(H // sp, W // sp)
+        # Colour of each flash section (neon flashes). Only the sections that flash are written
+        # each frame; the mask decides which of them are used, so stale colours never show.
+        self.flick_col_small = z3(H // sp, W // sp)
+        self.flick_col_full = z3()
         self.palette = _posterize_palette()
+        self.knob_zones = self._parse_knob_modes()
+        self._mode_x = (
+            None  # last knob position the mode selection followed (hysteresis)
+        )
         self.curve_x = np.array([p[0] for p in POSTERIZE_CURVE], dtype=np.float64)
         self.curve_y = np.array([p[1] for p in POSTERIZE_CURVE], dtype=np.float64)
         self._lut_key = None
@@ -2984,9 +3092,102 @@ class PosterizeEngine:
             self.solar_lut[:, 0] = np.clip(sol, 0, 255).astype(np.uint8)
             self._lut_key = key
 
-    def _mode_weights(self, t):
-        """-> [(mode, weight), ...]: what to show now (schedule, cross-fade, a+b overlays)."""
-        sched = POSTERIZE_MODE_SCHEDULE
+    @staticmethod
+    def _mode_name_ok(name):
+        parts = [p.strip() for p in str(name).split("+")]
+        return 1 <= len(parts) <= 2 and all(
+            p in ("bands", "gradient", "thermal") for p in parts
+        )
+
+    def _parse_knob_modes(self):
+        """POSTERIZE_KNOB_MODES -> [(low, high, mode), ...], or None when the table is not usable
+        (a WARNING says why; the colour mode is then POSTERIZE_COLOR_MODE)."""
+        for name in [POSTERIZE_COLOR_MODE] + [m for m, _d in POSTERIZE_MODE_SCHEDULE]:
+            if not self._mode_name_ok(name):
+                logger.warning(
+                    "[CONFIG] Posterize: %r is not a colour mode (bands, gradient, thermal, or two joined by +); it is drawn as 'bands'",
+                    name,
+                )
+        if POSTERIZE_MODE_SOURCE not in ("knob", "schedule", "fixed"):
+            logger.warning(
+                "[CONFIG] POSTERIZE_MODE_SOURCE=%r must be 'knob', 'schedule' or 'fixed'; 'fixed' is used",
+                POSTERIZE_MODE_SOURCE,
+            )
+        if POSTERIZE_MODE_SOURCE != "knob":
+            return None
+        zones = []
+        try:
+            for entry in POSTERIZE_KNOB_MODES:
+                low, high, mode = float(entry[0]), float(entry[1]), entry[2]
+                if not (0.0 <= low < high <= 1.0):
+                    raise ValueError(
+                        f"{entry!r}: needs 0 <= lower edge < upper edge <= 1"
+                    )
+                if not self._mode_name_ok(mode):
+                    raise ValueError(f"{entry!r}: unknown mode {mode!r}")
+                zones.append((low, high, mode))
+            if not zones:
+                raise ValueError("the table is empty")
+            if min(z[0] for z in zones) > 0.0 or max(z[1] for z in zones) < 1.0:
+                logger.warning(
+                    "[CONFIG] POSTERIZE_KNOB_MODES does not cover the whole knob (0 to 1); the nearest zone is used outside it"
+                )
+        except Exception as exc:
+            logger.warning(
+                "[CONFIG] POSTERIZE_KNOB_MODES is not usable (%s); POSTERIZE_COLOR_MODE %r is used",
+                exc,
+                POSTERIZE_COLOR_MODE,
+            )
+            return None
+        return zones
+
+    @staticmethod
+    def _add_mode(out, name, weight):
+        """Adds `name` (a mode, or "a+b" = two modes shown mixed) with `weight` to out."""
+        if weight <= 0:
+            return
+        parts = [p.strip() for p in name.split("+")][:2]
+        if len(parts) == 2:
+            m = min(max(POSTERIZE_OVERLAY_MIX, 0.0), 1.0)
+            shares = [(parts[0], 1.0 - m), (parts[1], m)]
+        else:
+            shares = [(parts[0], 1.0)]
+        for p, sh in shares:
+            if sh > 0:
+                out[p] = out.get(p, 0.0) + weight * sh
+
+    def _knob_weights(self, x):
+        """Knob position x (0-1) -> {mode: weight}. One zone = that mode. Overlapping zones are
+        blended: a zone's weight is how far x is from the nearest edge of that zone."""
+        hyst = POSTERIZE_KNOB_MODE_HYSTERESIS
+        if self._mode_x is not None and abs(x - self._mode_x) < hyst:
+            x = self._mode_x
+        else:
+            self._mode_x = x
+        inside = [z for z in self.knob_zones if z[0] <= x <= z[1]]
+        out = {}
+        if not inside:  # a gap or outside the table: the nearest edge decides
+            inside = [
+                min(self.knob_zones, key=lambda z: min(abs(x - z[0]), abs(x - z[1])))
+            ]
+            self._add_mode(out, inside[0][2], 1.0)
+        elif len(inside) == 1:
+            self._add_mode(out, inside[0][2], 1.0)
+        else:
+            depth = [min(x - z[0], z[1] - x) for z in inside]
+            total = sum(depth)
+            if total <= 0:  # exactly on a shared edge: the first zone
+                self._add_mode(out, inside[0][2], 1.0)
+            else:
+                for z, d in zip(inside, depth):
+                    self._add_mode(out, z[2], d / total)
+        return list(out.items()) or [("bands", 1.0)]
+
+    def _mode_weights(self, t, knob_x=0.0):
+        """-> [(mode, weight), ...]: what to show now (knob zones, schedule, cross-fade, a+b overlays)."""
+        if self.knob_zones is not None:
+            return self._knob_weights(knob_x)
+        sched = POSTERIZE_MODE_SCHEDULE if POSTERIZE_MODE_SOURCE == "schedule" else ()
         if not sched:
             cur, nxt, w = POSTERIZE_COLOR_MODE, None, 0.0
         else:
@@ -3003,23 +3204,9 @@ class PosterizeEngine:
                 nxt = sched[(i + 1) % len(sched)][0]
                 w = 1.0 - left / fade
         out = {}
-
-        def add(name, weight):
-            if weight <= 0:
-                return
-            parts = [p.strip() for p in name.split("+")][:2]
-            if len(parts) == 2:
-                m = min(max(POSTERIZE_OVERLAY_MIX, 0.0), 1.0)
-                shares = [(parts[0], 1.0 - m), (parts[1], m)]
-            else:
-                shares = [(parts[0], 1.0)]
-            for p, sh in shares:
-                if sh > 0:
-                    out[p] = out.get(p, 0.0) + weight * sh
-
-        add(cur, 1.0 - w)
+        self._add_mode(out, cur, 1.0 - w)
         if nxt is not None:
-            add(nxt, w)
+            self._add_mode(out, nxt, w)
         return list(out.items()) or [("bands", 1.0)]
 
     def _fill(self, mode, dst, detail):
@@ -3210,7 +3397,9 @@ class PosterizeEngine:
         dropout = (
             POSTERIZE_DROPOUT_LOW + (POSTERIZE_DROPOUT_HIGH - POSTERIZE_DROPOUT_LOW) * s
         )
-        jitter = int(round(s * POSTERIZE_JITTER_MAX_PX))
+        jitter = int(
+            round(s * POSTERIZE_JITTER_MAX_PX)
+        )  # 0 = the sideways shift is skipped
         if POSTERIZE_ROTATE_SECONDS > 0 and len(self.palette) > 0:
             rotation = int(current_time / POSTERIZE_ROTATE_SECONDS) % len(self.palette)
         else:
@@ -3232,12 +3421,12 @@ class PosterizeEngine:
             cv2.addWeighted(
                 self.g_half, 1.0, noise, amp / 255.0, -amp / 2.0, dst=self.g_half
             )
-        if POSTERIZE_SOLARIZE:  # NEW: fold the tone curve before bands and colours
+        if POSTERIZE_SOLARIZE:  # fold the tone curve before bands and colours
             cv2.LUT(self.g_half, self.solar_lut, dst=self.g_half)
         cv2.LUT(self.g_half, self.band_lut, dst=self.band_half)
 
         # 2. neon fill: band -> palette colour, modulated by the original brightness
-        parts = self._mode_weights(current_time)
+        parts = self._mode_weights(current_time, raw_knob / 1023.0)
         self._fill(parts[0][0], self.neon_half, detail)
         acc = parts[0][1]
         for mode, w in parts[1:]:  # cross-fade / overlay: blend further fills in
@@ -3258,7 +3447,7 @@ class PosterizeEngine:
         cv2.resize(
             self.band_half, (W, H), dst=self.band_full, interpolation=cv2.INTER_NEAREST
         )
-        if POSTERIZE_HALFTONE and s >= POSTERIZE_HALFTONE_FROM:  # NEW: dot screen
+        if POSTERIZE_HALFTONE and s >= POSTERIZE_HALFTONE_FROM:  # dot screen
             self._halftone(bands)
 
         # 3. mix with the original; blacks untouched, a narrow ramp mixes half and half
@@ -3271,7 +3460,7 @@ class PosterizeEngine:
         cv2.copyTo(frame, self.black, self.poster)
         cv2.bitwise_not(self.black, dst=self.nonblack)
 
-        # 4. outlines on the tone borders: broken sections, sideways jitter, white-hot flicker
+        # 4. outlines on the tone borders: broken sections, sideways jitter, flashing sections
         cv2.dilate(self.band_full, self.kernels[px], dst=self.edge_tmp)
         cv2.compare(self.edge_tmp, self.band_full, cv2.CMP_NE, dst=self.edge)
         self.drop_small[:] = (self.rng.random(self.drop_small.shape) >= dropout) * 255
@@ -3279,12 +3468,17 @@ class PosterizeEngine:
             self.drop_small, (W, H), dst=self.drop_full, interpolation=cv2.INTER_NEAREST
         )
         cv2.bitwise_and(self.edge, self.drop_full, dst=self.edge)
-        offsets = np.repeat(self.rng.integers(-jitter, jitter + 1, H // 4), 4).astype(
-            np.float32
-        )
-        np.add(self.xs, offsets[:, None], out=self.mapx)
-        cv2.remap(self.edge, self.mapx, self.mapy, cv2.INTER_NEAREST, dst=self.edge_tmp)
-        cv2.bitwise_and(self.edge_tmp, self.nonblack, dst=self.edge_tmp)
+        if jitter > 0:
+            offsets = np.repeat(
+                self.rng.integers(-jitter, jitter + 1, H // 4), 4
+            ).astype(np.float32)
+            np.add(self.xs, offsets[:, None], out=self.mapx)
+            cv2.remap(
+                self.edge, self.mapx, self.mapy, cv2.INTER_NEAREST, dst=self.edge_tmp
+            )
+            cv2.bitwise_and(self.edge_tmp, self.nonblack, dst=self.edge_tmp)
+        else:  # no sideways shift: the outline is the edge itself (same picture, no remap)
+            cv2.bitwise_and(self.edge, self.nonblack, dst=self.edge_tmp)
 
         style = outline_style or POSTERIZE_OUTLINE_STYLE
 
@@ -3296,19 +3490,37 @@ class PosterizeEngine:
         else:
             outline_colour = self.white
         cv2.copyTo(outline_colour, self.edge_tmp, self.poster)
-        if POSTERIZE_EDGE_GLOW and s >= POSTERIZE_GLOW_FROM:  # NEW: halo + neon core
+        if POSTERIZE_EDGE_GLOW and s >= POSTERIZE_GLOW_FROM:  # halo + neon core
             self._edge_glow(px)
-        self.flick_small[:] = (
-            self.rng.random(self.flick_small.shape) < POSTERIZE_FLICKER_PROB
-        ) * 255
-        cv2.resize(
-            self.flick_small,
-            (W, H),
-            dst=self.flick_full,
-            interpolation=cv2.INTER_NEAREST,
-        )
-        cv2.bitwise_and(self.edge_tmp, self.flick_full, dst=self.wmask)
-        cv2.copyTo(self.white, self.wmask, self.poster)
+        if POSTERIZE_FLICKER_ENABLED and POSTERIZE_FLICKER_PROB > 0:
+            self.flick_small[:] = (
+                self.rng.random(self.flick_small.shape) < POSTERIZE_FLICKER_PROB
+            ) * 255
+            cv2.resize(
+                self.flick_small,
+                (W, H),
+                dst=self.flick_full,
+                interpolation=cv2.INTER_NEAREST,
+            )
+            cv2.bitwise_and(self.edge_tmp, self.flick_full, dst=self.wmask)
+            flash_colour = self.white
+            if POSTERIZE_FLICKER_COLOUR == "neon":
+                lit = np.flatnonzero(
+                    self.flick_small
+                )  # the sections that flash this frame
+                if lit.size:
+                    cells = self.flick_col_small.reshape(-1, 3)  # a view, not a copy
+                    cells[lit] = self.palette[
+                        self.rng.integers(0, len(self.palette), lit.size)
+                    ]
+                    cv2.resize(
+                        self.flick_col_small,
+                        (W, H),
+                        dst=self.flick_col_full,
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                    flash_colour = self.flick_col_full
+            cv2.copyTo(flash_colour, self.wmask, self.poster)
 
         np.copyto(frame, self.poster)
 
@@ -3318,12 +3530,90 @@ _POSTER = PosterizeEngine() if "posterize" not in DISABLED_EFFECTS else None
 
 def apply_posterize(raw_knob, current_time, ascii_active=False):
     """Posterize entry point. raw_knob 0-1023."""
+    # While the ASCII effect is acting (on whichever knob it is attached to, in any processing
+    # order) the outlines glow; otherwise they use POSTERIZE_OUTLINE_STYLE.
     outline_style = "glow" if ascii_active else POSTERIZE_OUTLINE_STYLE
-    outline_detail = 0.95 if ascii_active else None
-    # outline_detail = 0.37 if ascii_active else None
+    outline_detail = POSTERIZE_ASCII_DETAIL if ascii_active else None
     _POSTER.step(
         MUTABLE_PROCESSING_BUFFER, raw_knob, current_time, outline_style, outline_detail
     )
+
+
+# =========================================================================
+# EFFECT ACTIVITY: acting(effect, raw_knob)
+# =========================================================================
+# One question, one answer: does this effect really change the picture at this knob value?
+# raw_knob is 0-1023 after the effect's knob window. The handlers use these functions as their
+# early return, the statistics use acting() (get_active_effects) and Posterize uses it to see
+# whether ASCII is on. The numbers are the tunables in EFFECT ACTIVITY and each effect's own
+# tunables, so there is no second copy that can drift.
+
+
+def _acts_pixellation(raw):
+    return n(raw) > PIXELLATION_ACTIVE_ABOVE
+
+
+def _acts_ascii_matrix(raw):
+    return n(raw) > ASCII_ACTIVE_ABOVE
+
+
+def _acts_melt(raw):
+    return n(raw) > MELT_ACTIVE_ABOVE
+
+
+def _acts_chroma_shift(raw):
+    return n(raw) > CHROMA_ACTIVE_ABOVE
+
+
+def _acts_slice_glitch(raw):
+    return raw >= SLICE_ACTIVE_FROM_KNOB
+
+
+def _acts_data_mosh(raw):
+    # Strength is the knob squared; below MOSH_DORMANT_BELOW every mosh is cancelled at once.
+    return n(raw) ** 2 >= MOSH_DORMANT_BELOW
+
+
+def _acts_signal_drift(raw):
+    # The sideways shift is int(sin * amount), which is 0 for an amount below 2; the vertical
+    # roll near the top of the knob acts whatever the amount is.
+    drift = n(raw)
+    if drift > DRIFT_ROLL_ABOVE:
+        return True
+    return int(drift * DRIFT_MAX_AMOUNT * DRIFT_AMOUNT_SCALE) >= DRIFT_MIN_AMOUNT
+
+
+def _acts_packet_corruption(raw):
+    # New damage only spawns above CORRUPTION_SPAWN_ABOVE. The handler itself keeps its own
+    # gate (CORRUPTION_CLEAR_BELOW), because that one also clears old damage.
+    return n(raw) > CORRUPTION_SPAWN_ABOVE
+
+
+def _acts_posterize(raw):
+    # The first non-zero point of POSTERIZE_CURVE (the same curve the effect uses).
+    xs = [p[0] for p in POSTERIZE_CURVE]
+    ys = [p[1] for p in POSTERIZE_CURVE]
+    return float(np.interp(raw, xs, ys)) > 0.0
+
+
+_ACTING = {
+    "pixellation": _acts_pixellation,
+    "ascii_matrix": _acts_ascii_matrix,
+    "melt": _acts_melt,
+    "chroma_shift": _acts_chroma_shift,
+    "slice_glitch": _acts_slice_glitch,
+    "data_mosh": _acts_data_mosh,
+    "signal_drift": _acts_signal_drift,
+    "packet_corruption": _acts_packet_corruption,
+    "posterize": _acts_posterize,
+}
+
+
+def acting(effect, raw_knob):
+    # True when `effect` really changes the picture at this knob value (0-1023, after its
+    # window). An effect with no entry in _ACTING (a startup warning says so) counts from knob 1.
+    check = _ACTING.get(effect)
+    return check(raw_knob) if check is not None else raw_knob > 0
 
 
 EFFECT_HANDLERS = {
@@ -3406,7 +3696,11 @@ def rebuild_effect_plan():
         if effect in knob_of
     ]
     _ASCII_ATTACHMENT = next(
-        ((knob, window) for effect, _h, knob, window, _s in _EFFECT_PLAN if effect == "ascii_matrix"),
+        (
+            (knob, window)
+            for effect, _h, knob, window, _s in _EFFECT_PLAN
+            if effect == "ascii_matrix"
+        ),
         None,
     )
     # The label names the first effect attached to the knob, including one that the startup
@@ -3435,13 +3729,13 @@ def get_knob_labels():
 
 
 def _ascii_is_active(knobs):
-    # True while the ASCII effect is switched on: it is in the plan and the knob it is attached
-    # to (after its window) is above the same 0.02 dormancy threshold the effect itself uses.
-    # Posterize uses this to switch its outlines to glow.
+    # True while the ASCII effect is acting: it is in the plan (not switched off at startup) and
+    # the knob it is attached to, after its window, is where ASCII acts (acting()). Posterize
+    # uses this to switch its outlines to glow, whichever knob ASCII is on and in any order.
     if _ASCII_ATTACHMENT is None:
         return False
     knob, window = _ASCII_ATTACHMENT
-    return n(_windowed_raw(knobs[knob], window)) > 0.02
+    return acting("ascii_matrix", _windowed_raw(knobs[knob], window))
 
 
 def get_knob_failures():
@@ -3476,18 +3770,20 @@ rebuild_effect_plan()
 
 def _check_effect_tables():
     # An effect missing from one of these tables silently falls back to a default
-    # (cost weight 0, its raw name as label or statistics name, activity threshold 10).
+    # (cost weight 0, its raw name as label or statistics name, activity from knob 1).
     for table_name in (
         "EFFECT_COST_WEIGHT",
         "EFFECT_LABELS",
         "EFFECT_STATS_NAME",
-        "EFFECT_STATS_ACTIVE_FROM",
+        "_ACTING",
     ):
         table = globals()[table_name]
         for effect in EFFECT_HANDLERS:
             if effect not in table:
                 logger.warning(
-                    "[CONFIG] %s has no entry for %r; a default is used", table_name, effect
+                    "[CONFIG] %s has no entry for %r; a default is used",
+                    table_name,
+                    effect,
                 )
 
 
@@ -3500,7 +3796,8 @@ def get_active_effects(knobs):
     names = []
     for effect, _handler, knob, window, _skip in _EFFECT_PLAN:
         raw = knobs[knob] if knob < len(knobs) else 0
-        if _windowed_raw(raw, window) >= EFFECT_STATS_ACTIVE_FROM.get(effect, 10):
+        windowed = _windowed_raw(raw, window)
+        if windowed >= EFFECT_STATS_MIN_KNOB and acting(effect, windowed):
             names.append(EFFECT_STATS_NAME.get(effect, effect))
     return names
 
@@ -3578,6 +3875,11 @@ def _write_naked_capture(disk_id, frame):
 
 _cleanup_guard = threading.Lock()
 _COLOR_FILE_RE = re.compile(r"([0-9]{1,20})_color\.jpg")
+_CLEAN_FILE_RE = re.compile(r"([0-9]{1,20})_clean\.jpg")
+# Clean photos that piled up before they followed their capture into naked_archive are moved
+# in small steps (this many per cleanup pass), so no single capture's cleanup is slowed down.
+NAKED_SWEEP_MAX_PER_PASS = 200
+_naked_sweep_done = False
 
 
 def _protected_capture_ids():
@@ -3594,7 +3896,7 @@ def _protected_capture_ids():
     return protected
 
 
-def _archive_color_file(src, dst):
+def _archive_file(src, dst):
     # Copy to a temp name in the archive, fsync, os.replace over the destination, then remove
     # the source. Any failure leaves the source and the old archive copy untouched.
     tmp = f"{dst}.{os.getpid()}.{threading.get_ident()}.tmp"
@@ -3612,25 +3914,96 @@ def _archive_color_file(src, dst):
     os.remove(src)
 
 
+def _move_clean_to_archive(ts):
+    # Moves <ts>_clean.jpg from captures_naked/ to naked_archive/. Returns True when it moved,
+    # False when there was no clean file or the move failed (a failure is logged and the file
+    # stays where it is).
+    src = os.path.join(NAKED_DIR, f"{ts}_clean.jpg")
+    if not os.path.exists(src):
+        return False  # older captures have none: normal
+    try:
+        _archive_file(src, os.path.join(NAKED_ARCHIVE_DIR, f"{ts}_clean.jpg"))
+        return True
+    except Exception as move_err:
+        logger.warning(
+            "[ARCHIVE] Could not move clean photo %s_clean.jpg to %s: %s (left in place)",
+            ts,
+            NAKED_ARCHIVE_DIR,
+            move_err,
+        )
+        return False
+
+
+def _sweep_naked_backlog():
+    # Clean photos whose colour file is no longer in captures/ (archived before clean photos
+    # followed their capture, or the colour file never got written) move to naked_archive/,
+    # except those of protected captures. At most NAKED_SWEEP_MAX_PER_PASS per call; it keeps
+    # being called by the cleanup until nothing is left, then it stops for this run.
+    global _naked_sweep_done
+    if _naked_sweep_done:
+        return
+    try:
+        names = sorted(os.listdir(NAKED_DIR))
+    except OSError as exc:
+        logger.warning("[ARCHIVE] Could not list %s: %s", NAKED_DIR, exc)
+        return
+    protected = None
+    moved = failed = 0
+    more = False
+    for name in names:
+        match = _CLEAN_FILE_RE.fullmatch(name)
+        if match is None:
+            continue
+        ts = match.group(1)
+        if os.path.exists(os.path.join(CAPTURE_DIR, f"{ts}_color.jpg")):
+            continue  # its capture is still in captures/: it goes with it later
+        if protected is None:
+            protected = _protected_capture_ids()
+        if ts in protected:
+            continue
+        if moved + failed >= max(1, int(NAKED_SWEEP_MAX_PER_PASS)):
+            more = True
+            break
+        if _move_clean_to_archive(ts):
+            moved += 1
+        else:
+            failed += 1
+    if not more:
+        _naked_sweep_done = True
+    if moved or failed:
+        logger.info(
+            "[ARCHIVE] Clean photo backlog: moved %d to %s, %d could not be moved%s",
+            moved,
+            NAKED_ARCHIVE_DIR,
+            failed,
+            ", more to follow" if more else "",
+        )
+
+
 def cleanup_sessions(limit=100):
     if not _cleanup_guard.acquire(blocking=False):
         return  # another cleanup is running
     try:
+        _sweep_naked_backlog()
         ids = sorted(
-            (m.group(1) for f in os.listdir(CAPTURE_DIR) if (m := _COLOR_FILE_RE.fullmatch(f))),
+            (
+                m.group(1)
+                for f in os.listdir(CAPTURE_DIR)
+                if (m := _COLOR_FILE_RE.fullmatch(f))
+            ),
             key=int,
         )
         if len(ids) <= limit:
             return
         protected = _protected_capture_ids()
-        archived = skipped = 0
+        archived = skipped = clean_moved = 0
         for ts in ids[:-limit]:
             if ts in protected:
                 skipped += 1
                 continue
             name = f"{ts}_color.jpg"
             try:
-                _archive_color_file(
+                _archive_file(
                     os.path.join(CAPTURE_DIR, name), os.path.join(ARCHIVE_DIR, name)
                 )
             except Exception as move_err:
@@ -3639,6 +4012,10 @@ def cleanup_sessions(limit=100):
                 )
                 continue
             archived += 1
+            # The clean photo follows its colour file; if that move fails it stays in
+            # captures_naked/ and the backlog sweep tries again at the next start.
+            if _move_clean_to_archive(ts):
+                clean_moved += 1
             # The other files of a capture go only together with its colour file.
             for path in (
                 os.path.join(CAPTURE_DIR, f"{ts}_bw.jpg"),
@@ -3653,9 +4030,11 @@ def cleanup_sessions(limit=100):
                     logger.warning("[ARCHIVE] Could not remove %s: %s", path, rm_err)
         if archived or skipped:
             logger.info(
-                "[ARCHIVE] Relocated %d excess captures to %s (kept newest %d, %d left in place because they are pending, uploading, active or printing)",
+                "[ARCHIVE] Relocated %d excess captures to %s and %d clean photos to %s (kept newest %d, %d left in place because they are pending, uploading, active or printing)",
                 archived,
                 ARCHIVE_DIR,
+                clean_moved,
+                NAKED_ARCHIVE_DIR,
                 limit,
                 skipped,
             )
@@ -3778,7 +4157,9 @@ def _store_capture(disk_id, color_mat, bw_mat, active_knobs, naked_mat):
             queued = "no black and white file"
         if queued != "queued":
             logger.error(
-                "[PRINTER] Could not queue session %s for printing (%s)", disk_id, queued
+                "[PRINTER] Could not queue session %s for printing (%s)",
+                disk_id,
+                queued,
             )
             session_update(
                 disk_id,
@@ -4110,7 +4491,9 @@ def print_worker():
         except queue.Empty:
             continue
         global PRINT_JOB_STARTED
-        PRINT_JOB_STARTED = time.monotonic()  # the health monitor watches for a job that never ends
+        PRINT_JOB_STARTED = (
+            time.monotonic()
+        )  # the health monitor watches for a job that never ends
         try:
             _run_print_job(ts, source)
         except Exception:
@@ -4417,7 +4800,10 @@ def _upload_processed(http, ts, slug, recorded):
         logger.info("[UPLOAD] Session %s uploaded (fileId %s)", ts, detail)
         if _clean_stage_needed(ts):
             threading.Thread(
-                target=_clean_upload_job, args=(ts, slug), name="CleanUpload", daemon=True
+                target=_clean_upload_job,
+                args=(ts, slug),
+                name="CleanUpload",
+                daemon=True,
             ).start()
             return True
         return False
@@ -4437,10 +4823,14 @@ def _upload_processed(http, ts, slug, recorded):
         )
     elif result == "rejected":
         if note_rejection(ts) >= UPLOAD_REJECT_LIMIT and recorded:
-            ledger_to_unresolved(ts, slug, f"rejected {UPLOAD_REJECT_LIMIT} times: {detail}")
+            ledger_to_unresolved(
+                ts, slug, f"rejected {UPLOAD_REJECT_LIMIT} times: {detail}"
+            )
     if not recorded:
         try:
-            ledger_add(ts, slug)  # safety net: the registration at capture time had failed
+            ledger_add(
+                ts, slug
+            )  # safety net: the registration at capture time had failed
         except Exception as fallback_err:
             logger.critical(
                 "[OFFLINE CACHE] Could not record session %s in the pending list: %s",
@@ -4481,7 +4871,9 @@ def upload_queue_worker():
                     continue
                 slug = entry.slug
             if not claim_upload(ts):
-                logger.info("[UPLOAD] Session %s is already being uploaded; skipping", ts)
+                logger.info(
+                    "[UPLOAD] Session %s is already being uploaded; skipping", ts
+                )
                 continue
             claimed = True
             if entry is not None and entry.clean_only:
@@ -4635,7 +5027,9 @@ def background_loop():
 
             if should_encode:
                 # The preview is only scaled and encoded when it is actually used.
-                stream_jpeg_quality = max(35, min(65, int(65 - (effect_intensity * 30))))
+                stream_jpeg_quality = max(
+                    35, min(65, int(65 - (effect_intensity * 30)))
+                )
                 quality = stream_jpeg_quality if _viewers > 0 else 20
 
                 h, w = UI_DISPLAY_BUFFER.shape[:2]
@@ -4922,17 +5316,31 @@ def generate_frames():
 # LIFECYCLE TUNABLES
 SHUTDOWN_JOIN_BUDGET = 10.0  # seconds all workers together get to finish at shutdown
 HEALTH_CHECK_INTERVAL = 1.0  # seconds between health checks
-LOOP_HEARTBEAT_MAX_AGE = 10.0  # the core loop has not completed a pass for this long = hung
-CAMERA_HEARTBEAT_MAX_AGE = 15.0  # the camera thread is stuck (a read that never returns)
+LOOP_HEARTBEAT_MAX_AGE = (
+    10.0  # the core loop has not completed a pass for this long = hung
+)
+CAMERA_HEARTBEAT_MAX_AGE = (
+    15.0  # the camera thread is stuck (a read that never returns)
+)
 DISPLAY_HEARTBEAT_MAX_AGE = 15.0  # the screen loop is stuck
 PRINT_STUCK_SECONDS = 120.0  # one print job running this long = stuck printer
-FAULT_WAIT_FOR_LIVE = 30.0  # a visitor's session is not interrupted for a thread problem
+FAULT_WAIT_FOR_LIVE = (
+    30.0  # a visitor's session is not interrupted for a thread problem
+)
 #                             unless the problem lasts this long
-HARD_EXIT_GRACE = 15.0  # after a fault request the process is ended from here if it is still up
+HARD_EXIT_GRACE = (
+    15.0  # after a fault request the process is ended from here if it is still up
+)
 #                        (must be longer than SHUTDOWN_JOIN_BUDGET, or it cuts the orderly shutdown short)
-LOOP_FAULT_LIMIT = 30  # consecutive failed passes of the core loop before the booth restarts
-POWER_ACTION_CANCEL_SECONDS = 30.0  # a power action that systemd has not carried out by then is cancelled
-WEB_SELF_CHECK_ENABLED = True  # the monitor asks the booth's own web server /ping now and then
+LOOP_FAULT_LIMIT = (
+    30  # consecutive failed passes of the core loop before the booth restarts
+)
+POWER_ACTION_CANCEL_SECONDS = (
+    30.0  # a power action that systemd has not carried out by then is cancelled
+)
+WEB_SELF_CHECK_ENABLED = (
+    True  # the monitor asks the booth's own web server /ping now and then
+)
 WEB_SELF_CHECK_INTERVAL = 10.0
 WEB_SELF_CHECK_FAILURES = 3  # misses in a row that count as a fault
 WEB_SELF_CHECK_URL = "http://127.0.0.1:5000/ping"
@@ -5074,7 +5482,9 @@ def _load_previous_fault():
 def _terminal_rescue():
     # Hands the console back to a login prompt (the unit has Conflicts=getty@tty1.service, so
     # nothing else starts it). Every command is non-interactive and has a timeout.
-    logger.info("[SHUTDOWN TTY RESCUE] Resetting console input streams and starting a login prompt on tty1")
+    logger.info(
+        "[SHUTDOWN TTY RESCUE] Resetting console input streams and starting a login prompt on tty1"
+    )
     for argv in (
         ["stty", "sane"],
         ["sudo", "-n", "kbd_mode", "-a"],
@@ -5083,7 +5493,11 @@ def _terminal_rescue():
     ):
         try:
             result = subprocess.run(
-                argv, check=False, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+                argv,
+                check=False,
+                timeout=5,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
             )
             if result.returncode != 0:
                 logger.warning(
@@ -5121,7 +5535,9 @@ def _shutdown_steps():
             alive = join_threads(selector(), left)
             if alive:
                 logger.warning(
-                    "[SHUTDOWN] Still running after the wait (%s): %s", label, ", ".join(alive)
+                    "[SHUTDOWN] Still running after the wait (%s): %s",
+                    label,
+                    ", ".join(alive),
                 )
 
         return label, step
@@ -5131,20 +5547,27 @@ def _shutdown_steps():
             try:
                 telemetry.request_shutdown()
             except Exception as exc:
-                logger.warning("[SHUTDOWN] Failed to request the telemetry shutdown: %s", exc)
+                logger.warning(
+                    "[SHUTDOWN] Failed to request the telemetry shutdown: %s", exc
+                )
 
     # Order matters: the core loop stops first (no new captures); a capture that is being stored
     # finishes (it also queues its telemetry record); only then is telemetry told to flush; a
     # running print finishes; uploads come last because the ledger keeps whatever is unfinished.
     return [
-        join_step("core loop and camera", lambda: _threads_named("BackgroundLoop", "CameraThread")),
+        join_step(
+            "core loop and camera",
+            lambda: _threads_named("BackgroundLoop", "CameraThread"),
+        ),
         join_step(
             "capture storage and clean uploads",
             lambda: _threads_named(prefixes=("CaptureStorage-", "CleanUpload")),
         ),
         join_step(
             "telemetry",
-            lambda: _threads_named("TelemetryQueueConsumer", "TelemetryCloudSyncWorker", "TelemetryWorker"),
+            lambda: _threads_named(
+                "TelemetryQueueConsumer", "TelemetryCloudSyncWorker", "TelemetryWorker"
+            ),
             before=telemetry_request,
         ),
         join_step("printing", lambda: _threads_named("PrintWorker")),
@@ -5181,7 +5604,9 @@ def run_shutdown_sequence(budget=None):
         except Exception:
             logger.exception("[SHUTDOWN TTY RESCUE] Terminal rescue routine failed")
     else:
-        logger.info("[SHUTDOWN] No terminal rescue needed for reason '%s'", SHUTDOWN_REASON)
+        logger.info(
+            "[SHUTDOWN] No terminal rescue needed for reason '%s'", SHUTDOWN_REASON
+        )
     logger.info(
         "[SYSTEM EXIT] Teardown complete in %.1f s, exit code %d",
         time.monotonic() - started,
@@ -5220,12 +5645,18 @@ class FaultCounter:
 
 def _hard_exit(code):
     # Last resort, used when the main thread did not get out after a fault request.
-    logger.critical("[HEALTH] The shutdown did not complete; ending the process with code %d", code)
-    _record_fault(SHUTDOWN_REASON or "fault", SHUTDOWN_DETAIL or "shutdown did not complete")
+    logger.critical(
+        "[HEALTH] The shutdown did not complete; ending the process with code %d", code
+    )
+    _record_fault(
+        SHUTDOWN_REASON or "fault", SHUTDOWN_DETAIL or "shutdown did not complete"
+    )
     try:
         fault_file = _log_state.get("fault_file")
         if fault_file is not None:
-            fault_file.write("\n--- thread dump taken by the health monitor before a forced exit ---\n")
+            fault_file.write(
+                "\n--- thread dump taken by the health monitor before a forced exit ---\n"
+            )
             fault_file.flush()
             faulthandler.dump_traceback(file=fault_file, all_threads=True)
             fault_file.flush()
@@ -5266,11 +5697,23 @@ class HealthMonitor(threading.Thread):
     def _heartbeats(self):
         beats = {}
         if LOOP_HEARTBEAT is not None:
-            beats["core loop"] = (LOOP_HEARTBEAT, LOOP_HEARTBEAT_MAX_AGE, "has not completed a pass for")
+            beats["core loop"] = (
+                LOOP_HEARTBEAT,
+                LOOP_HEARTBEAT_MAX_AGE,
+                "has not completed a pass for",
+            )
         if CAMERA_HEARTBEAT is not None:
-            beats["camera thread"] = (CAMERA_HEARTBEAT, CAMERA_HEARTBEAT_MAX_AGE, "has not reported for")
+            beats["camera thread"] = (
+                CAMERA_HEARTBEAT,
+                CAMERA_HEARTBEAT_MAX_AGE,
+                "has not reported for",
+            )
         if DISPLAY_HEARTBEAT is not None:
-            beats["display loop"] = (DISPLAY_HEARTBEAT, DISPLAY_HEARTBEAT_MAX_AGE, "has not drawn a frame for")
+            beats["display loop"] = (
+                DISPLAY_HEARTBEAT,
+                DISPLAY_HEARTBEAT_MAX_AGE,
+                "has not drawn a frame for",
+            )
         started = PRINT_JOB_STARTED
         if started is not None:
             beats["print job"] = (started, PRINT_STUCK_SECONDS, "has been running for")
@@ -5304,7 +5747,10 @@ class HealthMonitor(threading.Thread):
 
     def check_once(self):
         if SHUTDOWN_EVENT.is_set():
-            if self._fault_requested_at and self.clock() - self._fault_requested_at > max(1.0, HARD_EXIT_GRACE):
+            if (
+                self._fault_requested_at
+                and self.clock() - self._fault_requested_at > max(1.0, HARD_EXIT_GRACE)
+            ):
                 self.hard_exit(EXIT_CODE or 1)
             return
         if pending_power_action():
@@ -5317,8 +5763,12 @@ class HealthMonitor(threading.Thread):
                     self.notify()
                 except Exception:
                     log_throttled(
-                        logger, logging.WARNING, "sd-notify", 600.0,
-                        "[HEALTH] Could not notify systemd", exc_info=True,
+                        logger,
+                        logging.WARNING,
+                        "sd-notify",
+                        600.0,
+                        "[HEALTH] Could not notify systemd",
+                        exc_info=True,
                     )
             return
         now = self.clock()
@@ -5336,8 +5786,12 @@ class HealthMonitor(threading.Thread):
                 self.check_once()
             except Exception:
                 log_throttled(
-                    logger, logging.ERROR, "health-monitor-fault", 60.0,
-                    "[HEALTH] The health monitor itself failed", exc_info=True,
+                    logger,
+                    logging.ERROR,
+                    "health-monitor-fault",
+                    60.0,
+                    "[HEALTH] The health monitor itself failed",
+                    exc_info=True,
                 )
             time.sleep(max(0.1, HEALTH_CHECK_INTERVAL))
 
@@ -5363,7 +5817,10 @@ def check_service_unit():
     try:
         result = subprocess.run(
             ["systemctl", "cat", SERVICE_UNIT_NAME],
-            check=False, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            check=False,
+            timeout=5,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )
         if result.returncode != 0:
             logger.warning(
@@ -5372,8 +5829,9 @@ def check_service_unit():
                 result.stderr.decode("utf-8", "replace").strip()[:120],
             )
     except Exception as exc:
-        logger.warning("[CONFIG] Could not check the systemd unit %s: %s", SERVICE_UNIT_NAME, exc)
-
+        logger.warning(
+            "[CONFIG] Could not check the systemd unit %s: %s", SERVICE_UNIT_NAME, exc
+        )
 
 
 # BACKEND ENGINE STARTING ANd OWNING ALL THE WORKERS
@@ -5395,7 +5853,9 @@ def start_backend_engine(blocking=False):
     global _engine_started
     with _engine_lock:
         if _engine_started:
-            logger.error("[SERVER] start_backend_engine was called twice; ignoring the second call")
+            logger.error(
+                "[SERVER] start_backend_engine was called twice; ignoring the second call"
+            )
             return
         _engine_started = True
 
@@ -5514,7 +5974,9 @@ def valid_capture_id(value):
 
 @app.route("/gallery")
 def gallery():
-    page = request.args.get("page", 1, type=int)  # anything that is not a number: page 1
+    page = request.args.get(
+        "page", 1, type=int
+    )  # anything that is not a number: page 1
     per_page = 12
 
     try:
@@ -5649,7 +6111,9 @@ def delete_capture(session_id):
             deleted_any = True
         clear_rejections(session_id)
     except Exception:
-        logger.exception("[GALLERY] Could not remove session %s from the ledger", session_id)
+        logger.exception(
+            "[GALLERY] Could not remove session %s from the ledger", session_id
+        )
 
     if deleted_any:
         return jsonify(
@@ -5793,6 +6257,31 @@ def _sudo_allowed(*args):
         return False, f"{type(exc).__name__}: {exc}"
 
 
+def _undo_power_change(undo_args):
+    # Runs the undo command of a power action that did not happen (for "restart with service
+    # disabled": enable the service again). WARNING when it worked, CRITICAL when it did not.
+    if not undo_args:
+        return
+    cmd = " ".join(undo_args)
+    try:
+        undone = _sudo_systemctl(*undo_args)
+    except Exception:
+        logger.critical(
+            "[POWER] Could NOT undo the earlier change: run 'sudo systemctl %s' by hand",
+            cmd,
+            exc_info=True,
+        )
+        return
+    if undone.returncode == 0:
+        logger.warning("[POWER] Undid the earlier change with 'systemctl %s'", cmd)
+    else:
+        logger.critical(
+            "[POWER] Could NOT undo the earlier change ('systemctl %s' exit %d): run it by hand",
+            cmd,
+            undone.returncode,
+        )
+
+
 def _run_power_command(args, undo_args=None):
     # Runs after the HTTP response has gone out. systemd then stops the booth with SIGTERM; the
     # announced action only tells /state and the shutdown which kind of stop it is.
@@ -5805,20 +6294,7 @@ def _run_power_command(args, undo_args=None):
         failed, detail = True, f"{type(exc).__name__}: {exc}"
     if failed:
         logger.error("[POWER] 'systemctl %s' failed: %s", " ".join(args), detail)
-        if undo_args:
-            try:
-                undone = _sudo_systemctl(*undo_args)
-                logger.critical(
-                    "[POWER] Undid the earlier change with 'systemctl %s' (exit %d)",
-                    " ".join(undo_args),
-                    undone.returncode,
-                )
-            except Exception:
-                logger.critical(
-                    "[POWER] Could NOT undo the earlier change: run 'sudo systemctl %s' by hand",
-                    " ".join(undo_args),
-                    exc_info=True,
-                )
+        _undo_power_change(undo_args)
         cancel_power_action(f"systemctl {' '.join(args)} failed")
         return
     if not SHUTDOWN_EVENT.wait(POWER_ACTION_CANCEL_SECONDS):
@@ -5827,6 +6303,9 @@ def _run_power_command(args, undo_args=None):
             " ".join(args),
             POWER_ACTION_CANCEL_SECONDS,
         )
+        # The booth is still running: the service must not stay disabled, or the next start
+        # would come up without the kiosk.
+        _undo_power_change(undo_args)
         cancel_power_action("systemd did not stop the booth in time")
 
 
@@ -5896,7 +6375,8 @@ def remote_service_disable():
         result = _sudo_systemctl("disable", unit)
         if result.returncode != 0:
             raise RuntimeError(
-                (result.stderr or result.stdout).strip()[:200] or f"exit {result.returncode}"
+                (result.stderr or result.stdout).strip()[:200]
+                or f"exit {result.returncode}"
             )
         verify = subprocess.run(
             ["systemctl", "is-enabled", unit],
@@ -5907,7 +6387,9 @@ def remote_service_disable():
         )
         state_text = (verify.stdout or "").strip()
         if state_text != "disabled":
-            raise RuntimeError(f"'systemctl is-enabled' says '{state_text or verify.stderr.strip()}'")
+            raise RuntimeError(
+                f"'systemctl is-enabled' says '{state_text or verify.stderr.strip()}'"
+            )
     except Exception as exc:
         logger.error("[POWER] Could not disable %s: %s", unit, exc)
         cancel_power_action(f"disabling {unit} failed")
@@ -5917,7 +6399,7 @@ def remote_service_disable():
     logger.warning(
         "[POWER] %s is disabled and verified. Rebooting to the console. To restore the kiosk: sudo systemctl enable %s, then reboot.",
         unit,
-        unit.replace(".service", ""),
+        unit,
     )
     threading.Thread(
         target=_run_power_command,
@@ -5928,7 +6410,7 @@ def remote_service_disable():
     return jsonify(
         {
             "status": "disabling_and_rebooting",
-            "message": "Kiosk service disabled (verified). Rebooting to the console login. To restore: sudo systemctl enable glitchbooth, then reboot.",
+            "message": f"Kiosk service disabled (verified). Rebooting to the console login. To restore: sudo systemctl enable {unit}, then reboot.",
         }
     )
 
