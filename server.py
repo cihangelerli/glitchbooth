@@ -1885,7 +1885,7 @@ def open_camera():
                 if ret and frame is not None:
                     cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
                     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
-                    cap.set(cv2.CAP_PROP_FPS, 10)
+                    cap.set(cv2.CAP_PROP_FPS, 15)
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     # --- TRACK HARDWARE NEGOTIATION ---
                     actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
