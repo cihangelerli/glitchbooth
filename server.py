@@ -760,7 +760,7 @@ POSTERIZE_SECTION_PX = (
 POSTERIZE_FRAGMENT_FROM = 0.61  # strength from which fine detail starts to break apart
 POSTERIZE_FRAGMENT_AMOUNT = 1  # grey levels of break-up noise at full strength
 POSTERIZE_ROTATE_SECONDS = (
-    5  # 0 = fixed colours; N = the colour assignment shifts every N seconds
+    7  # 0 = fixed colours; N = the colour assignment shifts every N seconds
 )
 
 # ------------------------------------------------------------------------------
