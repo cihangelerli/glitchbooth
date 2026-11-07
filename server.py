@@ -1890,13 +1890,15 @@ def open_camera():
                     # --- TRACK HARDWARE NEGOTIATION ---
                     actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                     actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    actual_fps = cap.get(cv2.CAP_PROP_FPS)
                     logger.info(
-                        "SUCCESS: V4L2 pipeline pinned to index %s | Requested %sx%s, Negotiated %sx%s",
+                        "SUCCESS: V4L2 pipeline pinned to index %s | Requested %sx%s, Negotiated %sx%s, at %s FPS",
                         index,
                         FRAME_W,
                         FRAME_H,
                         actual_w,
                         actual_h,
+                        actual_fps,
                     )
                     return cap
             cap.release()
