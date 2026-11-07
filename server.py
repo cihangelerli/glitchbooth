@@ -733,7 +733,7 @@ POSTERIZE_DETAIL_LOW = (
 )
 POSTERIZE_DETAIL_HIGH = 0.37  # ... and at full strength (faces stay readable)
 POSTERIZE_MIX_START = 0.05  # neon share at the weakest strength ...
-POSTERIZE_MIX_FULL_AT = 0.43  # ... reaching 1.0 at this strength (0-1)
+POSTERIZE_MIX_FULL_AT = 0.31  # ... reaching 1.0 at this strength (0-1)
 POSTERIZE_DROPOUT_LOW = 0.05  # share of the outline that is missing (weak) ...
 POSTERIZE_DROPOUT_HIGH = 0.01  # ... and at full strength
 POSTERIZE_JITTER_MAX_PX = (
@@ -743,7 +743,7 @@ POSTERIZE_JITTER_MAX_PX = (
 POSTERIZE_FLICKER_ENABLED = (
     True  # False = no flashing sections at all (the whole step is skipped)
 )
-POSTERIZE_FLICKER_PROB = 0.005  # share of outline sections that flash
+POSTERIZE_FLICKER_PROB = 0.05  # share of outline sections that flash
 # "neon" = each flashing section takes a random colour of the neon palette, "white" = white-hot
 POSTERIZE_FLICKER_COLOUR = "neon"
 POSTERIZE_ASCII_DETAIL = 0.95  # brightness detail kept in the neon fill while ASCII is acting (glow outlines)
@@ -751,14 +751,14 @@ POSTERIZE_ASCII_DETAIL = 0.95  # brightness detail kept in the neon fill while A
 POSTERIZE_OUTLINE_STYLE = "black"
 POSTERIZE_OUTLINE_MID_FROM = 0.85  # strength from which outlines are MID px thick
 POSTERIZE_OUTLINE_MAX_FROM = 0.99  # strength from which outlines are MAX px thick
-POSTERIZE_OUTLINE_MAX_PX = 2  # maximum outline thickness (min to mid to max)
+POSTERIZE_OUTLINE_MAX_PX = 1  # maximum outline thickness (min to mid to max)
 POSTERIZE_OUTLINE_MID_PX = 1  # mid-level outline thickness
 POSTERIZE_OUTLINE_MIN_PX = 1  # minimum outline thickness
 POSTERIZE_SECTION_PX = (
     2  # size of the dropout / flicker sections (must divide 640 and 480)
 )
 POSTERIZE_FRAGMENT_FROM = 0.61  # strength from which fine detail starts to break apart
-POSTERIZE_FRAGMENT_AMOUNT = 3  # grey levels of break-up noise at full strength
+POSTERIZE_FRAGMENT_AMOUNT = 1  # grey levels of break-up noise at full strength
 POSTERIZE_ROTATE_SECONDS = (
     5  # 0 = fixed colours; N = the colour assignment shifts every N seconds
 )

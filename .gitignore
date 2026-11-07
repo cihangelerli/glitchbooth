@@ -35,6 +35,12 @@ coverage/
 !.env.example
 capture_log.jsonl
 stats.json
+.swp
+.swo
+*.swp
+.*.swp
+*.swo
+.*.swo
 
 # Persistent storage symlinks
 logs
