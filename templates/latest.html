@@ -1,269 +1,228 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
+  <head>
+    <meta charset="utf-8" />
 
-<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-<meta charset="utf-8">
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
 
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GLITCH BOOTH TERMINAL</title>
 
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
 
-<title>GLITCH BOOTH TERMINAL</title>
+        width: 100%;
+        height: 100%;
 
-<style>
+        background: #000;
+        color: #00ff00;
 
-html,
-body{
-    margin:0;
-    padding:0;
+        font-family: Courier, monospace;
 
-    width:100%;
-    height:100%;
+        overflow: hidden;
+      }
 
-    background:#000;
-    color:#00ff00;
+      html,
+      body,
+      img,
+      div {
+        -webkit-touch-callout: none;
+        -webkit-user-select: none;
+        user-select: none;
+      }
 
-    font-family:Courier, monospace;
+      .wrap {
+        width: 90%;
+        max-width: 700px;
 
-    overflow:hidden;
-}
+        margin-left: auto;
+        margin-right: auto;
 
-html, body, img, div{ -webkit-touch-callout:none; -webkit-user-select:none; user-select:none; }
+        padding-top: 5vh;
 
-.wrap{
+        box-sizing: border-box;
+      }
 
-    width:90%;
-    max-width:700px;
+      /* HEADER */
 
-    margin-left:auto;
-    margin-right:auto;
+      .header {
+        border-bottom: 1px solid #00ff00;
 
-    padding-top:5vh;
+        padding-bottom: 10px;
 
-    box-sizing:border-box;
+        margin-bottom: 18px;
+      }
 
-}
+      /* MAIN IMAGE */
 
-/* HEADER */
+      .capture {
+        width: 100%;
 
-.header{
+        border: 1px solid #00ff00;
 
-    border-bottom:1px solid #00ff00;
+        box-sizing: border-box;
 
-    padding-bottom:10px;
+        transform: scaleX(-1); /* ADD THIS HERE to flip the captured photo */
+      }
 
-    margin-bottom:18px;
+      /* QR */
 
-}
+      .qr-wrap {
+        width: 100%;
 
-/* MAIN IMAGE */
+        text-align: center;
 
-.capture{
+        margin-top: 20px;
+      }
 
-    width:100%;
+      #qr-img {
+        width: 180px;
+        height: 180px;
 
-    border:1px solid #00ff00;
+        display: none;
 
-    box-sizing:border-box;
+        border: none;
+      }
 
-    transform: scaleX(-1); /* ADD THIS HERE to flip the captured photo */
-}
+      /* FOOTER */
 
-/* QR */
+      .footer {
+        margin-top: 20px;
 
-.qr-wrap{
+        border-top: 1px solid #00ff00;
 
-    width:100%;
+        padding-top: 10px;
+      }
 
-    text-align:center;
+      /* SMALLER DEVICES */
 
-    margin-top:20px;
+      @media screen and (max-width: 600px) {
+        #qr-img {
+          width: 140px;
+          height: 140px;
+          transform: scaleX(-1);
+        }
+      }
+    </style>
+  </head>
 
-}
-
-#qr-img{
-
-    width:180px;
-    height:180px;
-
-    display:none;
-
-    border:none;
-
-}
-
-/* FOOTER */
-
-.footer{
-
-    margin-top:20px;
-
-    border-top:1px solid #00ff00;
-
-    padding-top:10px;
-
-}
-
-/* SMALLER DEVICES */
-
-@media screen and (max-width: 600px){
-
-    #qr-img{
-
-        width:140px;
-        height:140px;
-        transform: scaleX(-1);
-
-    }
-
-}
-
-</style>
-
-</head>
-
-<body>
-
-<div class="wrap">
-
-    <div class="header">
-
+  <body>
+    <div class="wrap">
+      <div class="header">
         <div>> SYS_ID: {{ latest_id }}</div>
 
         <div>> STATUS: CAPTURE_SAVED</div>
 
         <div id="status">> INIT_UPLOADING...</div>
 
-        <div id="notice" style="display:none; color:#ff5a5a;"></div>
+        <div id="notice" style="display: none; color: #ff5a5a"></div>
+      </div>
 
-    </div>
-
-    <img
+      <img
         class="capture"
         src="/captures/{{ latest_id }}_color.jpg"
         alt="capture"
-    >
+      />
 
-    <div class="qr-wrap">
+      <div class="qr-wrap">
+        <img id="qr-img" src="" alt="qr" />
+      </div>
 
-        <img
-            id="qr-img"
-            src=""
-            alt="qr"
-        >
-
+      <div class="footer">
+        <div>> FOTOĞRAF ÇEKME MODUNA GERİ DÖNMEK İÇİN DÜĞMEYE BAS!</div>
+      </div>
     </div>
 
-    <div class="footer">
+    <script>
+      var latestFailures = 0;
 
-        <div>> PRESS BUTTON TO RETURN TO LIVE VIEW</div>
+      function updateState() {
+        var xhr = new XMLHttpRequest();
 
-    </div>
+        xhr.open("GET", "/state", true);
 
-</div>
+        /* Guard against zombie connections stalling the iPad */
+        xhr.timeout = 4000;
 
-<script>
-
-var latestFailures = 0;
-
-function updateState(){
-
-    var xhr = new XMLHttpRequest();
-
-    xhr.open('GET', '/state', true);
-
-    /* Guard against zombie connections stalling the iPad */
-    xhr.timeout = 4000;
-
-    xhr.onreadystatechange = function(){
-
-        if(xhr.readyState === 4){
-
+        xhr.onreadystatechange = function () {
+          if (xhr.readyState === 4) {
             var nextDelay = 500; /* Default fast poll rate */
 
-            if(xhr.status === 200){
+            if (xhr.status === 200) {
+              try {
+                var data = JSON.parse(xhr.responseText);
+                latestFailures = 0; /* Reset counter on success */
 
-                try{
+                var statusEl = document.getElementById("status");
+                var qrImg = document.getElementById("qr-img");
+                var noticeEl = document.getElementById("notice");
 
-                    var data = JSON.parse(xhr.responseText);
-                    latestFailures = 0; /* Reset counter on success */
-
-                    var statusEl = document.getElementById('status');
-                    var qrImg = document.getElementById('qr-img');
-                    var noticeEl = document.getElementById('notice');
-
-                    if(data.notice){
-                        noticeEl.textContent = "> " + data.notice;
-                        noticeEl.style.display = "block";
-                    } else {
-                        noticeEl.style.display = "none";
-                    }
-
-                    if(data.upload_status === "SUCCESS"){
-                        statusEl.innerHTML = "> UPLOAD_COMPLETE";
-                        qrImg.src = "/saved/" + data.latest_id + "_qr.png";
-                        qrImg.style.display = "inline";
-                    }
-                    else if(data.upload_status === "FAILED"){
-                        statusEl.innerHTML = "> CLOUD_UPLOAD_FAILED";
-                    }
-
-                    if(data.mode === "live"){
-                        window.location.href = "/";
-                        return;
-                    }
-
-                }
-                catch(err){
-                    console.log("LATEST_PARSE_ERROR:", err.message);
-                    latestFailures++;
+                if (data.notice) {
+                  noticeEl.textContent = "> " + data.notice;
+                  noticeEl.style.display = "block";
+                } else {
+                  noticeEl.style.display = "none";
                 }
 
-            } else {
-                /* Server responded with an error (500/404) or is down (status 0) */
+                if (data.upload_status === "SUCCESS") {
+                  statusEl.innerHTML = "> UPLOAD_COMPLETE";
+                  qrImg.src = "/saved/" + data.latest_id + "_qr.png";
+                  qrImg.style.display = "inline";
+                } else if (data.upload_status === "FAILED") {
+                  statusEl.innerHTML = "> CLOUD_UPLOAD_FAILED";
+                }
+
+                if (data.mode === "live") {
+                  window.location.href = "/";
+                  return;
+                }
+              } catch (err) {
+                console.log("LATEST_PARSE_ERROR:", err.message);
                 latestFailures++;
-                nextDelay = 5000; /* Drop to a 5-second penalty delay to protect Waitress */
+              }
+            } else {
+              /* Server responded with an error (500/404) or is down (status 0) */
+              latestFailures++;
+              nextDelay = 5000; /* Drop to a 5-second penalty delay to protect Waitress */
             }
 
             /* If completely blacked out for ~30 seconds, reload to clear browser cache */
-            if(latestFailures >= 60){
-                location.reload();
-                return;
+            if (latestFailures >= 60) {
+              location.reload();
+              return;
             }
 
             setTimeout(updateState, nextDelay);
+          }
+        };
 
-        }
+        /* Handle complete offline events with a 5-second backoff safety margin */
+        xhr.onerror = function () {
+          console.log("LATEST_NETWORK_ERROR");
+          latestFailures++;
+          setTimeout(updateState, 5000);
+        };
 
-    };
+        xhr.ontimeout = function () {
+          console.log("LATEST_TIMEOUT_ERROR");
+          latestFailures++;
+          setTimeout(updateState, 5000);
+        };
 
-    /* Handle complete offline events with a 5-second backoff safety margin */
-    xhr.onerror = function(){
-        console.log("LATEST_NETWORK_ERROR");
-        latestFailures++;
-        setTimeout(updateState, 5000); 
-    };
+        xhr.send();
+      }
 
-    xhr.ontimeout = function(){
-        console.log("LATEST_TIMEOUT_ERROR");
-        latestFailures++;
-        setTimeout(updateState, 5000);
-    };
+      /* KICK OFF THE CHAIN ONCE */
+      updateState();
 
-    xhr.send();
+      /* The booth returns to the live view by itself (server side); this page follows via /state. */
+    </script>
 
-}
-
-/* KICK OFF THE CHAIN ONCE */
-updateState();
-
-/* The booth returns to the live view by itself (server side); this page follows via /state. */
-
-</script>
-
-<script src="/static/audio.js"></script>
-
-</body>
+    <script src="/static/audio.js"></script>
+  </body>
 </html>

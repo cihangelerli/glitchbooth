@@ -30,7 +30,9 @@ import server
 
 logger = logging.getLogger("glitchbooth.display")
 
-logger.info("[DISPLAY INIT] Backend module imported; starting the backend engine in embedded mode")
+logger.info(
+    "[DISPLAY INIT] Backend module imported; starting the backend engine in embedded mode"
+)
 
 # Launch the backend workers and Flask API seamlessly without blocking Pygame
 # This module owns the process: it installs the signal handlers and runs the shutdown sequence.
@@ -93,7 +95,11 @@ UI_FONT_NAME, UI_FONT_SIZE = "Courier", 24
 COUNTDOWN_FONT_NAME, COUNTDOWN_FONT_SIZE = "Impact", 165
 PRINTING_FONT_NAME, PRINTING_FONT_SIZE = "Impact", 84
 NOTICE_FONT_NAME, NOTICE_FONT_SIZE, NOTICE_FONT_FALLBACK_SIZE = "Courier", 30, 34
-QR_GUIDE_FONT_NAME, QR_GUIDE_FONT_RATIO, QR_GUIDE_FONT_FALLBACK_RATIO = "Impact", 0.55, 0.6
+QR_GUIDE_FONT_NAME, QR_GUIDE_FONT_RATIO, QR_GUIDE_FONT_FALLBACK_RATIO = (
+    "Impact",
+    0.55,
+    0.6,
+)
 
 # Layout in pixels
 VIDEO_BORDER_PX = 2  # border around the video / photo
@@ -111,7 +117,9 @@ NOTICE_EDGE_GAP = 24  # gap from the top of the video, or below the PRINTING tex
 
 # Sentences. They follow the web pages (latest.html, index.html), which this file cannot see.
 UI_HEADER = f"> GLITCH BOOTH {server.BOOTH_VERSION}"
-UI_KNOB_ERROR = "HATA!"  # shown instead of the value of a knob whose effect was switched off
+UI_KNOB_ERROR = (
+    "HATA!"  # shown instead of the value of a knob whose effect was switched off
+)
 PRINTING_TEXT = "PRINTING"
 QR_GUIDE_TEXT = "QR"
 UI_INSTRUCTIONS = [
@@ -119,9 +127,10 @@ UI_INSTRUCTIONS = [
     ">  -     EFEKT                EFEKT       + ",
     "---------------------------------------------",
     "> AYARLARLA OYNA, KENDİ EFEKTİNİ YARAT,",
-    "> GLITCH ETKİSİNİ İSTEDİĞİN GİBİ AYARLA,",
     f"> DÜĞMEYE BAS, POZ VERMEK İÇİN {server.POSE_COUNTDOWN_SECONDS} SANİYEN VAR!",
-    "> GLITCH FOTOGRAFIN HIZLICA BASILACAK. :)",
+    "> GLITCH FOTOGRAFIN ve QR HIZLICA BASILACAK. :)",
+    "> FOTONU QR KODUNU KULLANARAK İNDİREBİLİRSİN.",
+    "> EFEKTSİZ FOTOĞRAFIN DA AYNI LINKTE!",
 ]
 UI_LATEST_SYS_ID = "> SYS_ID: {}"
 UI_LATEST_SAVED = "> STATUS: CAPTURE_SAVED"
@@ -380,6 +389,7 @@ def draw_notice(canvas, text, where):
         canvas.blit(surf, (box.centerx - surf.get_width() // 2, y))
         y += line_h
 
+
 # QR Guide Indicator — pre-render once at startup
 if QR_GUIDE_ENABLED:
     qr_guide_surface = pygame.Surface((QR_GUIDE_SIZE, QR_GUIDE_SIZE))
@@ -465,7 +475,9 @@ for img_path in selected_images:
         )
         ticker_surface_array.append(scaled_surf.convert())
     except Exception as err:
-        logger.warning("[DISPLAY INIT] Skipping unreadable image asset %s: %s", img_path, err)
+        logger.warning(
+            "[DISPLAY INIT] Skipping unreadable image asset %s: %s", img_path, err
+        )
 
 ticker_scroll_x = 0.0
 ticker_velocity = TICKER_SPEED
@@ -520,13 +532,17 @@ logger.info("[AUDIO INIT] Glitch audio started")
 # PRIMARY 60Hz PRESENTATION MAIN LOOP
 # ==============================================================================
 try:
-    server.DISPLAY_HEARTBEAT = time.monotonic()  # from here on the health monitor watches this loop
+    server.DISPLAY_HEARTBEAT = (
+        time.monotonic()
+    )  # from here on the health monitor watches this loop
     while not server.SHUTDOWN_EVENT.is_set():
         server.DISPLAY_HEARTBEAT = time.monotonic()
         # Handle structural Pygame inputs and physical terminal interrupts
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                logger.info("[WATCHDOG] Window close event detected. Initiating clean exit...")
+                logger.info(
+                    "[WATCHDOG] Window close event detected. Initiating clean exit..."
+                )
                 raise KeyboardInterrupt
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
@@ -535,7 +551,9 @@ try:
                 elif event.key == pygame.K_c and (
                     pygame.key.get_mods() & pygame.KMOD_CTRL
                 ):
-                    logger.info("[WATCHDOG] Ctrl+C shortcut detected. Initiating exit...")
+                    logger.info(
+                        "[WATCHDOG] Ctrl+C shortcut detected. Initiating exit..."
+                    )
                     raise KeyboardInterrupt
 
         # Refresh virtual display root bounds
@@ -695,7 +713,10 @@ try:
                     glow_surf = ui_font.render(f"> {label}", True, UI_GLOW_DIM)
                     virtual_canvas.blit(
                         glow_surf,
-                        (PADDING_LEFT + KNOB_GLOW_OFFSET[0], row_y + KNOB_GLOW_OFFSET[1]),
+                        (
+                            PADDING_LEFT + KNOB_GLOW_OFFSET[0],
+                            row_y + KNOB_GLOW_OFFSET[1],
+                        ),
                     )
                 else:
                     color = UI_GREEN  # Standard matrix terminal green
@@ -880,7 +901,9 @@ except Exception:
 
 finally:
     # 1. Make sure every worker has been told to stop (a no-op if already requested)
-    server.request_shutdown("fault", 1, "the display loop ended without a shutdown request")
+    server.request_shutdown(
+        "fault", 1, "the display loop ended without a shutdown request"
+    )
 
     # 2. Stop audio processing
     RUN_AUDIO = False
@@ -901,7 +924,9 @@ finally:
     try:
         exit_code = server.run_shutdown_sequence()
     except Exception:
-        logger.exception("[UI SHUTDOWN] Backend shutdown failed; exiting with a failure code")
+        logger.exception(
+            "[UI SHUTDOWN] Backend shutdown failed; exiting with a failure code"
+        )
         server.shutdown_logging()
         exit_code = 1
 
