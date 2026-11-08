@@ -33,6 +33,8 @@ logger = logging.getLogger("glitchbooth.display")
 logger.info("[DISPLAY INIT] Backend module imported; starting the backend engine in embedded mode")
 
 # Launch the backend workers and Flask API seamlessly without blocking Pygame
+# This module owns the process: it installs the signal handlers and runs the shutdown sequence.
+server.install_signal_handlers()
 server.start_backend_engine(blocking=False)
 
 logger.info("[DISPLAY INIT] Backend engine started")
@@ -446,7 +448,9 @@ logger.info("[AUDIO INIT] Glitch audio started")
 # PRIMARY 60Hz PRESENTATION MAIN LOOP
 # ==============================================================================
 try:
+    server.DISPLAY_HEARTBEAT = time.monotonic()  # from here on the health monitor watches this loop
     while not server.SHUTDOWN_EVENT.is_set():
+        server.DISPLAY_HEARTBEAT = time.monotonic()
         # Handle structural Pygame inputs and physical terminal interrupts
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -472,8 +476,9 @@ try:
             countdown_val = server.ACTIVE_SESSION["countdown_remaining"]
             countdown_start_time = server.ACTIVE_SESSION.get("countdown_start_time", 0)
             upload_status = server.ACTIVE_SESSION["upload_status"]
-            current_notice = server._notice_locked()
             current_knobs = server.ACTIVE_SESSION.get("knobs", [0] * 6)
+        # Session notice, power action in progress, or the camera message (locks taken one at a time)
+        current_notice = server.current_notice()
 
         # Update micro-timers tracking live knob changes for dynamic UI highlighting
         if current_knobs and len(current_knobs) >= 6:
@@ -796,19 +801,19 @@ try:
         clock.tick(TARGET_FPS)
 
 except KeyboardInterrupt:
+    # Esc, window close or Ctrl+C on the booth's keyboard: a deliberate exit to the terminal.
     logger.info("[WATCHDOG] Intercepted display exit signal")
-    # Flag that this was a manual keyboard exit to release the terminal
-    server.ACTIVE_SESSION["exit_to_terminal"] = True
+    server.request_shutdown("exit_to_terminal", 0, "exit requested at the booth")
 
 except Exception:
+    # The traceback is logged here. The booth then exits with code 1, so systemd restarts it
+    # (an exit code of 0 would be taken as "finished on purpose" and nothing would restart).
     logger.exception("[DISPLAY LOOP] Unexpected display loop crash")
-    # Even on crash, ensure terminal is restored so system isn't left frozen
-    server.ACTIVE_SESSION["exit_to_terminal"] = True
-    raise
+    server.request_shutdown("fault", 1, "the display loop crashed")
 
 finally:
-    # 1. Alert the backend workers to stop processing immediately
-    server.SHUTDOWN_EVENT.set()
+    # 1. Make sure every worker has been told to stop (a no-op if already requested)
+    server.request_shutdown("fault", 1, "the display loop ended without a shutdown request")
 
     # 2. Stop audio processing
     RUN_AUDIO = False
@@ -825,17 +830,12 @@ finally:
     except Exception:
         pass
 
-    # Safety check: If no reboot or shutdown flag was set by web routes, force exit_to_terminal
-    if not (
-        server.ACTIVE_SESSION.get("is_rebooting")
-        or server.ACTIVE_SESSION.get("is_shutting_down")
-    ):
-        server.ACTIVE_SESSION["exit_to_terminal"] = True
-
-    # 4. Hand over total execution control to the final server handler
+    # 4. The one and only backend teardown; it returns the exit code for the reason.
     try:
-        server.graceful_shutdown_handler(None, None)
+        exit_code = server.run_shutdown_sequence()
     except Exception:
-        logger.exception("[UI SHUTDOWN] Backend shutdown handler failed; exiting directly")
+        logger.exception("[UI SHUTDOWN] Backend shutdown failed; exiting with a failure code")
         server.shutdown_logging()
-        sys.exit(0)
+        exit_code = 1
+
+sys.exit(exit_code)

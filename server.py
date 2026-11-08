@@ -410,6 +410,9 @@ PRINT_BETA = _cfg_number("PRINT_BETA", 11, int)
 # Receipt QR composite configuration
 RECEIPT_QR_SIZE = _cfg_number("RECEIPT_QR_SIZE", 120, int, minimum=1)
 RECEIPT_QR_MARGIN = _cfg_number("RECEIPT_QR_MARGIN", 0, int, minimum=0)
+RECEIPT_WIDTH_PX = 576  # printer paper width in dots (a fact of the printer)
+RECEIPT_QR_MIN_PX = 64  # the QR is never shrunk below this to fit
+RECEIPT_DITHER = "floyd"  # how the receipt photo becomes black dots: "floyd" (smooth) or "none" (hard threshold)
 RECEIPT_QR_ROTATION = _cfg_number(
     "RECEIPT_QR_ROTATION", 90, int
 )  # 90 degrees clockwise
@@ -430,6 +433,34 @@ _VALID_CORNERS = {
 _raw_corner = os.getenv("COUNTDOWN_CORNER", "bottom-center").lower().strip()
 COUNTDOWN_CORNER = _raw_corner if _raw_corner in _VALID_CORNERS else "bottom-center"
 FLASH_DURATION = _cfg_number("FLASH_DURATION", 0.3, float, minimum=0.0)
+FLASH_COLOUR = (
+    255,
+    255,
+    255,
+)  # (R, G, B) of the capture flash; the kiosk screen reads this too
+REVIEW_DIM_FACTOR = 0.4  # after the flash the frozen photo is shown at this brightness (0-1) during the countdown screen
+
+# KIOSK SCREEN (pygame_display.py reads these, so every screen colour and label has one source)
+# ------------------------------------------------------------------------------
+BOOTH_VERSION = "beta 04"  # shown in the screen header and written to the log at start
+UI_GREEN = (0, 255, 0)  # (R, G, B) main terminal colour: text, borders, lines
+UI_HIGHLIGHT = (209, 255, 201)  # a knob row that was just moved (#d1ffc9)
+UI_GLOW_DIM = (0, 80, 0)  # soft shadow behind a highlighted knob row
+UI_ALERT = (255, 60, 60)  # "HATA!" mark on a knob whose effect was switched off
+UI_NOTICE = (255, 90, 90)  # message box text and border (camera or print problem)
+UI_VIDEO_PLACEHOLDER = (20, 20, 25)  # video area while no camera frame has arrived
+UI_KNOB_HIGHLIGHT_SECONDS = 0.2  # how long a moved knob row stays highlighted
+
+# The pose countdown: the ONE place its length is set. The capture flow, the digits on the
+# kiosk screen and the sentence on it all read this (pygame_display.py uses server.POSE_COUNTDOWN_SECONDS).
+POSE_COUNTDOWN_SECONDS = 3
+CAPTURE_LOCK_SECONDS = (
+    1.2  # the button is ignored this long after a refused capture or a return to live
+)
+CAPTURE_KEEP_COUNT = (
+    100  # newest captures kept in captures/ (older ones move to the archives)
+)
+GALLERY_PER_PAGE = 12  # captures per page on the gallery
 
 
 def _normalize_slug(slug) -> str:
@@ -525,6 +556,7 @@ for _name, _ok in (
         )
 
 
+logger.info("[CONFIG] Glitch Booth %s", BOOTH_VERSION)
 logger.info(
     "[CONFIG] mode=%s | imagekit path=%s | print contrast alpha=%s beta=%s | sample url=%s",
     "EVENT MODE (" + EVENT_SLUG + ")" if EVENT_SLUG else "NAKED MODE",
@@ -538,7 +570,21 @@ logger.info(
 SERIAL_PORTS = ["/dev/ttyUSB0", "/dev/ttyACM0"]
 CAMERA_STALE_TIMEOUT = 5
 CAMERA_REFRESH_INTERVAL = 21600
-STREAM_FPS = 15
+# One source for the frame rate: what the camera is asked for (open_camera), the top rate of the
+# processing loop and the pace of the live stream. When the active effects are expensive the loop
+# slows down: GOVERNOR_STEPS = ((effect cost at or above, frames per second), ...), highest cost first.
+CAMERA_FPS = 15
+GOVERNOR_STEPS = ((0.75, 10), (0.55, 12))
+# Live preview (the web page and control page; the saved photo is not affected)
+STREAM_QUALITY_BEST = 65  # JPEG quality at the lowest effect cost ...
+STREAM_QUALITY_WORST = 35  # ... falling to this at the highest
+STREAM_QUALITY_IDLE = 20  # quality of the occasional frame encoded while nobody watches
+PREVIEW_DOWNSCALE_FROM_INTENSITY = (
+    0.55  # from this effect cost the preview is scaled down (PREVIEW_DOWNSCALE_WIDTH)
+)
+IDLE_PREVIEW_ENCODE_EVERY = (
+    15  # with nobody watching, one frame in this many is still encoded
+)
 
 CRT_ENABLED = True
 CRT_SCANLINE_STRENGTH = 0.12
@@ -623,6 +669,9 @@ NAKED_CAPTURE_ENABLED = True
 # The clean (unprocessed) frame is saved as <id>_clean.jpg and uploaded next to the processed
 # photo, so the website can offer a clean/processed slider.
 CLEAN_JPEG_QUALITY = 88  # 85-90
+# JPEG quality of the processed colour and black-and-white photos (1-100). Lower = smaller files,
+# faster uploads, softer picture. It used to be OpenCV's unnamed default of 95.
+CAPTURE_JPEG_QUALITY = 90
 TELEMETRY_ENABLED = (
     True  # Set False to disable all capture logging and telemetry threads
 )
@@ -746,7 +795,27 @@ POSTERIZE_FLICKER_ENABLED = (
 POSTERIZE_FLICKER_PROB = 0.05  # share of outline sections that flash
 # "neon" = each flashing section takes a random colour of the neon palette, "white" = white-hot
 POSTERIZE_FLICKER_COLOUR = "neon"
-POSTERIZE_ASCII_DETAIL = 0.95  # brightness detail kept in the neon fill while ASCII is acting (glow outlines)
+# ASCII CLARITY: ONE DIAL for how readable Posterize stays while the ASCII effect is acting.
+# 0 = Posterize looks the same with and without ASCII; 1 = the most readable faces and details.
+# While ASCII acts, clarity does three things together:
+#   1. the solarize fold is pushed toward the highlights (so skin tones are no longer folded back),
+#   2. the brightness detail of the "bands" fill falls only (1 - clarity) as far as it normally does,
+#   3. extra outline sections are removed (POSTERIZE_ASCII_CLARITY_DROPOUT).
+# It is read every frame, so it can be tuned live.
+POSTERIZE_ASCII_CLARITY = 0.75
+POSTERIZE_ASCII_CLARITY_DROPOUT = (
+    0.5  # advanced: share of the remaining outline sections removed at clarity 1
+)
+POSTERIZE_ASCII_OUTLINE_STYLE = (
+    "glow"  # outline colour while ASCII acts (same choices as POSTERIZE_OUTLINE_STYLE)
+)
+POSTERIZE_BLACK_RAMP_MIX = 0.5  # in the narrow ramp above black: share of the neon picture mixed with the original
+POSTERIZE_HALFTONE_COVER_GAIN = (
+    1.12  # dot coverage gain; above 1 lets the highlights close up fully
+)
+POSTERIZE_GLOW_CORE_LIFT = (
+    0.5  # the glow core is the glow colour lifted this far toward white (0-1)
+)
 # Outline colour: "glow" = the brightest neon next to the border (often near-white), "white", "black" (ink)
 POSTERIZE_OUTLINE_STYLE = "black"
 POSTERIZE_OUTLINE_MID_FROM = 0.85  # strength from which outlines are MID px thick
@@ -784,9 +853,13 @@ POSTERIZE_MODE_SOURCE = "knob"
 # (shown mixed by POSTERIZE_OVERLAY_MIX). Example with blending: ((0.0, 0.40, "bands"),
 # (0.30, 0.75, "gradient"), (0.65, 1.0, "thermal")). A gap between two entries keeps the mode below it.
 POSTERIZE_KNOB_MODES = (
-    (0.0, 0.45, "bands"),  # knob 0 - 35 %
-    (0.35, 0.75, "gradient"),  # 35 - 75 %
-    (0.75, 1.0, "thermal"),  # 75 - 100 %
+    (0.0, 0.45, "bands"),  # lowest zone
+    (
+        0.35,
+        0.75,
+        "gradient",
+    ),  # middle zone (blended with the zone below where they overlap)
+    (0.75, 1.0, "thermal"),  # top zone
 )
 # The knob must move this far (share of the travel) before the mode selection follows, so a knob
 # resting on an edge does not flip the mode back and forth. 0 = off.
@@ -888,6 +961,16 @@ CORRUPTION_BLEND_BELOW = 0.95  # below this energy the damage is blended, not so
 
 # --- Signal Drift -------------------------------------------------------------------
 DRIFT_MAX_AMOUNT = 60  # [320x240: 30] [480x360: 45] [640x480: 60]
+DRIFT_SEAM_FRACTION = (
+    0.04  # thickness of the black seam at the vertical roll (share of the frame height)
+)
+DRIFT_WAVE_PER_ROW = (
+    0.05  # radians per picture row: the wave is about 2*pi/this = 126 rows long
+)
+DRIFT_WAVE_SPEED = 0.15  # radians per second: one wave cycle in about 42 s
+DRIFT_ROLL_MAX_FRACTION = (
+    0.5  # the vertical roll scrolls at most this share of the height (0-0.5)
+)
 
 # --- Pixellation -------------------------------------------------------------------
 COMPRESSION_TILE_BASE = 4  # [320x240: 6 ] [480x360: 9 ] [640x480: 12]
@@ -896,6 +979,19 @@ COMPRESSION_TILE_SCALE = 9  # [320x240: 3 ] [480x360: 4 ] [640x480: 6 ]
 # --- Chroma Shift -------------------------------------------------------------------
 ANA_SHIFT_MAX = 48  # [320x240: 18] [480x360: 27] [640x480: 36]
 ANA_GHOST_OFFSET = 40  # [320x240: 20] [480x360: 30] [640x480: 40]
+CHROMA_GHOST_MIX = (
+    0.20  # share of the shifted ghost copy blended over the picture (0-1)
+)
+
+# --- Slice Glitch -------------------------------------------------------------------
+SLICE_CLOCK_HZ = 15  # the slices are re-rolled on this clock ...
+SLICE_EVERY_N_STEPS = (
+    3  # ... on every Nth step of it (15 / 3 = 5 new slice sets a second)
+)
+SLICE_COUNT_MAX = (
+    4  # slices at full strength = this * strength ** SLICE_COUNT_CURVE (at least 1)
+)
+SLICE_COUNT_CURVE = 0.5  # below 1 = more slices sooner at low strength
 SLICE_MIN_H = 8  # [320x240: 4 ] [480x360: 6 ] [640x480: 8 ]
 SLICE_MAX_H = 36  # [320x240: 12] [480x360: 18] [640x480: 24]
 SLICE_MAX_SHIFT = 50  # [320x240: 15] [480x360: 23] [640x480: 30]
@@ -913,6 +1009,33 @@ MELT_NEON_START_PCT = 0.67  # Where neon begins: 0.0 = top of drip, 0.5 = halfwa
 MELT_NEON_RAMP_SPAN = (
     0.23  # Length of the transition ramp to full neon (Start + Span should equal 1.0)
 )
+MELT_NEON_MIX = (
+    0.5  # drip neon = (1 - this) of one palette colour + this of another (0-1)
+)
+MELT_BASE_LENGTH_PX = (
+    20  # longest drip = this + strength * MELT_LENGTH_FRACTION * frame height
+)
+MELT_LENGTH_FRACTION = 0.85
+MELT_LENGTH_FIXED_SHARE = 0.45  # a drip is this share fixed, the rest random (0-1)
+MELT_STRETCH_MAX = 3.0  # stretch of the drip texture is random between 1 and this
+MELT_THRESHOLD_FLOOR = (
+    75  # a pixel starts a drip above 255 * (1 - FALL * strength), never below this
+)
+MELT_THRESHOLD_FALL = 0.65
+MELT_STRIDE_MID_FROM = (
+    0.35  # strength from which the columns are sampled at MELT_STRIDE_MID ...
+)
+MELT_STRIDE_HIGH_FROM = 0.7  # ... and from which at MELT_STRIDE_HIGH
+MELT_SEED_STEP_MAX = (
+    8  # spacing between drips in a column = (ZERO_AT - strength) * this ...
+)
+MELT_SEED_STEP_ZERO_AT = 1.1
+MELT_SEED_STEP_MIN = 2  # ... but never closer than this
+MELT_SEEDS_LOW = 3  # drips per column below MELT_SEEDS_HIGH_FROM ...
+MELT_SEEDS_HIGH = 6  # ... and from it on
+MELT_SEEDS_HIGH_FROM = 0.65
+MELT_REROLL_HZ = 4  # the drip pattern is re-rolled this many times a second
+MELT_BOTTOM_MARGIN_PX = 4  # no drips start in the bottom rows
 
 
 # --- CRT SCANLINES -------------------------------------------------------------------
@@ -927,6 +1050,38 @@ PREVIEW_DOWNSCALE_WIDTH = (
 # --- ASCII grid -------------------------------------------------------------------
 ASCII_GRID_W = 80  # character columns
 ASCII_GRID_H = 60  # character rows
+ASCII_COLOUR = (
+    0,
+    255,
+    0,
+)  # text colour (B, G, R): the brightness of each character times this / 255
+ASCII_AUTO_CONTRAST = (
+    True  # stretch the character grid to the full brightness range every frame
+)
+ASCII_MIX_CURVE = 1.0  # ASCII share in the picture = strength ** this (1 = linear)
+ASCII_FONT_EXTRA_PX = 2  # character size = the cell size + this
+ASCII_FONT_LIFT_PX = 1  # characters are drawn this many px higher inside their cell
+# Sparks: a few characters flash bright green; they are re-rolled every few frames.
+ASCII_SPARK_INTERVAL = (7, 16)  # frames between re-rolls, from ... to (inclusive)
+ASCII_SPARK_START_FRAMES = 14  # frames until the very first re-roll
+ASCII_SPARK_LENGTH = (1, 6)  # spark length in cells, from ... to (inclusive)
+# Rarity: threshold on a random 0-255 noise = base - slope * strength, kept between floor and base.
+ASCII_SPARK_RARITY = (
+    254,
+    3,
+    240,
+)  # (base, slope, floor): a lower threshold = more sparks
+ASCII_SPARK_COLOUR = (31, 255, 31)  # (B, G, R)
+ASCII_BLOOM_BLUR = 3  # blur size of the glow in cells (odd number)
+ASCII_TEXT_GAIN = 0.8  # brightness of the sharp text ...
+ASCII_BLOOM_GAIN = 0.4  # ... and of the glow added to it (together above 1 on purpose)
+ASCII_CLAHE_CLIP = (
+    3.0  # contrast boost of the character grid (higher = harsher, 1 = almost none)
+)
+ASCII_CLAHE_TILES = (
+    8,
+    8,
+)  # the picture is split into this many tiles (across, down) for local contrast
 
 # STARTUP CHECK: VALUES THAT WOULD CRASH THE BOOTH
 # ==============================================================================
@@ -959,6 +1114,20 @@ _CRASH_LIMITS = {
     "MELT_DRIP_WIDTH": (1, "melt", False),
     "SLICE_MIN_H": (0, "slice_glitch", False),
     "SLICE_MAX_SHIFT": (1, "slice_glitch", False),
+    "SLICE_EVERY_N_STEPS": (1, "slice_glitch", False),  # a modulo by it
+    "MELT_SEED_STEP_MIN": (1, "melt", False),  # a modulo by it
+    "DRIFT_ROLL_MAX_FRACTION": (0, "signal_drift", False),
+    "POSTERIZE_BANDS_LOW": (1, "posterize", False),
+    "POSTERIZE_BANDS_HIGH": (1, "posterize", False),
+}
+# The largest value a tunable can have before the booth crashes (same rule as above).
+_CRASH_LIMITS_MAX = {
+    "DRIFT_ROLL_MAX_FRACTION": (
+        0.5,
+        "signal_drift",
+    ),  # the roll buffer holds half the height
+    "POSTERIZE_BANDS_LOW": (256, "posterize"),  # the tone table has 256 entries
+    "POSTERIZE_BANDS_HIGH": (256, "posterize"),
 }
 
 DISABLED_EFFECTS = set()
@@ -1020,7 +1189,195 @@ def _apply_crash_limits():
         )
 
 
+def _is_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _is_int_pair(value, low=1):
+    # (from, to) with low <= from <= to, whole numbers
+    return (
+        isinstance(value, (tuple, list))
+        and len(value) == 2
+        and all(isinstance(v, int) and not isinstance(v, bool) for v in value)
+        and low <= value[0] <= value[1]
+    )
+
+
+def _is_triple(value, low=None, high=None):
+    return (
+        isinstance(value, (tuple, list))
+        and len(value) == 3
+        and all(_is_number(v) for v in value)
+        and all(low is None or v >= low for v in value)
+        and all(high is None or v <= high for v in value)
+    )
+
+
+# Tunables that belong to no single effect: a value outside its range would crash a loop, so it is
+# replaced by the default and the log says so (ERROR). (minimum, maximum, default, whole number only)
+_FEATURE_LIMITS = {
+    "CAMERA_FPS": (1, 120, 15, False),
+    "STREAM_QUALITY_BEST": (1, 100, 65, True),
+    "STREAM_QUALITY_WORST": (1, 100, 35, True),
+    "STREAM_QUALITY_IDLE": (1, 100, 20, True),
+    "CAPTURE_JPEG_QUALITY": (1, 100, 90, True),
+    "POSE_COUNTDOWN_SECONDS": (1, 99, 3, True),
+    "CAPTURE_LOCK_SECONDS": (0, 60, 1.2, False),
+    "CAPTURE_KEEP_COUNT": (1, 1000000, 100, True),
+    "GALLERY_PER_PAGE": (1, 1000, 12, True),
+    "IDLE_PREVIEW_ENCODE_EVERY": (1, 1000000, 15, True),
+    "RECEIPT_WIDTH_PX": (8, 4000, 576, True),
+    "RECEIPT_QR_MIN_PX": (1, 4000, 64, True),
+    "UI_KNOB_HIGHLIGHT_SECONDS": (0, 60, 0.2, False),
+    # characters must stay at least 1 px tall
+    "ASCII_FONT_EXTRA_PX": (
+        1 - max(FRAME_W // ASCII_GRID_W, FRAME_H // ASCII_GRID_H),
+        200,
+        2,
+        True,
+    ),
+}
+_COLOUR_TUNABLES = {  # (R, G, B), each 0-255
+    "FLASH_COLOUR": (255, 255, 255),
+    "UI_GREEN": (0, 255, 0),
+    "UI_HIGHLIGHT": (209, 255, 201),
+    "UI_GLOW_DIM": (0, 80, 0),
+    "UI_ALERT": (255, 60, 60),
+    "UI_NOTICE": (255, 90, 90),
+    "UI_VIDEO_PLACEHOLDER": (20, 20, 25),
+}
+
+
+def _apply_new_limits():
+    # 1. Upper limits of effect tunables (the minimums are in _CRASH_LIMITS).
+    for name, (maximum, effect) in _CRASH_LIMITS_MAX.items():
+        value = globals()[name]
+        if _is_number(value) and value > maximum:
+            _disable_effect(
+                effect,
+                name,
+                value,
+                f"would crash the booth (must be at most {maximum})",
+            )
+            globals()[name] = maximum  # placeholder so the buffers below can be built
+    # 2. Structure of the ASCII tunables (a bad one switches ASCII off for this run).
+    for name, ok, rule in (
+        (
+            "ASCII_SPARK_INTERVAL",
+            _is_int_pair,
+            "must be two whole numbers (from, to) with 1 <= from <= to",
+        ),
+        (
+            "ASCII_SPARK_LENGTH",
+            _is_int_pair,
+            "must be two whole numbers (from, to) with 1 <= from <= to",
+        ),
+        (
+            "ASCII_SPARK_RARITY",
+            _is_triple,
+            "must be three numbers (base, slope, floor)",
+        ),
+        ("ASCII_COLOUR", _is_triple, "must be three numbers (B, G, R)"),
+        ("ASCII_SPARK_COLOUR", _is_triple, "must be three numbers (B, G, R)"),
+    ):
+        if "ascii_matrix" not in DISABLED_EFFECTS and not ok(globals()[name]):
+            _disable_effect("ascii_matrix", name, globals()[name], rule)
+    blur = ASCII_BLOOM_BLUR
+    if "ascii_matrix" not in DISABLED_EFFECTS and not (
+        isinstance(blur, int)
+        and not isinstance(blur, bool)
+        and blur >= 1
+        and blur % 2 == 1
+    ):
+        _disable_effect(
+            "ascii_matrix",
+            "ASCII_BLOOM_BLUR",
+            blur,
+            "must be an odd whole number, 1 or more",
+        )
+    tiles = ASCII_CLAHE_TILES
+    if "ascii_matrix" not in DISABLED_EFFECTS and not (
+        isinstance(tiles, (tuple, list))
+        and len(tiles) == 2
+        and all(
+            isinstance(v, int) and not isinstance(v, bool) and v >= 1 for v in tiles
+        )
+        and _is_number(ASCII_CLAHE_CLIP)
+    ):
+        _disable_effect(
+            "ascii_matrix",
+            "ASCII_CLAHE_TILES",
+            tiles,
+            "must be two whole numbers, 1 or more (and ASCII_CLAHE_CLIP a number)",
+        )
+    # 3. Values of features that belong to no effect: reset to the default.
+    for name, (minimum, maximum, default, whole) in _FEATURE_LIMITS.items():
+        value = globals()[name]
+        good = _is_number(value) and minimum <= value <= maximum
+        if good and whole:
+            good = isinstance(value, int) or float(value).is_integer()
+            if good:
+                globals()[name] = int(value)
+        if not good:
+            logger.error(
+                "[CONFIG] %s=%r is not usable (%s%s to %s): the default %r is used",
+                name,
+                value,
+                "a whole number, " if whole else "",
+                minimum,
+                maximum,
+                default,
+            )
+            globals()[name] = default
+    if STREAM_QUALITY_WORST > STREAM_QUALITY_BEST:
+        logger.error(
+            "[CONFIG] STREAM_QUALITY_WORST (%s) is above STREAM_QUALITY_BEST (%s): the defaults are used",
+            STREAM_QUALITY_WORST,
+            STREAM_QUALITY_BEST,
+        )
+        globals()["STREAM_QUALITY_BEST"], globals()["STREAM_QUALITY_WORST"] = 65, 35
+    for name, default in _COLOUR_TUNABLES.items():
+        if not _is_triple(globals()[name], 0, 255):
+            logger.error(
+                "[CONFIG] %s=%r must be three numbers 0-255 (R, G, B): the default %r is used",
+                name,
+                globals()[name],
+                default,
+            )
+            globals()[name] = default
+    steps = globals()["GOVERNOR_STEPS"]
+    if not (
+        isinstance(steps, (tuple, list))
+        and all(
+            isinstance(step, (tuple, list))
+            and len(step) == 2
+            and _is_number(step[0])
+            and _is_number(step[1])
+            and step[1] > 0
+            for step in steps
+        )
+    ):
+        logger.error(
+            "[CONFIG] GOVERNOR_STEPS=%r must be pairs (effect cost, frames per second above 0): the default is used",
+            steps,
+        )
+        globals()["GOVERNOR_STEPS"] = ((0.75, 10), (0.55, 12))
+    else:
+        ordered = tuple(sorted((tuple(step) for step in steps), reverse=True))
+        if ordered != tuple(tuple(step) for step in steps):
+            logger.warning(
+                "[CONFIG] GOVERNOR_STEPS was not highest cost first; it is sorted that way"
+            )
+        globals()["GOVERNOR_STEPS"] = ordered
+    if RECEIPT_DITHER not in ("floyd", "none"):
+        logger.warning(
+            "[CONFIG] RECEIPT_DITHER=%r is not 'floyd' or 'none'; 'floyd' is used",
+            RECEIPT_DITHER,
+        )
+
+
 _apply_crash_limits()
+_apply_new_limits()
 
 # Values and buffers derived from the tunables above (they come after the check).
 CORRUPTION_GRID_H = FRAME_H // CORRUPTION_CELL_H
@@ -1145,10 +1502,15 @@ ASCII_GREEN_BUFFER = np.zeros((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
 ASCII_NOISE_LOW = np.zeros((ASCII_GRID_H, ASCII_GRID_W), dtype=np.uint8, order="C")
 ASCII_NOISE_UP = np.zeros((FRAME_H, FRAME_W), dtype=np.uint8, order="C")
 
-clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+clahe = cv2.createCLAHE(
+    clipLimit=ASCII_CLAHE_CLIP,
+    tileGridSize=tuple(ASCII_CLAHE_TILES)
+    if "ascii_matrix" not in DISABLED_EFFECTS
+    else (8, 8),
+)
 
 SPARK_COUNTER = 0
-SPARK_INTERVAL = 14  # Will dynamically re-roll between 7 and 17
+SPARK_INTERVAL = ASCII_SPARK_START_FRAMES  # re-rolled within ASCII_SPARK_INTERVAL later
 
 
 # ATOMIC REFERENCE GLOBALS & PIPELINE LOCKS
@@ -1167,7 +1529,7 @@ ACTIVE_SESSION = {
     "notice": "",  # message for the kiosk screen and the web pages
     "notice_until": None,  # monotonic expiry of the notice (None = until the session ends)
     "countdown_start_time": 0.0,
-    "countdown_remaining": 3,
+    "countdown_remaining": POSE_COUNTDOWN_SECONDS,
     "latest_since": 0.0,  # monotonic time the review screen started
     "knobs": [0, 0, 0, 0, 0, 0],
 }
@@ -1279,11 +1641,11 @@ def reset_to_live(reason, expected_session_id=None, only_if_mode=None):
             session_id=None,
             upload_status="IDLE",
             print_state="idle",
-            countdown_remaining=3,
+            countdown_remaining=POSE_COUNTDOWN_SECONDS,
             latest_since=0.0,
         )
         _set_notice_locked("", None)
-        capture_lock_until = time.time() + 1.2
+        capture_lock_until = time.time() + CAPTURE_LOCK_SECONDS
     logger.info(
         "[STATE ENGINE] Returning to the live view (%s). Cleared session %s.",
         reason,
@@ -1770,7 +2132,7 @@ def init_ascii_tiles():
     ]
 
     font = None
-    target_font_size = max(CELL_W, CELL_H) + 2
+    target_font_size = max(CELL_W, CELL_H) + ASCII_FONT_EXTRA_PX
 
     for path in pi_font_paths:
         try:
@@ -1793,7 +2155,12 @@ def init_ascii_tiles():
         left, top, right, bottom = draw.textbbox((0, 0), char, font=font)
         w, h = right - left, bottom - top
 
-        draw.text(((CELL_W - w) // 2, (CELL_H - h) // 2 - 1), char, font=font, fill=255)
+        draw.text(
+            ((CELL_W - w) // 2, (CELL_H - h) // 2 - ASCII_FONT_LIFT_PX),
+            char,
+            font=font,
+            fill=255,
+        )
 
         ASCII_TILES[i] = np.array(img, dtype=np.uint8)
 
@@ -1885,7 +2252,7 @@ def open_camera():
                 if ret and frame is not None:
                     cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
                     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
-                    cap.set(cv2.CAP_PROP_FPS, 15)
+                    cap.set(cv2.CAP_PROP_FPS, CAMERA_FPS)
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     # --- TRACK HARDWARE NEGOTIATION ---
                     actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -2547,16 +2914,23 @@ def _collect_melt_drips(
     #     [reach, x0, start_y, L, s, p1, p2]
     # or None when there is nothing to draw.
 
-    max_melt_length = int(20 + melt_raw * (h * 0.85))
-    threshold = max(75, int(255 * (1.0 - melt_raw * 0.65)))
+    max_melt_length = int(MELT_BASE_LENGTH_PX + melt_raw * (h * MELT_LENGTH_FRACTION))
+    threshold = max(
+        MELT_THRESHOLD_FLOOR, int(255 * (1.0 - melt_raw * MELT_THRESHOLD_FALL))
+    )
     stride = (
         MELT_STRIDE_LOW
-        if melt_raw < 0.35
-        else (MELT_STRIDE_MID if melt_raw < 0.7 else MELT_STRIDE_HIGH)
+        if melt_raw < MELT_STRIDE_MID_FROM
+        else (MELT_STRIDE_MID if melt_raw < MELT_STRIDE_HIGH_FROM else MELT_STRIDE_HIGH)
     )
-    seed_step = max(2, int((1.1 - melt_raw) * 8))
-    max_seeds_per_column = 3 if melt_raw < 0.65 else 6
-    time_tick = int(current_time * 4) & 0xFF
+    seed_step = max(
+        MELT_SEED_STEP_MIN,
+        int((MELT_SEED_STEP_ZERO_AT - melt_raw) * MELT_SEED_STEP_MAX),
+    )
+    max_seeds_per_column = (
+        MELT_SEEDS_LOW if melt_raw < MELT_SEEDS_HIGH_FROM else MELT_SEEDS_HIGH
+    )
+    time_tick = int(current_time * MELT_REROLL_HZ) & 0xFF
 
     # One threshold over every sampled column at once.
     mask = STATIC_MELT_GRAY_BUFFER[:, 1 : w - 2 : stride] > threshold  # (h, ncols)
@@ -2565,14 +2939,14 @@ def _collect_melt_drips(
         return None
 
     # Position of each hit inside its own column -> every seed_step-th hit,
-    # at most max_seeds_per_column per column, nothing in the bottom 4 rows.
+    # at most max_seeds_per_column per column, nothing in the bottom MELT_BOTTOM_MARGIN_PX rows.
     counts = np.bincount(col_idx, minlength=mask.shape[1])
     first = np.cumsum(counts) - counts
     rank = np.arange(ys.size) - first[col_idx]
     keep = (
         (rank % seed_step == 0)
         & (rank // seed_step < max_seeds_per_column)
-        & (ys < h - 4)
+        & (ys < h - MELT_BOTTOM_MARGIN_PX)
     )
     col_idx, ys, rank = col_idx[keep], ys[keep], rank[keep]
     if ys.size == 0:
@@ -2613,10 +2987,12 @@ def _collect_melt_drips(
     n_pal = len(NEON_PALETTES)
     p1 = (h2 >> 4) % n_pal
     p2 = (p1 + 1 + ((h2 >> 12) % (n_pal - 1))) % n_pal
-    base_len = int(max_melt_length * 0.45)
-    rand_len = (max_melt_length * 0.55 * rand_len_mult).astype(np.int64)
+    base_len = int(max_melt_length * MELT_LENGTH_FIXED_SHARE)
+    rand_len = (
+        max_melt_length * (1.0 - MELT_LENGTH_FIXED_SHARE) * rand_len_mult
+    ).astype(np.int64)
     L = base_len + rand_len
-    s = 1.0 + rand_stretch_mult * 2.0
+    s = 1.0 + rand_stretch_mult * (MELT_STRETCH_MAX - 1.0)
     reach = y + L
 
     live = L > 0
@@ -2700,7 +3076,9 @@ def _render_melt_drips(drips, h: int = FRAME_H, w: int = FRAME_W):
     wt_floor = one_minus_nw * (1.0 - w_ceil)
     wt_ceil = one_minus_nw * w_ceil
 
-    neon_color = 0.5 * NEON_PALETTES_FLOAT[p1] + 0.5 * NEON_PALETTES_FLOAT[p2]  # (n,3)
+    neon_color = (1.0 - MELT_NEON_MIX) * NEON_PALETTES_FLOAT[
+        p1
+    ] + MELT_NEON_MIX * NEON_PALETTES_FLOAT[p2]  # (n,3)
     neon_term = nw[:, None] * neon_color[did]  # (total, 3)
 
     # ---- pixels: gather, blend, scatter, in cache-sized chunks ------------
@@ -2800,9 +3178,9 @@ def apply_chroma_shift(raw_knob, current_time):
         )
         cv2.addWeighted(
             MUTABLE_PROCESSING_BUFFER,
-            0.80,
+            1.0 - CHROMA_GHOST_MIX,
             GHOST_FRAME_BUFFER,
-            0.20,
+            CHROMA_GHOST_MIX,
             0,
             dst=MUTABLE_PROCESSING_BUFFER,
         )
@@ -2811,13 +3189,13 @@ def apply_chroma_shift(raw_knob, current_time):
 def apply_slice_glitch(raw_knob, current_time):
     if not _acts_slice_glitch(raw_knob):
         return
-    if int(current_time * 15) % 3 != 0:
+    if int(current_time * SLICE_CLOCK_HZ) % SLICE_EVERY_N_STEPS != 0:
         return
     val = n(raw_knob)
     h, w = FRAME_H, FRAME_W
     # Gives a smoother curve where low values yield slices much sooner; the first slice
     # appears as soon as the effect acts (SLICE_ACTIVE_FROM_KNOB)
-    num_slices = max(1, int((val**0.5) * 4))
+    num_slices = max(1, int((val**SLICE_COUNT_CURVE) * SLICE_COUNT_MAX))
 
     for _ in range(int(num_slices)):
         y, height, shift = (
@@ -2844,25 +3222,29 @@ def apply_signal_drift(raw_knob, current_time):
     drift = n(raw_knob)
     h, w = MUTABLE_PROCESSING_BUFFER.shape[:2]
     if STATIC_V_BUFFER is None:
+        # large enough for the longest roll the tunable allows (at most half the height)
         STATIC_V_BUFFER = np.zeros(
             (h // 2, w) + MUTABLE_PROCESSING_BUFFER.shape[2:],
             dtype=MUTABLE_PROCESSING_BUFFER.dtype,
         )
     if drift > DRIFT_ROLL_ABOVE:
         v_shift = int(
-            ((drift - DRIFT_ROLL_ABOVE) / (1.0 - DRIFT_ROLL_ABOVE)) * (h // 2)
+            ((drift - DRIFT_ROLL_ABOVE) / (1.0 - DRIFT_ROLL_ABOVE))
+            * (h * DRIFT_ROLL_MAX_FRACTION)
         )
         if v_shift:
             STATIC_V_BUFFER[:v_shift] = MUTABLE_PROCESSING_BUFFER[:v_shift]
             MUTABLE_PROCESSING_BUFFER[:-v_shift] = MUTABLE_PROCESSING_BUFFER[v_shift:]
             MUTABLE_PROCESSING_BUFFER[-v_shift:] = STATIC_V_BUFFER[:v_shift]
-            seam, thickness = h - v_shift, int(h * 0.04)
+            seam, thickness = h - v_shift, int(h * DRIFT_SEAM_FRACTION)
             MUTABLE_PROCESSING_BUFFER[
                 max(0, seam - thickness // 2) : min(h, seam + thickness // 2)
             ] = 0
     amount = int(drift * DRIFT_MAX_AMOUNT * DRIFT_AMOUNT_SCALE)
     for i in range(h):
-        shift = int(math.sin(i * 0.05 + current_time * 0.15) * amount)
+        shift = int(
+            math.sin(i * DRIFT_WAVE_PER_ROW + current_time * DRIFT_WAVE_SPEED) * amount
+        )
         if shift > 0:
             s = shift % w
             if s:
@@ -2895,52 +3277,81 @@ def apply_ascii_matrix(raw_knob, current_time):
         dst=ASCII_LOWRES_GRAY,
         interpolation=cv2.INTER_NEAREST,
     )
-    cv2.normalize(ASCII_LOWRES_GRAY, ASCII_LOWRES_GRAY, 0, 255, cv2.NORM_MINMAX)
-    np.right_shift(ASCII_LOWRES_GRAY, 4, out=ASCII_LOWRES_GRAY)
+    if ASCII_AUTO_CONTRAST:
+        cv2.normalize(ASCII_LOWRES_GRAY, ASCII_LOWRES_GRAY, 0, 255, cv2.NORM_MINMAX)
+    np.right_shift(
+        ASCII_LOWRES_GRAY, 4, out=ASCII_LOWRES_GRAY
+    )  # 16 levels = 16 characters
     np.take(ASCII_TILES, ASCII_LOWRES_GRAY, axis=0, out=ASCII_BLOCK_BUFFER)
     ASCII_UPRES_GRAY[:] = ASCII_BLOCK_BUFFER.transpose(0, 2, 1, 3).reshape(
         FRAME_H, FRAME_W
     )
-    (
-        ASCII_GREEN_BUFFER[:, :, 0],
-        ASCII_GREEN_BUFFER[:, :, 1],
-        ASCII_GREEN_BUFFER[:, :, 2],
-    ) = 0, ASCII_UPRES_GRAY, 0
+    for channel, level in enumerate(ASCII_COLOUR):  # (B, G, R)
+        if level <= 0:
+            ASCII_GREEN_BUFFER[:, :, channel] = 0
+        elif level >= 255:
+            ASCII_GREEN_BUFFER[:, :, channel] = ASCII_UPRES_GRAY
+        else:
+            ASCII_GREEN_BUFFER[:, :, channel] = cv2.convertScaleAbs(
+                ASCII_UPRES_GRAY, alpha=level / 255.0
+            )
     SPARK_COUNTER += 1
     if SPARK_COUNTER >= SPARK_INTERVAL:
         cv2.randu(ASCII_NOISE_LOW, 0, 255)
-        threshold = max(240, min(254, 254 - int(ascii_val * 3)))
+        rarity_base, rarity_slope, rarity_floor = ASCII_SPARK_RARITY
+        threshold = max(
+            rarity_floor, min(rarity_base, rarity_base - int(ascii_val * rarity_slope))
+        )
         cv2.threshold(
             ASCII_NOISE_LOW, threshold, 255, cv2.THRESH_BINARY, dst=ASCII_NOISE_LOW
         )
         ASCII_NOISE_LOW[ASCII_LOWRES_GRAY == 0] = 0
         cv2.dilate(
             ASCII_NOISE_LOW,
-            np.ones((np.random.randint(1, 7), 1), dtype=np.uint8),
+            np.ones(
+                (
+                    np.random.randint(ASCII_SPARK_LENGTH[0], ASCII_SPARK_LENGTH[1] + 1),
+                    1,
+                ),
+                dtype=np.uint8,
+            ),
             dst=ASCII_NOISE_LOW,
         )
-        SPARK_COUNTER, SPARK_INTERVAL = 0, np.random.randint(7, 17)
+        SPARK_COUNTER, SPARK_INTERVAL = (
+            0,
+            np.random.randint(ASCII_SPARK_INTERVAL[0], ASCII_SPARK_INTERVAL[1] + 1),
+        )
     cv2.resize(
         ASCII_NOISE_LOW,
         (FRAME_W, FRAME_H),
         dst=ASCII_NOISE_UP,
         interpolation=cv2.INTER_NEAREST,
     )
-    ASCII_GREEN_BUFFER[(ASCII_NOISE_UP > 0) & (ASCII_UPRES_GRAY > 0)] = [31, 255, 31]
+    ASCII_GREEN_BUFFER[(ASCII_NOISE_UP > 0) & (ASCII_UPRES_GRAY > 0)] = (
+        ASCII_SPARK_COLOUR
+    )
     bloom = cv2.resize(
         ASCII_GREEN_BUFFER, (ASCII_GRID_W, ASCII_GRID_H), interpolation=cv2.INTER_LINEAR
     )
     bloom = cv2.resize(
-        cv2.GaussianBlur(bloom, (3, 3), 0),
+        cv2.GaussianBlur(bloom, (ASCII_BLOOM_BLUR, ASCII_BLOOM_BLUR), 0),
         (FRAME_W, FRAME_H),
         interpolation=cv2.INTER_LINEAR,
     )
-    cv2.addWeighted(ASCII_GREEN_BUFFER, 0.8, bloom, 0.4, 0, dst=ASCII_GREEN_BUFFER)
     cv2.addWeighted(
         ASCII_GREEN_BUFFER,
-        ascii_val,
+        ASCII_TEXT_GAIN,
+        bloom,
+        ASCII_BLOOM_GAIN,
+        0,
+        dst=ASCII_GREEN_BUFFER,
+    )
+    ascii_mix = ascii_val**ASCII_MIX_CURVE
+    cv2.addWeighted(
+        ASCII_GREEN_BUFFER,
+        ascii_mix,
         MUTABLE_PROCESSING_BUFFER,
-        1.0 - ascii_val,
+        1.0 - ascii_mix,
         0,
         dst=MUTABLE_PROCESSING_BUFFER,
     )
@@ -3040,6 +3451,8 @@ class PosterizeEngine:
         self.therm_lut = np.zeros((3, 256, 1), np.uint8)
         self.neon_half2 = z3(hh, hw)
         self.solar_lut = np.zeros((256, 1), np.uint8)
+        self.solar_lut_clear = np.zeros((256, 1), np.uint8)  # the fold while ASCII acts
+        self._clear_key = None
         self._ht_key = None
         self.ht_tile = z()
         self.ht_cover, self.ht_mask, self.ht_mask3 = z(), z(), z3()
@@ -3239,7 +3652,12 @@ class PosterizeEngine:
         """Dot-screen threshold tile (static) + tone curve; rebuilt only when changed."""
         H, W = FRAME_H, FRAME_W
         pitch = max(4, int(POSTERIZE_HALFTONE_PITCH))
-        key = (pitch, POSTERIZE_HALFTONE_ANGLE, POSTERIZE_HALFTONE_SOFTNESS)
+        key = (
+            pitch,
+            POSTERIZE_HALFTONE_ANGLE,
+            POSTERIZE_HALFTONE_SOFTNESS,
+            POSTERIZE_HALFTONE_COVER_GAIN,
+        )
         if key == self._ht_key:
             return
         yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
@@ -3250,10 +3668,10 @@ class PosterizeEngine:
         d /= 0.7071  # 0 = dot centre, 1 = cell corner
         self.ht_tile[:] = np.clip(d * 235.0, 0, 255).astype(np.uint8)
         t = np.arange(256, dtype=np.float32) / 255.0
-        # sqrt: dot AREA follows brightness; 1.12 lets the highlights close up fully
-        self.ht_cover_lut[:, 0] = (255.0 * np.sqrt(np.clip(t * 1.12, 0, 1))).astype(
-            np.uint8
-        )
+        # sqrt: dot AREA follows brightness; a gain above 1 lets the highlights close up fully
+        self.ht_cover_lut[:, 0] = (
+            255.0 * np.sqrt(np.clip(t * POSTERIZE_HALFTONE_COVER_GAIN, 0, 1))
+        ).astype(np.uint8)
         self.ht_small = np.zeros((max(2, H // pitch), max(2, W // pitch)), np.uint8)
         # ramp width (grey levels) = softness in px * levels per px
         self.ht_gain = (
@@ -3312,11 +3730,12 @@ class PosterizeEngine:
         """Halo (+ neon core) from the final outline mask in self.edge_tmp."""
         H, W = FRAME_H, FRAME_W
         palette_mode = POSTERIZE_GLOW_COLOR == "palette"
-        key = POSTERIZE_GLOW_COLOR
+        key = (POSTERIZE_GLOW_COLOR, POSTERIZE_GLOW_CORE_LIFT)
         if not palette_mode and key != self._glow_key:
             col = np.array(POSTERIZE_GLOW_COLOR, dtype=np.float32)
+            lift = POSTERIZE_GLOW_CORE_LIFT
             self.glow_solid[:] = col.astype(np.uint8)
-            self.glow_core_solid[:] = (col * 0.5 + 127.5).astype(
+            self.glow_core_solid[:] = (col * (1.0 - lift) + 255.0 * lift).astype(
                 np.uint8
             )  # lighter core
             self._glow_key = key
@@ -3364,9 +3783,9 @@ class PosterizeEngine:
                 core = self.glow_core_solid
             cv2.copyTo(core, self.edge_tmp, self.poster)
 
-    def step(
-        self, frame, raw_knob, current_time, outline_style=None, outline_detail=None
-    ):
+    def step(self, frame, raw_knob, current_time, outline_style=None, clarity=0.0):
+        # clarity: 0-1, how much of the picture's readability is protected (see
+        # POSTERIZE_ASCII_CLARITY). apply_posterize passes it only while ASCII acts.
         s = self.strength(raw_knob)
         if s <= 0.0:
             return
@@ -3378,11 +3797,13 @@ class PosterizeEngine:
             )
         )
 
-        outdetail = outline_detail or POSTERIZE_DETAIL_HIGH
-        detail = POSTERIZE_DETAIL_LOW + (outdetail - POSTERIZE_DETAIL_LOW) * s
-
-        # outdetail = outline_detail or POSTERIZE_DETAIL_LOW
-        # detail = POSTERIZE_DETAIL_LOW + (POSTERIZE_DETAIL_HIGH - outdetail) * s
+        clarity = min(max(float(clarity), 0.0), 1.0)
+        # Brightness detail of the "bands" fill (the gradient and thermal fills do not use it):
+        # from DETAIL_LOW at the weakest strength to DETAIL_HIGH at full strength, and under
+        # clarity it falls only (1 - clarity) as far.
+        detail = POSTERIZE_DETAIL_LOW + (
+            (POSTERIZE_DETAIL_HIGH - POSTERIZE_DETAIL_LOW) * s * (1.0 - clarity)
+        )
 
         mix = POSTERIZE_MIX_START + (1.0 - POSTERIZE_MIX_START) * min(
             1.0, s / POSTERIZE_MIX_FULL_AT
@@ -3399,6 +3820,7 @@ class PosterizeEngine:
         dropout = (
             POSTERIZE_DROPOUT_LOW + (POSTERIZE_DROPOUT_HIGH - POSTERIZE_DROPOUT_LOW) * s
         )
+        dropout += clarity * POSTERIZE_ASCII_CLARITY_DROPOUT * (1.0 - dropout)
         jitter = int(
             round(s * POSTERIZE_JITTER_MAX_PX)
         )  # 0 = the sideways shift is skipped
@@ -3424,7 +3846,23 @@ class PosterizeEngine:
                 self.g_half, 1.0, noise, amp / 255.0, -amp / 2.0, dst=self.g_half
             )
         if POSTERIZE_SOLARIZE:  # fold the tone curve before bands and colours
-            cv2.LUT(self.g_half, self.solar_lut, dst=self.g_half)
+            lut = self.solar_lut
+            if clarity > 0.0:
+                # the turning point of the fold moves from POSTERIZE_SOLARIZE_POINT toward 239
+                if self._clear_key != (clarity, self._lut_key):
+                    t0 = float(min(max(POSTERIZE_SOLARIZE_POINT, 16), 239))
+                    t = t0 + clarity * (239.0 - t0)
+                    v = np.arange(256, dtype=np.float32)
+                    if POSTERIZE_SOLARIZE_STYLE == "invert":
+                        sol = np.where(v < t, v, 255.0 - v)
+                    else:
+                        sol = np.where(
+                            v < t, v * 255.0 / t, (255.0 - v) * 255.0 / (255.0 - t)
+                        )
+                    self.solar_lut_clear[:, 0] = np.clip(sol, 0, 255).astype(np.uint8)
+                    self._clear_key = (clarity, self._lut_key)
+                lut = self.solar_lut_clear
+            cv2.LUT(self.g_half, lut, dst=self.g_half)
         cv2.LUT(self.g_half, self.band_lut, dst=self.band_half)
 
         # 2. neon fill: band -> palette colour, modulated by the original brightness
@@ -3457,7 +3895,14 @@ class PosterizeEngine:
         cv2.compare(self.gray, POSTERIZE_BLACK_THRESHOLD, cv2.CMP_LT, dst=self.black)
         cv2.compare(self.gray, POSTERIZE_BLACK_RAMP, cv2.CMP_LT, dst=self.ramp)
         cv2.bitwise_xor(self.ramp, self.black, dst=self.ramp)
-        cv2.addWeighted(frame, 0.5, self.poster, 0.5, 0, dst=self.avg)
+        cv2.addWeighted(
+            frame,
+            1.0 - POSTERIZE_BLACK_RAMP_MIX,
+            self.poster,
+            POSTERIZE_BLACK_RAMP_MIX,
+            0,
+            dst=self.avg,
+        )
         cv2.copyTo(self.avg, self.ramp, self.poster)
         cv2.copyTo(frame, self.black, self.poster)
         cv2.bitwise_not(self.black, dst=self.nonblack)
@@ -3534,10 +3979,12 @@ def apply_posterize(raw_knob, current_time, ascii_active=False):
     """Posterize entry point. raw_knob 0-1023."""
     # While the ASCII effect is acting (on whichever knob it is attached to, in any processing
     # order) the outlines glow; otherwise they use POSTERIZE_OUTLINE_STYLE.
-    outline_style = "glow" if ascii_active else POSTERIZE_OUTLINE_STYLE
-    outline_detail = POSTERIZE_ASCII_DETAIL if ascii_active else None
+    outline_style = (
+        POSTERIZE_ASCII_OUTLINE_STYLE if ascii_active else POSTERIZE_OUTLINE_STYLE
+    )
+    clarity = POSTERIZE_ASCII_CLARITY if ascii_active else 0.0
     _POSTER.step(
-        MUTABLE_PROCESSING_BUFFER, raw_knob, current_time, outline_style, outline_detail
+        MUTABLE_PROCESSING_BUFFER, raw_knob, current_time, outline_style, clarity
     )
 
 
@@ -3982,7 +4429,9 @@ def _sweep_naked_backlog():
         )
 
 
-def cleanup_sessions(limit=100):
+def cleanup_sessions(limit=None):
+    if limit is None:
+        limit = CAPTURE_KEEP_COUNT
     if not _cleanup_guard.acquire(blocking=False):
         return  # another cleanup is running
     try:
@@ -3997,6 +4446,9 @@ def cleanup_sessions(limit=100):
         )
         if len(ids) <= limit:
             return
+        # A capture that was just written is always among the newest CAPTURE_KEEP_COUNT, and only
+        # captures older than those are archived, so a fresh capture cannot be archived before it is
+        # registered. The protection set matters for OLD captures that are still pending.
         protected = _protected_capture_ids()
         archived = skipped = clean_moved = 0
         for ts in ids[:-limit]:
@@ -4074,7 +4526,9 @@ def _write_capture_image(path, mat):
     # that happens after the print is queued (see _store_capture).
     for attempt in (1, 2):
         try:
-            ok, buf = cv2.imencode(".jpg", mat)
+            ok, buf = cv2.imencode(
+                ".jpg", mat, [int(cv2.IMWRITE_JPEG_QUALITY), CAPTURE_JPEG_QUALITY]
+            )
             if ok:
                 atomic_write_bytes(path, buf.tobytes())
                 return True
@@ -4220,7 +4674,7 @@ def _store_capture(disk_id, color_mat, bw_mat, active_knobs, naked_mat):
                 exc_info=True,
             )
 
-    cleanup_sessions(limit=100)
+    cleanup_sessions()
 
 
 def async_storage_worker(disk_id, color_mat, bw_mat, active_knobs, naked_mat=None):
@@ -4289,7 +4743,7 @@ def generate_composite_receipt_image(ts: str) -> str:
                     effective_qr_size,
                     max_allowed_qr,
                 )
-                effective_qr_size = max(64, max_allowed_qr)
+                effective_qr_size = max(RECEIPT_QR_MIN_PX, max_allowed_qr)
 
             # 3. Resize QR with NEAREST resampling to keep pure 1-bit square modules
             qr_resized = qr_img.convert("L").resize(
@@ -4368,7 +4822,7 @@ def print_booth_receipt(ts, offline_notice=False, on_cut=None):
         try:
             is_offline_capture = offline_notice
 
-            TARGET_WIDTH = 576
+            TARGET_WIDTH = RECEIPT_WIDTH_PX
             printer = File("/dev/usb/lp0")
             printer.hw("INIT")
             # -------------------------------------------------------------
@@ -4400,7 +4854,12 @@ def print_booth_receipt(ts, offline_notice=False, on_cut=None):
                     resized_img = img.resize(
                         (TARGET_WIDTH, target_height), Image.Resampling.LANCZOS
                     )
-                    dithered_img = resized_img.convert("1")
+                    if RECEIPT_DITHER == "none":
+                        dithered_img = resized_img.convert(
+                            "1", dither=getattr(Image, "Dither", Image).NONE
+                        )
+                    else:  # "floyd": Pillow's default error-diffusion
+                        dithered_img = resized_img.convert("1")
                     printer.image(dithered_img)
 
                 if not using_composite:
@@ -4501,6 +4960,8 @@ def print_worker():
         except Exception:
             logger.exception("[PRINTER] Print worker exception for session %s", ts)
         finally:
+            # Written by the print worker, read by the health monitor. One whole value (a number or None)
+            # assigned at once and read once into a local, which is atomic in CPython: no lock is needed.
             PRINT_JOB_STARTED = None
             with _print_ids_lock:
                 _print_ids.discard(ts)
@@ -4714,12 +5175,19 @@ def _idle_sync_pass(http):
 
 
 def idle_sync_worker():
+    http = requests.Session()
+    try:
+        _idle_sync_loop(http)
+    finally:
+        http.close()
+
+
+def _idle_sync_loop(http):
 
     # Low-priority background worker that retries the captures recorded in pending_uploads.txt
     # when the link recovers (and after a restart).
 
     logger.info("[INIT] Idle sync worker (pending upload retries): active.")
-    http = requests.Session()
     interval = max(1.0, float(IDLE_SYNC_INTERVAL))
     next_wait = interval
 
@@ -4847,8 +5315,15 @@ def _upload_processed(http, ts, slug, recorded):
 
 
 def upload_queue_worker():
-    logger.info("[INIT] Cloud Upload Worker: Active and bound.")
     http = requests.Session()
+    try:
+        _upload_queue_loop(http)
+    finally:
+        http.close()
+
+
+def _upload_queue_loop(http):
+    logger.info("[INIT] Cloud Upload Worker: Active and bound.")
 
     while not SHUTDOWN_EVENT.is_set():
         try:
@@ -5009,12 +5484,14 @@ def background_loop():
                     UI_DISPLAY_BUFFER[:] = FROZEN_DISPLAY_BUFFER[:]
                     if loop_mode == "countdown":
                         if (loop_monotonic - c_start) < FLASH_DURATION:
-                            UI_DISPLAY_BUFFER.fill(255)  # Pure white camera flash
+                            UI_DISPLAY_BUFFER[:] = FLASH_COLOUR[
+                                ::-1
+                            ]  # camera flash (RGB -> BGR)
                         else:
                             cv2.convertScaleAbs(
                                 UI_DISPLAY_BUFFER,
                                 dst=UI_DISPLAY_BUFFER,
-                                alpha=0.4,
+                                alpha=REVIEW_DIM_FACTOR,
                                 beta=0,
                             )
                 else:
@@ -5025,18 +5502,30 @@ def background_loop():
             with frame_lock:
                 _viewers = ACTIVE_STREAM_VIEWERS
                 _fid_check = FRAME_ID
-            should_encode = (_viewers > 0) or (_fid_check % 15 == 0)
+            should_encode = (_viewers > 0) or (
+                _fid_check % IDLE_PREVIEW_ENCODE_EVERY == 0
+            )
 
             if should_encode:
                 # The preview is only scaled and encoded when it is actually used.
                 stream_jpeg_quality = max(
-                    35, min(65, int(65 - (effect_intensity * 30)))
+                    STREAM_QUALITY_WORST,
+                    min(
+                        STREAM_QUALITY_BEST,
+                        int(
+                            STREAM_QUALITY_BEST
+                            - (
+                                effect_intensity
+                                * (STREAM_QUALITY_BEST - STREAM_QUALITY_WORST)
+                            )
+                        ),
+                    ),
                 )
-                quality = stream_jpeg_quality if _viewers > 0 else 20
+                quality = stream_jpeg_quality if _viewers > 0 else STREAM_QUALITY_IDLE
 
                 h, w = UI_DISPLAY_BUFFER.shape[:2]
 
-                if effect_intensity >= 0.55:
+                if effect_intensity >= PREVIEW_DOWNSCALE_FROM_INTENSITY:
                     target_preview_width = PREVIEW_DOWNSCALE_WIDTH
                 else:
                     target_preview_width = w
@@ -5080,24 +5569,29 @@ def background_loop():
                             camera_age,
                         )
                         set_notice(MSG_CAMERA, CAMERA_NOTICE_SECONDS)
-                        capture_lock_until = loop_execution_time + 1.2
+                        capture_lock_until = loop_execution_time + CAPTURE_LOCK_SECONDS
                     else:
                         with mode_lock:
                             ACTIVE_SESSION["mode"] = "pre-capture-countdown"
                             ACTIVE_SESSION["countdown_start_time"] = loop_monotonic
-                            ACTIVE_SESSION["countdown_remaining"] = 3
+                            ACTIVE_SESSION["countdown_remaining"] = (
+                                POSE_COUNTDOWN_SECONDS
+                            )
                             _set_notice_locked("", None)
 
                         logger.info(
-                            "[STATE ENGINE] Button pressed. Starting pre-capture countdown (3s pose window)."
+                            "[STATE ENGINE] Button pressed. Starting pre-capture countdown (%ss pose window).",
+                            POSE_COUNTDOWN_SECONDS,
                         )
 
-            # STATE 1B: PRE-CAPTURE COUNTDOWN - Live pose timer (3.. 2.. 1..) then snapshot capture
+            # STATE 1B: PRE-CAPTURE COUNTDOWN - Live pose timer (POSE_COUNTDOWN_SECONDS.. 2.. 1..) then snapshot capture
             elif loop_mode == "pre-capture-countdown":
                 time_delta = loop_monotonic - c_start
 
-                if time_delta < 3.0:
-                    remaining_steps = max(1, 3 - math.floor(time_delta))
+                if time_delta < POSE_COUNTDOWN_SECONDS:
+                    remaining_steps = max(
+                        1, POSE_COUNTDOWN_SECONDS - math.floor(time_delta)
+                    )
                     with mode_lock:
                         ACTIVE_SESSION["countdown_remaining"] = remaining_steps
                 else:
@@ -5201,12 +5695,11 @@ def background_loop():
             last_button_state = packet.button
 
             # Adaptive FPS governor
-            if effect_intensity >= 0.75:
-                dynamic_fps = 10
-            elif effect_intensity >= 0.55:
-                dynamic_fps = 12
-            else:
-                dynamic_fps = 15
+            dynamic_fps = CAMERA_FPS
+            for cost_from, step_fps in GOVERNOR_STEPS:  # highest cost first
+                if effect_intensity >= cost_from:
+                    dynamic_fps = step_fps
+                    break
 
             target_dt = 1.0 / dynamic_fps
 
@@ -5258,7 +5751,7 @@ def generate_frames():
     last_sent = 0
 
     try:
-        frame_interval = 1.0 / STREAM_FPS if STREAM_FPS > 0 else 1.0 / 15.0
+        frame_interval = 1.0 / CAMERA_FPS
 
         with frame_lock:
             ACTIVE_STREAM_VIEWERS += 1
@@ -5979,7 +6472,7 @@ def gallery():
     page = request.args.get(
         "page", 1, type=int
     )  # anything that is not a number: page 1
-    per_page = 12
+    per_page = GALLERY_PER_PAGE
 
     try:
         all_files = os.listdir(CAPTURE_DIR)
@@ -6081,12 +6574,15 @@ def delete_capture(session_id):
         printing = session_id in _print_ids
     with mode_lock:
         on_screen = ACTIVE_SESSION["session_id"] == session_id
-    if printing or on_screen:
+    uploading = (
+        session_id in inflight_snapshot()
+    )  # an upload attempt is running right now
+    if printing or on_screen or uploading:
         return (
             jsonify(
                 {
                     "status": "error",
-                    "message": "This capture is printing or on screen right now; try again in a moment",
+                    "message": "This capture is printing, on screen or uploading right now; try again in a moment",
                 }
             ),
             409,

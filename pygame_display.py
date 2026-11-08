@@ -67,12 +67,78 @@ logger.info(
 # ==============================================================================
 # PRESENTATION CANVASES & PERFECT PORTRAIT GEOMETRY MATH
 # ==============================================================================
-DISPLAY_W, DISPLAY_H = 768, 1365
+# SCREEN SETTINGS: every number, colour and sentence of the kiosk screen is set here, once.
+# Values the booth shares with server.py are NOT typed again; they are read from it:
+#   server.FRAME_W / FRAME_H (video size), server.POSE_COUNTDOWN_SECONDS, server.FLASH_COLOUR,
+#   server.FLASH_DURATION, server.BOOTH_VERSION and the UI_* colours.
+# Only values this screen alone needs are set below.
+DISPLAY_W, DISPLAY_H = 768, 1365  # the portrait screen, in pixels
 TARGET_FPS = 60
 
-# Video render frame target properties
-VIDEO_RENDER_W = 640
-VIDEO_RENDER_H = 480
+# Video render frame target properties: the same size the server produces
+VIDEO_RENDER_W = server.FRAME_W
+VIDEO_RENDER_H = server.FRAME_H
+
+# Colours (R, G, B). The shared ones come from server.py (UI_* constants).
+UI_GREEN = server.UI_GREEN
+UI_HIGHLIGHT = server.UI_HIGHLIGHT
+UI_GLOW_DIM = server.UI_GLOW_DIM
+UI_ALERT = server.UI_ALERT
+UI_NOTICE = server.UI_NOTICE
+UI_VIDEO_PLACEHOLDER = server.UI_VIDEO_PLACEHOLDER
+UI_BLACK = (0, 0, 0)
+
+# Fonts (name, size). A fallback font is used when the named one is not installed.
+UI_FONT_NAME, UI_FONT_SIZE = "Courier", 24
+COUNTDOWN_FONT_NAME, COUNTDOWN_FONT_SIZE = "Impact", 165
+PRINTING_FONT_NAME, PRINTING_FONT_SIZE = "Impact", 84
+NOTICE_FONT_NAME, NOTICE_FONT_SIZE, NOTICE_FONT_FALLBACK_SIZE = "Courier", 30, 34
+QR_GUIDE_FONT_NAME, QR_GUIDE_FONT_RATIO, QR_GUIDE_FONT_FALLBACK_RATIO = "Impact", 0.55, 0.6
+
+# Layout in pixels
+VIDEO_BORDER_PX = 2  # border around the video / photo
+HEADER_ROW1_Y, HEADER_ROW2_Y = 12, 34  # the two status rows on the latest screen
+HEADER_STATUS_X = 280  # x offset of the second status text on row 1
+KNOB_GLOW_OFFSET = (2, 2)  # shadow of a just-moved knob row (x, y)
+LATEST_QR_PX = 240  # QR on the latest screen (a square)
+LATEST_QR_GAP = 64  # gap between the photo and that QR
+LATEST_FOOTER_GAP = 45  # gap between that QR and the footer sentence
+NOTICE_SIDE_MARGIN = 60  # the notice text wraps this much narrower than the video
+NOTICE_BOX_PADDING = (40, 24)  # extra width and height of the notice box
+NOTICE_LINE_GAP = 6
+NOTICE_BORDER_PX = 2
+NOTICE_EDGE_GAP = 24  # gap from the top of the video, or below the PRINTING text
+
+# Sentences. They follow the web pages (latest.html, index.html), which this file cannot see.
+UI_HEADER = f"> GLITCH BOOTH {server.BOOTH_VERSION}"
+UI_KNOB_ERROR = "HATA!"  # shown instead of the value of a knob whose effect was switched off
+PRINTING_TEXT = "PRINTING"
+QR_GUIDE_TEXT = "QR"
+UI_INSTRUCTIONS = [
+    "> SOL <- DAHA ÇOK             DAHA AZ -> SAĞ",
+    ">  -     EFEKT                EFEKT       + ",
+    "---------------------------------------------",
+    "> AYARLARLA OYNA, KENDİ EFEKTİNİ YARAT,",
+    "> GLITCH ETKİSİNİ İSTEDİĞİN GİBİ AYARLA,",
+    f"> DÜĞMEYE BAS, POZ VERMEK İÇİN {server.POSE_COUNTDOWN_SECONDS} SANİYEN VAR!",
+    "> GLITCH FOTOGRAFIN HIZLICA BASILACAK. :)",
+]
+UI_LATEST_SYS_ID = "> SYS_ID: {}"
+UI_LATEST_SAVED = "> STATUS: CAPTURE_SAVED"
+UI_LATEST_UPLOAD = {
+    "SUCCESS": "> STATUS: UPLOAD_COMPLETE",
+    "FAILED": "> CLOUD_UPLOAD_FAILED",
+}
+UI_LATEST_UPLOAD_PENDING = "> INIT_UPLOADING..."
+UI_LATEST_FOOTER = "> FOTOĞRAF ÇEKME MODUNA GERİ DÖNMEK İÇİN DÜĞMEYE BAS!"
+
+# Ticker tape of photos under the video, and the glitch sound loop
+TICKER_MAX_ITEMS = 100  # photos kept in the ticker (also the most picked at start)
+TICKER_SPEED = 0.9  # pixels per frame
+AUDIO_DIR = "static/sounds"
+AUDIO_PATTERN = "glitch-*.wav"
+AUDIO_PAUSE_SECONDS = (0.5, 1.2)  # random pause between two sounds
+AUDIO_POLL_SECONDS = 0.05
 
 # Exact portrait canvas grid spacing: horizontally center, fix 64px top margin
 PADDING_LEFT = (DISPLAY_W - VIDEO_RENDER_W) // 2  # (768 - 640) // 2 = 64px
@@ -166,9 +232,9 @@ pygame.font.init()
 
 # Cold compile retro terminal style typography engine
 try:
-    ui_font = pygame.font.SysFont("Courier", 24, bold=True)
+    ui_font = pygame.font.SysFont(UI_FONT_NAME, UI_FONT_SIZE, bold=True)
 except Exception:
-    ui_font = pygame.font.Font(None, 24)
+    ui_font = pygame.font.Font(None, UI_FONT_SIZE)
 
 flags = pygame.DOUBLEBUF | pygame.HWSURFACE | pygame.FULLSCREEN
 
@@ -200,12 +266,12 @@ COUNTDOWN_MARGIN_Y = int(os.getenv("COUNTDOWN_MARGIN_Y", "16"))
 CORNER_COUNTDOWN_SURFACES = {}
 CORNER_COUNTDOWN_RECTS = {}
 try:
-    corner_font = pygame.font.SysFont("Impact", 165)
+    corner_font = pygame.font.SysFont(COUNTDOWN_FONT_NAME, COUNTDOWN_FONT_SIZE)
 except Exception:
-    corner_font = pygame.font.Font(None, 165)
+    corner_font = pygame.font.Font(None, COUNTDOWN_FONT_SIZE)
 
-for count in [3, 2, 1]:
-    surf = corner_font.render(str(count), True, (0, 255, 0))
+for count in range(server.POSE_COUNTDOWN_SECONDS, 0, -1):  # e.g. 3, 2, 1
+    surf = corner_font.render(str(count), True, UI_GREEN)
     CORNER_COUNTDOWN_SURFACES[count] = surf.convert_alpha()
     rect = surf.get_rect()
 
@@ -245,20 +311,20 @@ for count in [3, 2, 1]:
 
 # 2. Pre-render centered "PRINTING" overlay for post-capture state
 try:
-    printing_font = pygame.font.SysFont("Impact", 84)
+    printing_font = pygame.font.SysFont(PRINTING_FONT_NAME, PRINTING_FONT_SIZE)
 except Exception:
-    printing_font = pygame.font.Font(None, 84)
+    printing_font = pygame.font.Font(None, PRINTING_FONT_SIZE)
 
-PRINTING_SURF = printing_font.render("PRINTING", True, (0, 255, 0)).convert_alpha()
+PRINTING_SURF = printing_font.render(PRINTING_TEXT, True, UI_GREEN).convert_alpha()
 PRINTING_RECT = PRINTING_SURF.get_rect()
 PRINTING_RECT.center = VIDEO_RECT.center
 
 # 3. Notice box (camera problem in the live view, print problem while printing)
 try:
-    notice_font = pygame.font.SysFont("Courier", 30, bold=True)
+    notice_font = pygame.font.SysFont(NOTICE_FONT_NAME, NOTICE_FONT_SIZE, bold=True)
 except Exception:
-    notice_font = pygame.font.Font(None, 34)
-NOTICE_COLOR = (255, 90, 90)
+    notice_font = pygame.font.Font(None, NOTICE_FONT_FALLBACK_SIZE)
+NOTICE_COLOR = UI_NOTICE
 _notice_cache = {"text": None, "surfaces": []}
 
 
@@ -281,7 +347,9 @@ def notice_surfaces(text):
         _notice_cache["text"] = text
         _notice_cache["surfaces"] = [
             notice_font.render(line, True, NOTICE_COLOR)
-            for line in wrap_notice(text, notice_font, VIDEO_RECT.width - 60)
+            for line in wrap_notice(
+                text, notice_font, VIDEO_RECT.width - NOTICE_SIDE_MARGIN
+            )
         ]
     return _notice_cache["surfaces"]
 
@@ -291,23 +359,23 @@ def draw_notice(canvas, text, where):
     lines = notice_surfaces(text)
     if not lines:
         return
-    line_h = lines[0].get_height() + 6
+    line_h = lines[0].get_height() + NOTICE_LINE_GAP
     box = pygame.Rect(
         0,
         0,
-        max(surf.get_width() for surf in lines) + 40,
-        line_h * len(lines) + 24,
+        max(surf.get_width() for surf in lines) + NOTICE_BOX_PADDING[0],
+        line_h * len(lines) + NOTICE_BOX_PADDING[1],
     )
     box.centerx = VIDEO_RECT.centerx
     if where == "below_printing":
-        box.top = PRINTING_RECT.bottom + 24
+        box.top = PRINTING_RECT.bottom + NOTICE_EDGE_GAP
     elif where == "top":
-        box.top = VIDEO_RECT.top + 24
+        box.top = VIDEO_RECT.top + NOTICE_EDGE_GAP
     else:
         box.centery = VIDEO_RECT.centery
-    pygame.draw.rect(canvas, (0, 0, 0), box)
-    pygame.draw.rect(canvas, NOTICE_COLOR, box, 2)
-    y = box.top + 12
+    pygame.draw.rect(canvas, UI_BLACK, box)
+    pygame.draw.rect(canvas, NOTICE_COLOR, box, NOTICE_BORDER_PX)
+    y = box.top + NOTICE_BOX_PADDING[1] // 2
     for surf in lines:
         canvas.blit(surf, (box.centerx - surf.get_width() // 2, y))
         y += line_h
@@ -315,12 +383,16 @@ def draw_notice(canvas, text, where):
 # QR Guide Indicator — pre-render once at startup
 if QR_GUIDE_ENABLED:
     qr_guide_surface = pygame.Surface((QR_GUIDE_SIZE, QR_GUIDE_SIZE))
-    qr_guide_surface.fill((0, 255, 0))
+    qr_guide_surface.fill(UI_GREEN)
     try:
-        qr_guide_font = pygame.font.SysFont("Impact", int(QR_GUIDE_SIZE * 0.55))
+        qr_guide_font = pygame.font.SysFont(
+            QR_GUIDE_FONT_NAME, int(QR_GUIDE_SIZE * QR_GUIDE_FONT_RATIO)
+        )
     except Exception:
-        qr_guide_font = pygame.font.Font(None, int(QR_GUIDE_SIZE * 0.6))
-    qr_text_surf = qr_guide_font.render("QR", True, (0, 0, 0))
+        qr_guide_font = pygame.font.Font(
+            None, int(QR_GUIDE_SIZE * QR_GUIDE_FONT_FALLBACK_RATIO)
+        )
+    qr_text_surf = qr_guide_font.render(QR_GUIDE_TEXT, True, UI_BLACK)
     qr_text_rect = qr_text_surf.get_rect(
         center=(QR_GUIDE_SIZE // 2, QR_GUIDE_SIZE // 2)
     )
@@ -363,9 +435,9 @@ if os.path.exists(target_dir):
         if f.lower().endswith((".jpg", ".jpeg", ".png")):
             candidate_images.append(os.path.join(target_dir, f))
 
-# 2. If archive has fewer than 100 images, supplement with images from active captures
+# 2. If archive has fewer than TICKER_MAX_ITEMS images, supplement with images from active captures
 if (
-    len(candidate_images) < 100
+    len(candidate_images) < TICKER_MAX_ITEMS
     and os.path.exists(server.CAPTURE_DIR)
     and server.CAPTURE_DIR != target_dir
 ):
@@ -373,8 +445,8 @@ if (
         if f.lower().endswith((".jpg", ".jpeg", ".png")):
             candidate_images.append(os.path.join(server.CAPTURE_DIR, f))
 
-# 3. Select up to 100 random unique images across the entire pool
-sample_size = min(100, len(candidate_images))
+# 3. Select up to TICKER_MAX_ITEMS random unique images across the entire pool
+sample_size = min(TICKER_MAX_ITEMS, len(candidate_images))
 selected_images = (
     random.sample(candidate_images, sample_size) if candidate_images else []
 )
@@ -396,7 +468,7 @@ for img_path in selected_images:
         logger.warning("[DISPLAY INIT] Skipping unreadable image asset %s: %s", img_path, err)
 
 ticker_scroll_x = 0.0
-ticker_velocity = 0.9
+ticker_velocity = TICKER_SPEED
 
 logger.info(
     "[DISPLAY INIT] System pre-cached. Ribbon tape references: %d",
@@ -415,7 +487,7 @@ def audio_loop():
 
     sounds = []
 
-    for wav in Path("static/sounds").glob("glitch-*.wav"):
+    for wav in Path(AUDIO_DIR).glob(AUDIO_PATTERN):
         try:
             sounds.append(pygame.mixer.Sound(str(wav)))
         except Exception as err:
@@ -433,9 +505,9 @@ def audio_loop():
 
         if channel:
             while channel.get_busy() and RUN_AUDIO:
-                time.sleep(0.05)
+                time.sleep(AUDIO_POLL_SECONDS)
 
-        time.sleep(random.uniform(0.5, 1.2))
+        time.sleep(random.uniform(*AUDIO_PAUSE_SECONDS))
 
 
 pygame.mixer.init()
@@ -467,7 +539,7 @@ try:
                     raise KeyboardInterrupt
 
         # Refresh virtual display root bounds
-        virtual_canvas.fill((0, 0, 0))
+        virtual_canvas.fill(UI_BLACK)
 
         # Atomic transaction extraction of session flags from state machine
         with server.mode_lock:
@@ -542,10 +614,10 @@ try:
                     )
                 virtual_canvas.blit(scaled_video_surface, VIDEO_RECT)
             else:
-                pygame.draw.rect(virtual_canvas, (20, 20, 25), VIDEO_RECT)
+                pygame.draw.rect(virtual_canvas, UI_VIDEO_PLACEHOLDER, VIDEO_RECT)
 
             # Draw crisp frame housing border
-            pygame.draw.rect(virtual_canvas, (0, 255, 0), VIDEO_RECT, 2)
+            pygame.draw.rect(virtual_canvas, UI_GREEN, VIDEO_RECT, VIDEO_BORDER_PX)
 
             # Draw QR placement guide indicator (live & countdown only)
             if QR_GUIDE_ENABLED and current_mode != "countdown":
@@ -580,8 +652,8 @@ try:
             # Blit post-capture: FLASH then "PRINTING" overlay over frozen feed
             elif current_mode == "countdown":
                 c_delta = time.monotonic() - countdown_start_time
-                if c_delta < getattr(server, "FLASH_DURATION", 0.3):
-                    virtual_canvas.fill((255, 255, 255), VIDEO_RECT)
+                if c_delta < server.FLASH_DURATION:
+                    virtual_canvas.fill(server.FLASH_COLOUR, VIDEO_RECT)
                 else:
                     virtual_canvas.blit(PRINTING_SURF, PRINTING_RECT)
 
@@ -594,14 +666,14 @@ try:
                 )
 
             # Draw Header Title above the video stream
-            header_surf = ui_font.render("> GLITCH BOOTH beta 04", True, (0, 255, 0))
+            header_surf = ui_font.render(UI_HEADER, True, UI_GREEN)
             virtual_canvas.blit(header_surf, (PADDING_LEFT, CLEARANCE_MARGIN))
 
             # Draw Telemetry Panel (Knobs matched directly with index.html layouts)
             panel_y = TICKER_START_Y + TICKER_ITEM_H + CLEARANCE_MARGIN
             pygame.draw.line(
                 virtual_canvas,
-                (0, 255, 0),
+                UI_GREEN,
                 (PADDING_LEFT, panel_y),
                 (PADDING_LEFT + VIDEO_RENDER_W, panel_y),
                 1,
@@ -609,21 +681,24 @@ try:
             panel_y += CLEARANCE_MARGIN
 
             # Render Live Telemetry Panel matching index.html aesthetics and glow highlights
-            # start_y = 750
-            # row_height = 42
             for idx, (k_id, label) in enumerate(KNOB_ROWS):
                 val = current_knobs[k_id] if k_id < len(current_knobs) else 0
-                is_changing = (time.time() - knob_changed_times[k_id]) < 0.2
+                is_changing = (
+                    time.time() - knob_changed_times[k_id]
+                ) < server.UI_KNOB_HIGHLIGHT_SECONDS
 
                 row_y = panel_y + (idx * CLEARANCE_MARGIN)
 
                 if is_changing:
-                    color = (209, 255, 201)  # High-contrast highlight color (#d1ffc9)
+                    color = UI_HIGHLIGHT  # High-contrast highlight color (#d1ffc9)
                     # Create a subtle glow offset to replicate text-shadow
-                    glow_surf = ui_font.render(f"> {label}", True, (0, 80, 0))
-                    virtual_canvas.blit(glow_surf, (66, row_y + 2))
+                    glow_surf = ui_font.render(f"> {label}", True, UI_GLOW_DIM)
+                    virtual_canvas.blit(
+                        glow_surf,
+                        (PADDING_LEFT + KNOB_GLOW_OFFSET[0], row_y + KNOB_GLOW_OFFSET[1]),
+                    )
                 else:
-                    color = (0, 255, 0)  # Standard matrix terminal green
+                    color = UI_GREEN  # Standard matrix terminal green
 
                 # Render label text
                 lbl_surf = ui_font.render(f"> {label}", True, color)
@@ -631,7 +706,7 @@ try:
 
                 # Render value right-aligned (a warning instead, if the effect is switched off)
                 if _knob_failed[k_id]:
-                    val_surf = ui_font.render("HATA!", True, (255, 60, 60))
+                    val_surf = ui_font.render(UI_KNOB_ERROR, True, UI_ALERT)
                 else:
                     val_surf = ui_font.render(str(val), True, color)
                 val_x = DISPLAY_W - PADDING_LEFT - val_surf.get_width()
@@ -642,7 +717,7 @@ try:
 
             pygame.draw.line(
                 virtual_canvas,
-                (0, 255, 0),
+                UI_GREEN,
                 (PADDING_LEFT, panel_y),
                 (PADDING_LEFT + VIDEO_RENDER_W, panel_y),
                 1,
@@ -650,25 +725,15 @@ try:
             panel_y += LINE_PADDING
             pygame.draw.line(
                 virtual_canvas,
-                (0, 255, 0),
+                UI_GREEN,
                 (PADDING_LEFT, panel_y),
                 (PADDING_LEFT + VIDEO_RENDER_W, panel_y),
                 1,
             )
             panel_y += LINE_PADDING
 
-            instructions = [
-                "> SOL <- DAHA ÇOK             DAHA AZ -> SAĞ",
-                ">  -     EFEKT                EFEKT       + ",
-                "---------------------------------------------",
-                "> AYARLARLA OYNA, KENDİ EFEKTİNİ YARAT,",
-                "> GLITCH ETKİSİNİ İSTEDİĞİN GİBİ AYARLA,",
-                "> DÜĞMEYE BAS, POZ VERMEK İÇİN 3 SANİYEN VAR!",
-                "> GLITCH FOTOGRAFIN HIZLICA BASILACAK. :)",
-            ]
-
-            for line in instructions:
-                inst_surf = ui_font.render(line, True, (0, 255, 0))
+            for line in UI_INSTRUCTIONS:
+                inst_surf = ui_font.render(line, True, UI_GREEN)
                 virtual_canvas.blit(inst_surf, (PADDING_LEFT, panel_y))
                 panel_y += CLEARANCE_MARGIN
 
@@ -694,7 +759,7 @@ try:
 
                             # Zero-Scan Memory Array Splice Execution
                             ticker_surface_array.insert(0, ticker_item)
-                            if len(ticker_surface_array) > 100:
+                            if len(ticker_surface_array) > TICKER_MAX_ITEMS:
                                 ticker_surface_array.pop()
 
                             # flip the image, scale and put it on display surface
@@ -705,7 +770,7 @@ try:
 
                             raw_qr = pygame.image.load(qr_path)
                             latest_qr_surface = pygame.transform.scale(
-                                raw_qr, (240, 240)
+                                raw_qr, (LATEST_QR_PX, LATEST_QR_PX)
                             ).convert()
 
                             last_processed_session_id = current_session_id
@@ -751,45 +816,47 @@ try:
 
                 if latest_display_surface is not None:
                     virtual_canvas.blit(latest_display_surface, VIDEO_RECT)
-                pygame.draw.rect(virtual_canvas, (0, 255, 0), VIDEO_RECT, 2)
+                pygame.draw.rect(virtual_canvas, UI_GREEN, VIDEO_RECT, VIDEO_BORDER_PX)
 
                 # Render copy text from latest.html above the portrait showcase
-                sys_id_text = f"> SYS_ID: {current_session_id}"
-                status_text = "> STATUS: CAPTURE_SAVED"
+                sys_id_text = UI_LATEST_SYS_ID.format(current_session_id)
+                status_text = UI_LATEST_SAVED
+                upload_text = UI_LATEST_UPLOAD.get(
+                    upload_status, UI_LATEST_UPLOAD_PENDING
+                )
 
-                if upload_status == "SUCCESS":
-                    upload_text = "> STATUS: UPLOAD_COMPLETE"
-                elif upload_status == "FAILED":
-                    upload_text = "> CLOUD_UPLOAD_FAILED"
-                else:
-                    upload_text = "> INIT_UPLOADING..."
+                sys_surf = ui_font.render(sys_id_text, True, UI_GREEN)
+                status_surf = ui_font.render(status_text, True, UI_GREEN)
+                upload_surf = ui_font.render(upload_text, True, UI_GREEN)
 
-                sys_surf = ui_font.render(sys_id_text, True, (0, 255, 0))
-                status_surf = ui_font.render(status_text, True, (0, 255, 0))
-                upload_surf = ui_font.render(upload_text, True, (0, 255, 0))
-
-                virtual_canvas.blit(sys_surf, (PADDING_LEFT, 12))
-                virtual_canvas.blit(status_surf, (PADDING_LEFT + 280, 12))
-                virtual_canvas.blit(upload_surf, (PADDING_LEFT, 34))
+                virtual_canvas.blit(sys_surf, (PADDING_LEFT, HEADER_ROW1_Y))
+                virtual_canvas.blit(
+                    status_surf, (PADDING_LEFT + HEADER_STATUS_X, HEADER_ROW1_Y)
+                )
+                virtual_canvas.blit(upload_surf, (PADDING_LEFT, HEADER_ROW2_Y))
 
                 if latest_qr_surface is not None:
-                    qr_x = (DISPLAY_W - 240) // 2
-                    qr_y = VIDEO_RECT.bottom + 64
+                    qr_x = (DISPLAY_W - LATEST_QR_PX) // 2
+                    qr_y = VIDEO_RECT.bottom + LATEST_QR_GAP
                     virtual_canvas.blit(latest_qr_surface, (qr_x, qr_y))
                     pygame.draw.rect(
-                        virtual_canvas, (0, 255, 0), (qr_x, qr_y, 240, 240), 2
+                        virtual_canvas,
+                        UI_GREEN,
+                        (qr_x, qr_y, LATEST_QR_PX, LATEST_QR_PX),
+                        2,
                     )
                 if current_notice:
                     draw_notice(virtual_canvas, current_notice, "top")
                 # Render terminal footer copy below the scannable area
-                footer_text = "> FOTOĞRAF ÇEKME MODUNA GERİ DÖNMEK İÇİN DÜĞMEYE BAS!"
-                footer_surf = ui_font.render(footer_text, True, (0, 255, 0))
+                footer_surf = ui_font.render(UI_LATEST_FOOTER, True, UI_GREEN)
                 virtual_canvas.blit(
                     footer_surf,
-                    ((DISPLAY_W - footer_surf.get_width()) // 2, qr_y + 240 + 45),
+                    (
+                        (DISPLAY_W - footer_surf.get_width()) // 2,
+                        qr_y + LATEST_QR_PX + LATEST_FOOTER_GAP,
+                    ),
                 )
 
-        # Inside your main while loop, right near the frame rendering blocks:
         if server.ACTIVE_SESSION.get("exit_to_terminal", False):
             logger.info("[WATCHDOG] Web interface requested clean exit to terminal.")
             break
