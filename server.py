@@ -132,6 +132,13 @@ from config.settings import (
     IK_UPLOADS_ENABLED,
     LEGACY_LEDGER_SLUG,
     NAKED_CAPTURE_ENABLED,
+    NETWORK_CHECK_STEP,
+    NETWORK_PROBE_HOST,
+    NETWORK_PROBE_INTERVAL,
+    NETWORK_PROBE_MIN_GAP,
+    NETWORK_PROBE_PORT,
+    NETWORK_PROBE_TIMEOUT,
+    NETWORK_RETRY_INTERVAL,
     PRINT_ALPHA,
     PRINT_BETA,
     RECEIPT_QR_CORNER,
@@ -642,6 +649,12 @@ MSG_PRINT_FAILED = "BASKIDA BİR SORUN YAŞANDI :("
 # Set while the last upload failed for good (offline); any upload that works clears it.
 # The receipt uses it to choose between the normal and the offline text.
 NETWORK_OFFLINE = threading.Event()
+
+# The ONLINE / OFFLINE mark of the kiosk screen, kept up to date by network_status_worker().
+# NETWORK_ONLINE is set while the booth has a network address and can reach the upload host.
+# NETWORK_CHECKED is set once the first check is done (until then the screen shows nothing).
+NETWORK_ONLINE = threading.Event()
+NETWORK_CHECKED = threading.Event()
 
 
 # SESSION STATE HELPERS
@@ -1293,6 +1306,94 @@ def telemetry_worker():
         if SHUTDOWN_EVENT.wait(timeout=2.0):
             break
     logger.info("[SHUTDOWN] System monitor exited cleanly.")
+
+
+def _probe_upload_host():
+    # One TCP connection to the host the uploads need, opened and closed at once.
+    # Returns None when it connects, otherwise the reason it did not.
+    try:
+        with socket.create_connection(
+            (NETWORK_PROBE_HOST, NETWORK_PROBE_PORT), timeout=NETWORK_PROBE_TIMEOUT
+        ):
+            return None
+    except OSError as exc:
+        return f"cannot reach {NETWORK_PROBE_HOST}:{NETWORK_PROBE_PORT} ({exc})"
+
+
+def network_status_worker():
+    # Keeps NETWORK_ONLINE (the ONLINE / OFFLINE mark on the kiosk screen) up to date.
+    # ONLINE = the booth has a network address AND the upload host can be reached.
+    # The address check is a local lookup (no traffic). The probe (one short TCP connection) runs
+    # once per NETWORK_PROBE_INTERVAL (every NETWORK_RETRY_INTERVAL while the last one failed, so
+    # the mark comes back quickly), at once when the address appears, and when an upload has just
+    # failed (NETWORK_OFFLINE was set), never more often than NETWORK_PROBE_MIN_GAP.
+    # A failed upload alone does not make the mark OFFLINE: it can have other causes (a rejected
+    # key, a full queue). The probe decides.
+    logger.info(
+        "[INIT] Network status worker (ONLINE / OFFLINE mark on the screen): active."
+    )
+    step = max(1.0, float(NETWORK_CHECK_STEP))
+    interval = max(step, float(NETWORK_PROBE_INTERVAL))
+    retry = max(step, float(NETWORK_RETRY_INTERVAL))
+    min_gap = max(1.0, float(NETWORK_PROBE_MIN_GAP))
+    last_probe = None  # monotonic time of the last probe
+    probe_result = "not probed yet"  # None = connected, otherwise why not
+    had_address = False
+    upload_failed = False
+    probe_wanted = False
+    shown = None
+
+    while not SHUTDOWN_EVENT.is_set():
+        try:
+            now = time.monotonic()
+            has_address = get_actual_ip() != "127.0.0.1"
+            failed_now = NETWORK_OFFLINE.is_set()
+            if (has_address and not had_address) or (failed_now and not upload_failed):
+                probe_wanted = True
+            had_address, upload_failed = has_address, failed_now
+
+            if not has_address:
+                reason = "no network address"
+                probe_result = "not probed yet"  # the next probe has to confirm again
+            else:
+                wait_for = interval if probe_result is None else retry
+                due = last_probe is None or now - last_probe >= wait_for
+                gap_ok = last_probe is None or now - last_probe >= min_gap
+                if gap_ok and (due or probe_wanted):
+                    probe_result = _probe_upload_host()
+                    last_probe = time.monotonic()
+                    probe_wanted = False
+                reason = probe_result
+
+            online = reason is None
+            if online != shown:
+                if online:
+                    logger.info(
+                        "[NETWORK] ONLINE (%s:%s reachable)",
+                        NETWORK_PROBE_HOST,
+                        NETWORK_PROBE_PORT,
+                    )
+                else:
+                    logger.warning("[NETWORK] OFFLINE: %s", reason)
+                shown = online
+            if online:
+                NETWORK_ONLINE.set()
+            else:
+                NETWORK_ONLINE.clear()
+            NETWORK_CHECKED.set()
+        except Exception as e:
+            log_throttled(
+                logger,
+                logging.WARNING,
+                "netstatus-fault",
+                60.0,
+                "[NETWORK] Could not check the network status: %s",
+                e,
+            )
+
+        if SHUTDOWN_EVENT.wait(timeout=step):
+            break
+    logger.info("[SHUTDOWN] Network status worker exited cleanly.")
 
 
 def open_camera():
@@ -5470,6 +5571,10 @@ def start_backend_engine(blocking=False):
     # The health monitor starts last: every thread it watches exists by now.
     HealthMonitor(notify=lambda: sd_notify("WATCHDOG=1")).start()
     threading.Thread(target=check_service_unit, name="UnitCheck", daemon=True).start()
+    # Not a critical worker: the ONLINE / OFFLINE mark must never be able to stop the booth.
+    threading.Thread(
+        target=network_status_worker, name="NetworkStatusWorker", daemon=True
+    ).start()
 
     if blocking:
         while not SHUTDOWN_EVENT.wait(1.0):

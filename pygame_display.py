@@ -72,7 +72,8 @@ logger.info(
 # SCREEN SETTINGS: every number, colour and sentence of the kiosk screen is set here, once.
 # Values the booth shares with server.py are NOT typed again; they are read from it:
 #   server.FRAME_W / FRAME_H (video size), server.POSE_COUNTDOWN_SECONDS, server.FLASH_COLOUR,
-#   server.FLASH_DURATION, server.BOOTH_VERSION and the UI_* colours.
+#   server.FLASH_DURATION, server.BOOTH_VERSION, the UI_* colours and the ONLINE / OFFLINE state
+#   (server.NETWORK_ONLINE, server.NETWORK_CHECKED).
 # Only values this screen alone needs are set below.
 DISPLAY_W, DISPLAY_H = 768, 1365  # the portrait screen, in pixels
 TARGET_FPS = 60
@@ -117,6 +118,10 @@ NOTICE_EDGE_GAP = 24  # gap from the top of the video, or below the PRINTING tex
 
 # Sentences. They follow the web pages (latest.html, index.html), which this file cannot see.
 UI_HEADER = f"> GLITCH BOOTH {server.BOOTH_VERSION}"
+UI_NET_ONLINE = "ONLINE"  # mark at the top right of the live and the latest screen
+UI_NET_OFFLINE = "OFFLINE"
+UI_NET_ONLINE_COLOUR = UI_GREEN
+UI_NET_OFFLINE_COLOUR = UI_ALERT
 UI_KNOB_ERROR = (
     "HATA!"  # shown instead of the value of a knob whose effect was switched off
 )
@@ -327,6 +332,27 @@ except Exception:
 PRINTING_SURF = printing_font.render(PRINTING_TEXT, True, UI_GREEN).convert_alpha()
 PRINTING_RECT = PRINTING_SURF.get_rect()
 PRINTING_RECT.center = VIDEO_RECT.center
+
+
+# 2b. ONLINE / OFFLINE mark, top right: its right edge is the right edge of the video.
+# Live screen: level with the header (which is on the left). Latest screen: on the
+# second status row (the first row is taken by the two status texts).
+def _net_mark(text, colour):
+    return ui_font.render(text, True, colour).convert_alpha()
+
+
+NET_SURFS = {
+    True: _net_mark(UI_NET_ONLINE, UI_NET_ONLINE_COLOUR),
+    False: _net_mark(UI_NET_OFFLINE, UI_NET_OFFLINE_COLOUR),
+}
+NET_POS = {
+    state: surf.get_rect(topright=(VIDEO_RECT.right, CLEARANCE_MARGIN)).topleft
+    for state, surf in NET_SURFS.items()
+}
+NET_POS_LATEST = {
+    state: surf.get_rect(topright=(VIDEO_RECT.right, HEADER_ROW2_Y)).topleft
+    for state, surf in NET_SURFS.items()
+}
 
 # 3. Notice box (camera problem in the live view, print problem while printing)
 try:
@@ -687,6 +713,12 @@ try:
             header_surf = ui_font.render(UI_HEADER, True, UI_GREEN)
             virtual_canvas.blit(header_surf, (PADDING_LEFT, CLEARANCE_MARGIN))
 
+            # ONLINE / OFFLINE mark, opposite corner of the header (nothing until the
+            # first check)
+            if server.NETWORK_CHECKED.is_set():
+                net_online = server.NETWORK_ONLINE.is_set()
+                virtual_canvas.blit(NET_SURFS[net_online], NET_POS[net_online])
+
             # Draw Telemetry Panel (Knobs matched directly with index.html layouts)
             panel_y = TICKER_START_Y + TICKER_ITEM_H + CLEARANCE_MARGIN
             pygame.draw.line(
@@ -855,6 +887,13 @@ try:
                     status_surf, (PADDING_LEFT + HEADER_STATUS_X, HEADER_ROW1_Y)
                 )
                 virtual_canvas.blit(upload_surf, (PADDING_LEFT, HEADER_ROW2_Y))
+
+                # ONLINE / OFFLINE mark on the right of the second status row
+                if server.NETWORK_CHECKED.is_set():
+                    net_online = server.NETWORK_ONLINE.is_set()
+                    virtual_canvas.blit(
+                        NET_SURFS[net_online], NET_POS_LATEST[net_online]
+                    )
 
                 if latest_qr_surface is not None:
                     qr_x = (DISPLAY_W - LATEST_QR_PX) // 2

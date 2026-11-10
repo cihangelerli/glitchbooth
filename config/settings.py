@@ -8,6 +8,7 @@ unchanged and in the same order. Looks, feel and performance live in tuning.py.
 import base64
 import logging
 import os
+from urllib.parse import urlsplit
 
 from config.env import _cfg_number
 
@@ -109,6 +110,19 @@ LEGACY_LEDGER_SLUG = ""
 # fileId and a filePath ending in the file name. False = HTTP 200 alone counts (old behaviour).
 UPLOAD_VALIDATE_RESPONSE = True
 IK_UPLOAD_URL = "https://upload.imagekit.io/api/v1/files/upload"
+
+# ONLINE / OFFLINE mark on the kiosk screen. The probe is one TCP connection to the host the
+# uploads need, opened and closed at once: one DNS lookup and one handshake per interval, no data.
+NETWORK_PROBE_HOST = urlsplit(IK_UPLOAD_URL).hostname
+NETWORK_PROBE_PORT = 443
+# Seconds between two probes: while the last one connected, and while it did not.
+NETWORK_PROBE_INTERVAL = 120.0
+NETWORK_RETRY_INTERVAL = 30.0
+NETWORK_PROBE_TIMEOUT = 3.0  # seconds a probe may take to connect
+# Shortest time between two probes (also after a failed upload), and how often the
+# address and the upload flag are looked at (no traffic).
+NETWORK_PROBE_MIN_GAP = 10.0
+NETWORK_CHECK_STEP = 5.0
 
 
 SERIAL_PORTS = ["/dev/ttyUSB0", "/dev/ttyACM0"]
