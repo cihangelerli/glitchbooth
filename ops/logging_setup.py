@@ -174,6 +174,17 @@ def setup_logging():
         log_queue = queue.Queue(-1)
         queue_handler = logging.handlers.QueueHandler(log_queue)
         root = logging.getLogger()
+        # A library imported before this point (python-escpos does) can attach its own console
+        # handler to the root logger; it printed every message a second time, in a plain format.
+        # Our listener is the only console writer from here on.
+        foreign_console = [
+            handler
+            for handler in root.handlers
+            if type(handler) is logging.StreamHandler
+            and handler.stream in (sys.stderr, sys.stdout)
+        ]
+        for handler in foreign_console:
+            root.removeHandler(handler)
         root.setLevel(min(handler.level for handler in handlers))
         root.addHandler(queue_handler)
         listener = logging.handlers.QueueListener(
@@ -189,6 +200,11 @@ def setup_logging():
         atexit.register(shutdown_logging)
 
     boot = logging.getLogger("glitchbooth")
+    for handler in foreign_console:
+        boot.debug(
+            "[LOG] Removed a console handler that a library had attached to the root logger: %r",
+            handler,
+        )
     if file_error is None:
         boot.info(
             "[LOG] Session %s started. Terminal >= %s, file >= %s, keeping %d sessions in %s",
