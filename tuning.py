@@ -694,8 +694,10 @@ _FEATURE_LIMITS = {
     "RECEIPT_QR_MIN_PX": (1, 4000, 64, True),
     "UI_KNOB_HIGHLIGHT_SECONDS": (0, 60, 0.2, False),
     # characters must stay at least 1 px tall
+    # (max(..., 1): this table is built before the check below can replace a 0 grid size, and a
+    # 0 here used to crash the import with ZeroDivisionError instead of switching ASCII off)
     "ASCII_FONT_EXTRA_PX": (
-        1 - max(FRAME_W // ASCII_GRID_W, FRAME_H // ASCII_GRID_H),
+        1 - max(FRAME_W // max(ASCII_GRID_W, 1), FRAME_H // max(ASCII_GRID_H, 1)),
         200,
         2,
         True,
