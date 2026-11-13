@@ -50,6 +50,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 import urllib.request
 import uuid
 from collections import namedtuple
@@ -451,38 +452,42 @@ GLOBAL_NOISE_BUFFER = np.empty(
     (CORRUPTION_CELL_H, CORRUPTION_CELL_W, 3), dtype=np.uint8, order="C"
 )
 
-# WHO TOUCHES THE FRAME BUFFERS (a reading aid; nothing here needs a change)
-#   LATEST_CAMERA_FRAME        written by the camera thread, copied by the processing loop, both
-#                              under cam_raw_lock.
-#   MUTABLE_PROCESSING_BUFFER  owned by the processing loop thread (effects run in it). So are
-#                              the effect scratch buffers and NAKED_FRAME_BUFFER.
-#   UI_DISPLAY_BUFFER          written by the processing loop under frame_lock, copied by the
-#                              display thread under frame_lock.
-#   FROZEN_DISPLAY_BUFFER      written by the processing loop at the moment of capture, WITHOUT
-#                              frame_lock; read by the processing loop (countdown / review) and by
-#                              the display thread under frame_lock (pygame_display.py, review
-#                              fallback). That is safe only because of the order: the capture
-#                              writes it while the mode is "pre-capture-countdown", BEFORE the mode
-#                              becomes "countdown"; the display reads it only in "countdown" and
-#                              "latest"; the next write needs a new capture, which starts from
-#                              "live". Anyone adding a second writer, or a write in another mode,
-#                              must take frame_lock around it.
-LATEST_CAMERA_FRAME = np.zeros((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
-MUTABLE_PROCESSING_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
-UI_DISPLAY_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
-NAKED_FRAME_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
+# SHARED STATE (state.py)
+# ==================================================
+# What more than one part of the booth reads or writes (the frame buffers, the knob values, the
+# kiosk session, the locks, events and queues, the heartbeats) is created in state.py. This is the
+# first point of the start-up that needs it, exactly where the first of those buffers used to be.
+# Names that are never rebound are imported by name, so each of them is the very same object as
+# before. The 16 names that ARE rebound while the booth runs are never imported by value: they are
+# read and written as shared_state.NAME. (The module has an alias here because this file has a
+# route function called state().)
+import state as shared_state
+from state import (
+    ACTIVE_SESSION,
+    CRITICAL_WORKERS,
+    FROZEN_DISPLAY_BUFFER,
+    FROZEN_PRINT_BUFFER,
+    LATEST_CAMERA_FRAME,
+    MUTABLE_PROCESSING_BUFFER,
+    NAKED_FRAME_BUFFER,
+    NETWORK_CHECKED,
+    NETWORK_OFFLINE,
+    NETWORK_ONLINE,
+    SHUTDOWN_EVENT,
+    STATIC_MELT_GRAY_BUFFER,
+    UI_DISPLAY_BUFFER,
+    cache_file_lock,
+    cam_raw_lock,
+    frame_lock,
+    hw_state_lock,
+    mode_lock,
+    print_queue,
+    printer_hardware_lock,
+    upload_queue,
+)
 
-SHARED_JPEG_STREAM_BUFFER = memoryview(b"")
+# Private to background_loop(); its memoryview, SHARED_JPEG_STREAM_BUFFER, is in state.py.
 SHARED_JPEG_ARRAY = None
-
-FROZEN_DISPLAY_BUFFER = np.empty((FRAME_H, FRAME_W, 3), dtype=np.uint8, order="C")
-FROZEN_DISPLAY_BUFFER.fill(0)
-
-FROZEN_PRINT_BUFFER = np.empty((FRAME_W, FRAME_H), dtype=np.uint8, order="C")
-FROZEN_PRINT_BUFFER.fill(255)
-
-# Shared luminance buffer: utilized sequentially during Melt pass and post-capture receipt contrast prep
-STATIC_MELT_GRAY_BUFFER = np.empty((FRAME_H, FRAME_W), dtype=np.uint8, order="C")
 
 # --- MELT BUFFERS ---
 
@@ -573,63 +578,17 @@ SPARK_COUNTER = 0
 SPARK_INTERVAL = ASCII_SPARK_START_FRAMES  # re-rolled within ASCII_SPARK_INTERVAL later
 
 
-# ATOMIC REFERENCE GLOBALS & PIPELINE LOCKS
-# ==================================================
-
-GLOBAL_KNOBS = (0, 0, 0, 0, 0, 0)
-GLOBAL_BUTTON = 1
-
-# UNIFIED TRANSACTING SESSION STATE MATRIX
-# ==============================================================================
-ACTIVE_SESSION = {
-    "mode": "live",  # live, pre-capture-countdown, countdown (flash + PRINTING), latest
-    "session_id": None,
-    "upload_status": "IDLE",  # IDLE, UPLOADING, SUCCESS, FAILED
-    "print_state": "idle",  # idle, waiting, printing, retrying, done, failed
-    "notice": "",  # message for the kiosk screen and the web pages
-    "notice_until": None,  # monotonic expiry of the notice (None = until the session ends)
-    "countdown_start_time": 0.0,
-    "countdown_remaining": POSE_COUNTDOWN_SECONDS,
-    "latest_since": 0.0,  # monotonic time the review screen started
-    "knobs": [0, 0, 0, 0, 0, 0],
-}
-
-mode_lock = threading.Lock()
-frame_lock = threading.Lock()
-UI_FRAME_SEQ = (
-    0  # bumped (under frame_lock) each time UI_DISPLAY_BUFFER is fully rewritten
-)
-cam_raw_lock = threading.Lock()
-
-printer_hardware_lock = threading.Lock()
-cache_file_lock = threading.Lock()
-
-hw_state_lock = threading.Lock()
-
-SHUTDOWN_EVENT = threading.Event()
-CRITICAL_WORKERS = []
+# The shared state (knobs, session, locks, events, queues, heartbeats) is created in state.py (see above).
 
 # 1. Initialize telemetry and inject the global event object
 if TELEMETRY_ENABLED:
     telemetry.init_telemetry(SHUTDOWN_EVENT)
 
 STREAM_SEMAPHORE = threading.Semaphore(4)
-ACTIVE_STREAM_VIEWERS = 0
-
-capture_lock_until = 0
-
 last_good_camera = time.time()
 camera_started_at = time.time()
-last_frame_time = time.time()
-camera_fail_count = 0
-
-SYSTEM_TELEMETRY = {"ip": "0.0.0.0", "cpu_temp": "N/A", "memory_rss_mb": -1}
 last_button_state = 1
 
-FRAME_ID = 0
-
-upload_queue = queue.Queue(maxsize=32)
-print_queue = queue.Queue(maxsize=4)
 _print_ids = set()  # captures queued or printing: one receipt per id at a time
 _print_ids_lock = threading.Lock()
 
@@ -645,16 +604,6 @@ CAMERA_NOTICE_SECONDS = 5.0
 MSG_CAMERA = "GLITCH BOOTH KÜÇÜK BİR GLITCH YAŞADI :( LÜTFEN TEKRAR DENEYİN!"
 MSG_PRINT_RETRY = "BASKIDA BİR SORUN YAŞANDI :( TEKRAR DENİYORUM!"
 MSG_PRINT_FAILED = "BASKIDA BİR SORUN YAŞANDI :("
-
-# Set while the last upload failed for good (offline); any upload that works clears it.
-# The receipt uses it to choose between the normal and the offline text.
-NETWORK_OFFLINE = threading.Event()
-
-# The ONLINE / OFFLINE mark of the kiosk screen, kept up to date by network_status_worker().
-# NETWORK_ONLINE is set while the booth has a network address and can reach the upload host.
-# NETWORK_CHECKED is set once the first check is done (until then the screen shows nothing).
-NETWORK_ONLINE = threading.Event()
-NETWORK_CHECKED = threading.Event()
 
 
 # SESSION STATE HELPERS
@@ -692,7 +641,6 @@ def set_notice(text, seconds=None):
 
 def reset_to_live(reason, expected_session_id=None, only_if_mode=None):
     # The single way back to the live view (button, review timeout, camera problem, web).
-    global capture_lock_until
     with mode_lock:
         if only_if_mode is not None and ACTIVE_SESSION["mode"] not in only_if_mode:
             return False
@@ -711,7 +659,7 @@ def reset_to_live(reason, expected_session_id=None, only_if_mode=None):
             latest_since=0.0,
         )
         _set_notice_locked("", None)
-        capture_lock_until = time.time() + CAPTURE_LOCK_SECONDS
+        shared_state.capture_lock_until = time.time() + CAPTURE_LOCK_SECONDS
     logger.info(
         "[STATE ENGINE] Returning to the live view (%s). Cleared session %s.",
         reason,
@@ -722,7 +670,7 @@ def reset_to_live(reason, expected_session_id=None, only_if_mode=None):
 
 def camera_is_fresh():
     with hw_state_lock:
-        age = time.time() - last_frame_time
+        age = time.time() - shared_state.last_frame_time
     return age <= CAMERA_FRESH_MAX_AGE, age
 
 
@@ -1282,13 +1230,12 @@ def get_memory_usage():
 
 
 def telemetry_worker():
-    global SYSTEM_TELEMETRY
     logger.info("[INIT] System monitor (IP, CPU temperature, memory): active.")
 
     while not SHUTDOWN_EVENT.is_set():
         try:
             # A new dict is swapped in whole, so readers never see a half-updated one.
-            SYSTEM_TELEMETRY = {
+            shared_state.SYSTEM_TELEMETRY = {
                 "ip": get_actual_ip(),
                 "cpu_temp": get_cpu_temp(),
                 "memory_rss_mb": get_memory_usage(),
@@ -1468,14 +1415,13 @@ def camera_io_worker():
 
 def _camera_loop(cap):
     # Returns the camera that is open when the loop ends (or None).
-    global last_good_camera, camera_started_at, CAMERA_HEARTBEAT
+    global last_good_camera, camera_started_at
     global LATEST_CAMERA_FRAME
-    global last_frame_time, camera_fail_count
     consecutive_failures = 0
     camera_down_since = None
 
     while not SHUTDOWN_EVENT.is_set():
-        CAMERA_HEARTBEAT = time.monotonic()
+        shared_state.CAMERA_HEARTBEAT = time.monotonic()
         try:
             if cap is None or not cap.isOpened():
                 if camera_down_since is None:
@@ -1499,8 +1445,8 @@ def _camera_loop(cap):
             if ret and frame is not None:
                 consecutive_failures = 0
                 with hw_state_lock:
-                    camera_fail_count = 0
-                    last_frame_time = time.time()
+                    shared_state.camera_fail_count = 0
+                    shared_state.last_frame_time = time.time()
                 with cam_raw_lock:
                     if frame.shape == LATEST_CAMERA_FRAME.shape:
                         LATEST_CAMERA_FRAME[:] = frame
@@ -1519,7 +1465,7 @@ def _camera_loop(cap):
             else:
                 consecutive_failures += 1
                 with hw_state_lock:
-                    camera_fail_count += 1
+                    shared_state.camera_fail_count += 1
                 log_throttled(
                     logger,
                     logging.WARNING,
@@ -1604,7 +1550,7 @@ def update_knobs(ser):
     # newest valid packet, so the knobs never lag behind. A button press that arrived in an
     # older packet of the same batch is kept, so a short press is not lost.
     # Read errors propagate: the caller logs them and reconnects.
-    global GLOBAL_KNOBS, GLOBAL_BUTTON, _serial_synced, _serial_bad_packets
+    global _serial_synced, _serial_bad_packets
     waiting = ser.in_waiting
     if waiting <= 0:
         return
@@ -1641,8 +1587,8 @@ def update_knobs(ser):
 
     if newest is not None:
         with hw_state_lock:
-            GLOBAL_KNOBS = newest[0]
-            GLOBAL_BUTTON = 0 if pressed else newest[1]
+            shared_state.GLOBAL_KNOBS = newest[0]
+            shared_state.GLOBAL_BUTTON = 0 if pressed else newest[1]
 
 
 # =========================================================================
@@ -4105,8 +4051,7 @@ def print_worker():
             ts, source = print_queue.get(timeout=1.0)
         except queue.Empty:
             continue
-        global PRINT_JOB_STARTED
-        PRINT_JOB_STARTED = (
+        shared_state.PRINT_JOB_STARTED = (
             time.monotonic()
         )  # the health monitor watches for a job that never ends
         try:
@@ -4116,7 +4061,7 @@ def print_worker():
         finally:
             # Written by the print worker, read by the health monitor. One whole value (a number or None)
             # assigned at once and read once into a local, which is atomic in CPython: no lock is needed.
-            PRINT_JOB_STARTED = None
+            shared_state.PRINT_JOB_STARTED = None
             with _print_ids_lock:
                 _print_ids.discard(ts)
             print_queue.task_done()
@@ -4531,22 +4476,20 @@ def _upload_queue_loop(http):
 
 
 def background_loop():
-    global last_button_state, capture_lock_until, FRAME_ID
-    global UI_FRAME_SEQ
-    global SHARED_JPEG_STREAM_BUFFER, SHARED_JPEG_ARRAY
+    global last_button_state
+    global SHARED_JPEG_ARRAY
     global PRINT_ALPHA, PRINT_BETA
-    global CAMERA_THREAD, LOOP_HEARTBEAT
-    CAMERA_THREAD = threading.Thread(
+    shared_state.CAMERA_THREAD = threading.Thread(
         target=camera_io_worker, name="CameraThread", daemon=True
     )
-    CAMERA_THREAD.start()
+    shared_state.CAMERA_THREAD.start()
 
     serial_connection = None
     last_serial_retry = 0.0
     loop_faults = FaultCounter(LOOP_FAULT_LIMIT)
 
     while not SHUTDOWN_EVENT.is_set():
-        LOOP_HEARTBEAT = time.monotonic()
+        shared_state.LOOP_HEARTBEAT = time.monotonic()
         frame_start = time.time()
 
         try:
@@ -4589,8 +4532,8 @@ def background_loop():
             # published session knobs, the capture) uses this same epoch. The locks are
             # taken one after the other, never nested.
             with hw_state_lock:
-                _knobs = GLOBAL_KNOBS
-                _button = GLOBAL_BUTTON
+                _knobs = shared_state.GLOBAL_KNOBS
+                _button = shared_state.GLOBAL_BUTTON
 
             with mode_lock:
                 ACTIVE_SESSION["knobs"] = list(_knobs)
@@ -4651,11 +4594,11 @@ def background_loop():
                 else:
                     # Live preview used in "live" AND "pre-capture-countdown"
                     UI_DISPLAY_BUFFER[:] = MUTABLE_PROCESSING_BUFFER[:]
-                UI_FRAME_SEQ += 1
+                shared_state.UI_FRAME_SEQ += 1
 
             with frame_lock:
-                _viewers = ACTIVE_STREAM_VIEWERS
-                _fid_check = FRAME_ID
+                _viewers = shared_state.ACTIVE_STREAM_VIEWERS
+                _fid_check = shared_state.FRAME_ID
             should_encode = (_viewers > 0) or (
                 _fid_check % IDLE_PREVIEW_ENCODE_EVERY == 0
             )
@@ -4707,15 +4650,20 @@ def background_loop():
             if ret:
                 with frame_lock:
                     SHARED_JPEG_ARRAY = encoded_jpeg
-                    SHARED_JPEG_STREAM_BUFFER = memoryview(SHARED_JPEG_ARRAY)
-                    FRAME_ID += 1
+                    shared_state.SHARED_JPEG_STREAM_BUFFER = memoryview(
+                        SHARED_JPEG_ARRAY
+                    )
+                    shared_state.FRAME_ID += 1
 
             # CENTRAL CONTROL MATRIX & TRANSITION MACHINE
             # ------------------------------------------------------------------
 
             # STATE 1: LIVE VIEWER - Initiates pre-capture countdown
             if loop_mode == "live":
-                if button_pressed_edge and loop_execution_time >= capture_lock_until:
+                if (
+                    button_pressed_edge
+                    and loop_execution_time >= shared_state.capture_lock_until
+                ):
                     camera_ok, camera_age = camera_is_fresh()
                     if not camera_ok:
                         logger.warning(
@@ -4723,7 +4671,9 @@ def background_loop():
                             camera_age,
                         )
                         set_notice(MSG_CAMERA, CAMERA_NOTICE_SECONDS)
-                        capture_lock_until = loop_execution_time + CAPTURE_LOCK_SECONDS
+                        shared_state.capture_lock_until = (
+                            loop_execution_time + CAPTURE_LOCK_SECONDS
+                        )
                     else:
                         with mode_lock:
                             ACTIVE_SESSION["mode"] = "pre-capture-countdown"
@@ -4899,8 +4849,6 @@ def background_loop():
 
 
 def generate_frames():
-    global ACTIVE_STREAM_VIEWERS
-
     local_stream_frame_id = -1
     last_sent = 0
 
@@ -4908,7 +4856,7 @@ def generate_frames():
         frame_interval = 1.0 / CAMERA_FPS
 
         with frame_lock:
-            ACTIVE_STREAM_VIEWERS += 1
+            shared_state.ACTIVE_STREAM_VIEWERS += 1
 
         while not SHUTDOWN_EVENT.is_set():
             now = time.time()
@@ -4917,12 +4865,12 @@ def generate_frames():
                 continue
 
             with frame_lock:
-                if local_stream_frame_id == FRAME_ID:
+                if local_stream_frame_id == shared_state.FRAME_ID:
                     frame_is_stale = True
                 else:
                     frame_is_stale = False
-                    local_stream_frame_id = FRAME_ID  # Track state locally
-                    local_jpeg_payload = SHARED_JPEG_STREAM_BUFFER
+                    local_stream_frame_id = shared_state.FRAME_ID  # Track state locally
+                    local_jpeg_payload = shared_state.SHARED_JPEG_STREAM_BUFFER
 
             if frame_is_stale:
                 SHUTDOWN_EVENT.wait(0.01)
@@ -4951,7 +4899,9 @@ def generate_frames():
         return
     finally:
         with frame_lock:
-            ACTIVE_STREAM_VIEWERS = max(0, ACTIVE_STREAM_VIEWERS - 1)
+            shared_state.ACTIVE_STREAM_VIEWERS = max(
+                0, shared_state.ACTIVE_STREAM_VIEWERS - 1
+            )
 
 
 # LIFECYCLE: SHUTDOWN OWNERSHIP, SIGNALS, HEALTH MONITOR
@@ -5032,14 +4982,6 @@ _signal_received = None
 _sequence_done = False
 _sequence_lock = threading.Lock()
 PROCESS_STARTED = time.monotonic()
-PREVIOUS_FAULT = None  # the fault record of the previous run, loaded at start
-
-# Heartbeats: one float assignment each, written by the thread they describe.
-LOOP_HEARTBEAT = None
-CAMERA_HEARTBEAT = None
-DISPLAY_HEARTBEAT = None  # set by the display; None when the booth runs without one
-PRINT_JOB_STARTED = None
-CAMERA_THREAD = None
 
 
 def request_shutdown(reason, exit_code=0, detail=""):
@@ -5110,10 +5052,9 @@ def _record_fault(reason, detail):
 
 
 def _load_previous_fault():
-    global PREVIOUS_FAULT
     try:
         with open(FAULT_RECORD_PATH, "r", encoding="utf-8") as f:
-            PREVIOUS_FAULT = json.load(f)
+            shared_state.PREVIOUS_FAULT = json.load(f)
     except FileNotFoundError:
         return
     except Exception:
@@ -5121,9 +5062,9 @@ def _load_previous_fault():
         return
     logger.warning(
         "[HEALTH] An earlier run ended with a fault at %s: %s (%s)",
-        PREVIOUS_FAULT.get("time"),
-        PREVIOUS_FAULT.get("reason"),
-        PREVIOUS_FAULT.get("detail"),
+        shared_state.PREVIOUS_FAULT.get("time"),
+        shared_state.PREVIOUS_FAULT.get("reason"),
+        shared_state.PREVIOUS_FAULT.get("detail"),
     )
 
 
@@ -5338,31 +5279,31 @@ class HealthMonitor(threading.Thread):
 
     def _critical_threads(self):
         threads = list(CRITICAL_WORKERS)
-        if CAMERA_THREAD is not None:
-            threads.append(CAMERA_THREAD)
+        if shared_state.CAMERA_THREAD is not None:
+            threads.append(shared_state.CAMERA_THREAD)
         return threads
 
     def _heartbeats(self):
         beats = {}
-        if LOOP_HEARTBEAT is not None:
+        if shared_state.LOOP_HEARTBEAT is not None:
             beats["core loop"] = (
-                LOOP_HEARTBEAT,
+                shared_state.LOOP_HEARTBEAT,
                 LOOP_HEARTBEAT_MAX_AGE,
                 "has not completed a pass for",
             )
-        if CAMERA_HEARTBEAT is not None:
+        if shared_state.CAMERA_HEARTBEAT is not None:
             beats["camera thread"] = (
-                CAMERA_HEARTBEAT,
+                shared_state.CAMERA_HEARTBEAT,
                 CAMERA_HEARTBEAT_MAX_AGE,
                 "has not reported for",
             )
-        if DISPLAY_HEARTBEAT is not None:
+        if shared_state.DISPLAY_HEARTBEAT is not None:
             beats["display loop"] = (
-                DISPLAY_HEARTBEAT,
+                shared_state.DISPLAY_HEARTBEAT,
                 DISPLAY_HEARTBEAT_MAX_AGE,
                 "has not drawn a frame for",
             )
-        started = PRINT_JOB_STARTED
+        started = shared_state.PRINT_JOB_STARTED
         if started is not None:
             beats["print job"] = (started, PRINT_STUCK_SECONDS, "has been running for")
         return beats
@@ -5826,12 +5767,14 @@ def state():
 
     # Each group below is one short snapshot under its own lock (never nested).
     with hw_state_lock:
-        knobs_now = list(GLOBAL_KNOBS)
-        frame_time_now = last_frame_time
-        fail_count_now = camera_fail_count
+        knobs_now = list(shared_state.GLOBAL_KNOBS)
+        frame_time_now = shared_state.last_frame_time
+        fail_count_now = shared_state.camera_fail_count
     with frame_lock:
-        frame_id_now = FRAME_ID
-    system_now = SYSTEM_TELEMETRY  # replaced whole by the monitor thread, never edited
+        frame_id_now = shared_state.FRAME_ID
+    system_now = (
+        shared_state.SYSTEM_TELEMETRY
+    )  # replaced whole by the monitor thread, never edited
     notice_now = current_notice()
     power_action = pending_power_action()
 
@@ -6109,7 +6052,9 @@ def api_live_telemetry():
 
     camera_fresh, camera_age_now = camera_is_fresh()
     camera_status = "OK" if camera_fresh else "FAULT"
-    system_now = SYSTEM_TELEMETRY  # replaced whole by the monitor thread, never edited
+    system_now = (
+        shared_state.SYSTEM_TELEMETRY
+    )  # replaced whole by the monitor thread, never edited
 
     return jsonify(
         {
@@ -6151,7 +6096,7 @@ def api_health():
     except OSError:
         disk_free_gb = disk_used_percent = None
     workers_ok = all(t.is_alive() for t in CRITICAL_WORKERS) and (
-        CAMERA_THREAD is None or CAMERA_THREAD.is_alive()
+        shared_state.CAMERA_THREAD is None or shared_state.CAMERA_THREAD.is_alive()
     )
     return jsonify(
         {
@@ -6167,7 +6112,7 @@ def api_health():
             "disk_free_gb": disk_free_gb,
             "disk_used_percent": disk_used_percent,
             "workers_ok": workers_ok,
-            "previous_fault": PREVIOUS_FAULT,
+            "previous_fault": shared_state.PREVIOUS_FAULT,
         }
     )
 
@@ -6192,6 +6137,34 @@ def server_local_stats_page():
         return jsonify(data)
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# COMPATIBILITY FACADE FOR pygame_display.py
+# ==================================================
+# The display reads server.UI_FRAME_SEQ every frame and writes server.DISPLAY_HEARTBEAT. Both now
+# live in state.py and are rebound while the booth runs, so a plain re-export would freeze the
+# first value and the display's writes would never reach the health monitor. This module class
+# forwards reads AND writes of those two names to state.py. Every other name the display uses is
+# a plain module attribute (buffers, locks, events, functions, constants), so it needs nothing.
+class _ServerFacade(types.ModuleType):
+    @property
+    def UI_FRAME_SEQ(self):
+        return shared_state.UI_FRAME_SEQ
+
+    @UI_FRAME_SEQ.setter
+    def UI_FRAME_SEQ(self, value):
+        shared_state.UI_FRAME_SEQ = value
+
+    @property
+    def DISPLAY_HEARTBEAT(self):
+        return shared_state.DISPLAY_HEARTBEAT
+
+    @DISPLAY_HEARTBEAT.setter
+    def DISPLAY_HEARTBEAT(self, value):
+        shared_state.DISPLAY_HEARTBEAT = value
+
+
+sys.modules[__name__].__class__ = _ServerFacade
 
 
 if __name__ == "__main__":
