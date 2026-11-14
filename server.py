@@ -5340,6 +5340,30 @@ class HealthMonitor(threading.Thread):
             time.sleep(max(0.1, HEALTH_CHECK_INTERVAL))
 
 
+def heartbeat_report():
+    """Ages in seconds of the four heartbeats the health monitor watches (/api/health).
+
+    age_s is None while a heartbeat has not started: the screen has not drawn yet (or no
+    screen is attached, as in a standalone run), or no print job is running. For
+    print_job the age is how long the current job has been running, so None is the
+    normal idle state there.
+    """
+    now = time.monotonic()
+    rows = (
+        ("core_loop", shared_state.LOOP_HEARTBEAT, LOOP_HEARTBEAT_MAX_AGE),
+        ("camera_thread", shared_state.CAMERA_HEARTBEAT, CAMERA_HEARTBEAT_MAX_AGE),
+        ("display_loop", shared_state.DISPLAY_HEARTBEAT, DISPLAY_HEARTBEAT_MAX_AGE),
+        ("print_job", shared_state.PRINT_JOB_STARTED, PRINT_STUCK_SECONDS),
+    )
+    return {
+        name: {
+            "age_s": None if last is None else round(now - last, 2),
+            "max_s": max_age,
+        }
+        for name, last, max_age in rows
+    }
+
+
 def current_notice():
     # The notice shown to visitors: a timed session notice, else a power action in progress,
     # else (in live mode) the camera message while the camera has no fresh picture.
@@ -6068,6 +6092,7 @@ def api_health():
             "disk_used_percent": disk_used_percent,
             "workers_ok": workers_ok,
             "previous_fault": shared_state.PREVIOUS_FAULT,
+            "heartbeats": heartbeat_report(),
         }
     )
 
