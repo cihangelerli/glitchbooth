@@ -621,22 +621,8 @@ def session_update(session_id, **fields):
         return True
 
 
-def _set_notice_locked(text, seconds=None):
-    ACTIVE_SESSION["notice"] = text
-    ACTIVE_SESSION["notice_until"] = (time.monotonic() + seconds) if seconds else None
-
-
-def _notice_locked():
-    until = ACTIVE_SESSION["notice_until"]
-    if until is not None and time.monotonic() >= until:
-        ACTIVE_SESSION["notice"] = ""
-        ACTIVE_SESSION["notice_until"] = None
-    return ACTIVE_SESSION["notice"]
-
-
-def set_notice(text, seconds=None):
-    with mode_lock:
-        _set_notice_locked(text, seconds)
+# Session notices (set_notice and its two helpers) live in ops/notice.py.
+from ops.notice import _notice_locked, _set_notice_locked, set_notice
 
 
 def reset_to_live(reason, expected_session_id=None, only_if_mode=None):
@@ -706,39 +692,8 @@ LedgerEntry = namedtuple("LedgerEntry", "id slug clean_only legacy")
 _LEDGER_ID_RE = re.compile(r"[0-9]{1,20}")
 
 
-def _fsync_dir(path):
-    fd = os.open(os.path.dirname(os.path.abspath(path)) or ".", os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
-def _fsync_file(path):
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
-def atomic_write_bytes(path, data, fsync=False):
-    # Temp file in the same folder, then os.replace. A plain open() is used (not mkstemp) so the
-    # file gets the same permissions as every other file the booth writes.
-    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}.tmp"
-    try:
-        with open(tmp, "xb") as f:
-            f.write(data)
-            f.flush()
-            if fsync:
-                os.fsync(f.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-        raise
+# File helpers (atomic_write_bytes, _fsync_dir, _fsync_file) live in ops/fsutil.py.
+from ops.fsutil import _fsync_dir, _fsync_file, atomic_write_bytes
 
 
 def _ledger_format(entry_id, slug, clean_only=False):
