@@ -424,7 +424,7 @@ CORRUPTION_CLEAR_ENERGY = 0.005  # damage at or below this energy disappears
 CORRUPTION_BLEND_BELOW = 0.95  # below this energy the damage is blended, not solid
 
 # --- Signal Drift -------------------------------------------------------------------
-DRIFT_MAX_AMOUNT = 60  # [320x240: 30] [480x360: 45] [640x480: 60]
+DRIFT_MAX_AMOUNT = 70  # [320x240: 30] [480x360: 45] [640x480: 60]
 DRIFT_SEAM_FRACTION = (
     0.04  # thickness of the black seam at the vertical roll (share of the frame height)
 )
@@ -445,10 +445,10 @@ DRIFT_MUTATION_MAX = (
 DRIFT_MUTATION_FULL_AT = 0.6  # knob strength (0-1) where the mutation reaches that maximum; below it grows from 0
 DRIFT_SHAPE_AMOUNT = 1.0  # how far the shape noise bends the wave (1 = as far as the wave reaches; more is cut off there)
 DRIFT_SHAPE_ROWS = 28  # size of one bend in picture rows, smaller = busier [320x240: 14] [480x360: 21] [640x480: 28]
-DRIFT_SHAPE_SPEED = 0.25  # how fast the bends change, noise cells per second (about 4 s per visible change)
+DRIFT_SHAPE_SPEED = 0.37  # how fast the bends change, noise cells per second (about 4 s per visible change)
 DRIFT_STRENGTH_CONTRAST = 1.0  # 0 = every part of the picture mutates equally, 1 = full range from calm to wild zones
 DRIFT_STRENGTH_ROWS = 110  # size of one calm / wild zone in rows [320x240: 55] [480x360: 82] [640x480: 110]
-DRIFT_STRENGTH_SPEED = 0.06  # how fast the zones change, noise cells per second (about 16 s per visible change)
+DRIFT_STRENGTH_SPEED = 0.11  # how fast the zones change, noise cells per second (about 16 s per visible change)
 
 # --- Pixellation -------------------------------------------------------------------
 COMPRESSION_TILE_BASE = 4  # [320x240: 6 ] [480x360: 9 ] [640x480: 12]
