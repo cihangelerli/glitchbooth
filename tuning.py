@@ -75,14 +75,18 @@ FRAME_W = 640
 # An effect that is not attached to any knob is skipped and costs nothing.
 # The CRT scanline overlay always runs last and is not part of this list.
 EFFECT_ORDER = [
-    "pixellation",
     "scanline_ridge",
+    "pixellation",
     "signal_drift",
+    "fisheye",
     "contour_ripple",
     "melt",
     "data_mosh",
     "packet_corruption",
+    "block_shuffle",
+    "jpeg_crush",
     "ascii_matrix",
+    "bitwise_databend",
     "posterize",
     "chroma_bleed",
     "chroma_shift",
@@ -98,12 +102,15 @@ EFFECT_ORDER = [
 # effects are secondary and react to the same knob without appearing in the UI.
 KNOB_ATTACHMENTS = {
     0: ["ascii_matrix"],
-    1: ["signal_drift", "contour_ripple"],
+    1: ["signal_drift", "contour_ripple", "fisheye"],
     2: ["posterize"],
     3: ["scanline_ridge"],
     4: ["pixellation", "melt", "data_mosh"],
-    5: ["chroma_shift", "slice_glitch", "packet_corruption"],
+    5: ["chroma_shift", "slice_glitch", "packet_corruption", "block_shuffle"],
 }
+
+# NOT HOOKED: "chroma_bleed", "jpeg_crush", "bitwise_databend",
+# NOT ACTIVE: "moire_overlay"
 
 # Optional range of the knob in which an effect works, as fractions of the knob travel.
 # Inside its window the effect sees the full 0-1023 range; outside it is off.
@@ -112,7 +119,9 @@ EFFECT_KNOB_WINDOW = {
     "chroma_shift": (0.20, 1.0),
     "slice_glitch": (0.0, 1.0),
     "packet_corruption": (0.0, 1.0),
+    "block_shuffle": (0.6, 1.0),
     "contour_ripple": (0.6, 1.0),
+    "fisheye": (0.5, 1.0),
     "pixellation": (0.0, 1.0),
     "melt": (0.3, 1.0),
     "data_mosh": (0.3, 1.0),
@@ -133,6 +142,11 @@ EFFECT_COST_WEIGHT = {
     "scanline_ridge": 0.12,
     "contour_ripple": 0.10,
     "chroma_bleed": 0.06,
+    # first guesses again, to be set after a [PERF] measurement on the Pi
+    "fisheye": 0.08,
+    "block_shuffle": 0.06,
+    "jpeg_crush": 0.10,
+    "bitwise_databend": 0.05,
 }
 
 EFFECT_SKIP_DURING_WARMUP = ("data_mosh",)
@@ -150,6 +164,10 @@ EFFECT_LABELS = {
     "scanline_ridge": "Scanline Ridge",
     "contour_ripple": "Contour Ripple",
     "chroma_bleed": "Chroma Bleed",
+    "fisheye": "Fisheye",
+    "block_shuffle": "Block Shuffle",
+    "jpeg_crush": "JPEG Crush",
+    "bitwise_databend": "Bitwise Databend",
 }
 KNOB_EMPTY_LABEL = "-"
 # The clean (unprocessed) frame is saved as <id>_clean.jpg and uploaded next to the processed
@@ -178,6 +196,10 @@ EFFECT_STATS_NAME = {
     "scanline_ridge": "scanline_ridge",
     "contour_ripple": "contour_ripple",
     "chroma_bleed": "chroma_bleed",
+    "fisheye": "fisheye",
+    "block_shuffle": "block_shuffle",
+    "jpeg_crush": "jpeg_crush",
+    "bitwise_databend": "bitwise_databend",
 }
 
 # EFFECT ACTIVITY: ONE DEFINITION OF "THIS EFFECT IS ACTING"
@@ -195,6 +217,10 @@ CHROMA_ACTIVE_ABOVE = 0.05  # knob ~52
 RIPPLE_ACTIVE_ABOVE = 0.01
 RIDGE_ACTIVE_ABOVE = 0.01
 BLEED_ACTIVE_ABOVE = 0.01
+BLOCK_ACTIVE_ABOVE = 0.01
+BITWISE_ACTIVE_ABOVE = 0.01
+JPEG_ACTIVE_ABOVE = 0.01
+FISHEYE_ACTIVE_ABOVE = 0.01
 SLICE_ACTIVE_FROM_KNOB = 11  # first slice appears at this knob value (0-1023)
 DRIFT_AMOUNT_SCALE = 0.6  # sideways drift in px = strength * DRIFT_MAX_AMOUNT * this
 DRIFT_MIN_AMOUNT = (
@@ -516,9 +542,9 @@ RIDGE_LINE_THICKNESS = 2  # line width in px [320x240: 1]
 RIDGE_SAMPLE_STEP_PX = 3  # a line point every N px (bigger = faster, more angular)
 RIDGE_ANTIALIAS = False  # True = smooth line edges, about twice the drawing time
 RIDGE_HEIGHT = 0.12  # tallest ridge at full knob, as a share of the picture height
-RIDGE_PHOTO_FADE_FROM = 0.10  # knob strength where the photo starts to fade ...
-RIDGE_PHOTO_FADE_TO = 0.35  # ... and where it is gone (pure lines above this)
-RIDGE_LINES_FULL_AT = 0.33  # knob strength where the lines reach full brightness
+RIDGE_PHOTO_FADE_FROM = 0.05  # knob strength where the photo starts to fade ...
+RIDGE_PHOTO_FADE_TO = 0.20  # ... and where it is gone (pure lines above this)
+RIDGE_LINES_FULL_AT = 0.20  # knob strength where the lines reach full brightness
 RIDGE_COLOUR_SOURCE = (
     "palette"  # "stops" = RIDGE_COLOUR_STOPS, "palette" = the booth neon palette
 )
@@ -575,7 +601,7 @@ BLEED_NOISE_SPEED = 0.20  # noise cells per second
 MOIRE_ENABLED = False
 MOIRE_STRENGTH = 0.15  # how dark the grid gaps are (0-1)
 MOIRE_PERIOD_PX = (
-    4.0  # distance between grid dots [320x240: 2] [480x360: 3] [640x480: 4]
+    16.0  # distance between grid dots [320x240: 2] [480x360: 3] [640x480: 4]
 )
 MOIRE_ANGLE_DEG = 3.0  # middle angle between the two grids (small = wide moire bands)
 MOIRE_ANGLE_SPAN_DEG = 2.0  # the angle moves this far either way of the middle
@@ -583,6 +609,100 @@ MOIRE_ANGLE_SPEED = 0.08  # noise cells per second (how fast the bands move)
 MOIRE_STEPS = 12  # prepared angles (more = smoother movement, about 0.3 MiB each)
 MOIRE_NOISE_ENABLED = True  # False = the angle stays at the middle (still bands)
 MOIRE_KEEP_BRIGHTNESS = True  # lift the picture so the grid does not darken it overall
+
+# NEW EFFECTS (NZ2): FEEDBACK ECHO IN DATA MOSH, BLOCK SHUFFLE, JPEG CRUSH, BITWISE DATABEND, FISHEYE
+# ==============================================================================
+# Each has its own noise switch (see NOISE_ENABLED above for the master switch). With its noise off
+# an effect keeps a plain look. Pixel sizes are for 640x480.
+
+# --- Feedback Echo inside Data Mosh (before the mosh; off until switched on) ---
+MOSH_ECHO_ENABLED = False
+MOSH_ECHO_MODE = "lighten"  # "lighten" = bright trails, the picture stays full; "average" = ghosts (the picture fades too)
+MOSH_ECHO_MAX = (
+    0.80  # share of the old echo carried into the next frame at full strength (0-0.95)
+)
+MOSH_ECHO_ZOOM = 0.004  # the echo grows by this share every frame (0 = stays in place)
+MOSH_ECHO_DRIFT_PX = (
+    1.0  # the echo slides this many half-resolution px per frame (0 = none)
+)
+MOSH_ECHO_NOISE_ENABLED = (
+    True  # zones of long and short trails; the slide direction wanders
+)
+MOSH_ECHO_NOISE_AMOUNT = (
+    0.7  # 0 = equally long trails everywhere; 1 = from no trail to full trails
+)
+MOSH_ECHO_NOISE_SIZE_PX = 120  # half-resolution px per zone
+MOSH_ECHO_NOISE_SPEED = 0.12  # noise cells per second
+
+# --- Block Shuffle (new): tiles are replaced by tiles from their neighbourhood ---
+
+BLOCK_TILE_SIZES = (
+    16,
+    32,
+    80,
+)  # px; each shuffle uses one of them. Every size must divide the frame width and height
+BLOCK_MAX_FRACTION = 0.5  # share of the tiles shuffled at full knob
+BLOCK_RADIUS_TILES = 2  # a tile may come from up to this many tiles away
+BLOCK_HOLD_MIN_FRAMES = 3  # a shuffle is held for this many frames at least ...
+BLOCK_HOLD_MAX_FRAMES = 8  # ... and at most this many (a stutter, not a flicker)
+BLOCK_CENTER_CALM = (
+    0.6  # 0 = the middle shuffles like the rest; 1 = the middle never shuffles
+)
+BLOCK_NOISE_ENABLED = True  # clusters of shuffled tiles that drift over the picture
+BLOCK_NOISE_AMOUNT = (
+    0.8  # 0 = tiles chosen evenly; 1 = from no tile to twice the chance
+)
+BLOCK_NOISE_SIZE_TILES = 5  # tiles per noise cell
+BLOCK_NOISE_SPEED = 0.15  # noise cells per second
+
+# --- JPEG Crush (new): the picture goes through a real, very low quality JPEG ---
+
+JPEG_QUALITY_START = (
+    70  # JPEG quality just above the start of the knob (1-100, lower = worse)
+)
+JPEG_QUALITY_END = 4  # JPEG quality at full knob
+JPEG_CURVE = (
+    0.6  # below 1 = the damage starts early on the knob; above 1 = it comes late
+)
+JPEG_CHROMA_FACTOR = 0.5  # colour quality as a share of the brightness quality (lower = colour bleeds more)
+JPEG_PASSES = 1  # 1-3: more passes = generational loss (each costs one JPEG round trip)
+JPEG_PASS_SHIFT_PX = 3  # shift between passes so the blocks do not line up
+JPEG_BLOCK_SCALE = (
+    1  # 1 = 8 px blocks; 2 = compress at half size (16 px blocks); 4 = 32 px blocks
+)
+JPEG_BYTE_FLIPS = (
+    0  # damaged bytes in the compressed data at full knob (0 = none; try 3-12)
+)
+JPEG_NOISE_ENABLED = True  # only zones that drift over the picture are crushed
+JPEG_NOISE_AMOUNT = 0.7  # 0 = the whole picture is crushed; 1 = only the wilder half
+JPEG_NOISE_SIZE_PX = 150  # picture px per zone
+JPEG_NOISE_SPEED = 0.10  # noise cells per second
+
+# --- Bitwise Databend (new): the top bit planes are combined with a shifted copy of the picture ---
+
+BITWISE_MODE = "xor"  # "xor", "or" or "and"
+BITWISE_MAX_PLANES = (
+    4  # bit planes (of 8) combined at full knob; 1 plane at the start of the knob
+)
+BITWISE_CHANNEL_SHIFTS = (
+    (24, 0),
+    (-18, 12),
+    (0, -30),
+)  # (x, y) px of the shift of B, G, R at full knob
+BITWISE_NOISE_ENABLED = True  # only zones that drift over the picture are bent
+BITWISE_NOISE_AMOUNT = 0.7  # 0 = the whole picture is bent; 1 = only the wilder half
+BITWISE_NOISE_SIZE_PX = 140  # picture px per zone
+BITWISE_NOISE_SPEED = 0.10  # noise cells per second
+
+# --- Fisheye (new): a bulge in the middle, the edges move only slightly ---
+
+FISHEYE_MAX = 0.45  # strength of the bulge at full knob (0 = none); the middle is magnified by 1 / (1 - this)
+FISHEYE_FALLOFF = 1.3  # bigger = a smaller, tighter bulge
+FISHEYE_CA = 0.012  # colour fringe towards the edges (0 = none; saves about 2 ms)
+FISHEYE_NOISE_ENABLED = True  # the bulge breathes and its centre wanders
+FISHEYE_NOISE_AMOUNT = 0.3  # how much the strength breathes (0 = not at all)
+FISHEYE_NOISE_CENTER_PX = 40  # how far the centre wanders
+FISHEYE_NOISE_SPEED = 0.15  # noise cells per second
 
 # --- Pixellation -------------------------------------------------------------------
 COMPRESSION_TILE_BASE = 4  # [320x240: 6 ] [480x360: 9 ] [640x480: 12]
@@ -746,6 +866,15 @@ _CRASH_LIMITS = {
     "BLEED_NOISE_ROWS": (0, "chroma_bleed", True),  # a division by it
     "MOIRE_PERIOD_PX": (0, "moire_overlay", True),  # a division by it
     "MOIRE_STEPS": (2, "moire_overlay", False),  # the angle stack needs 2 or more
+    "MOSH_ECHO_NOISE_SIZE_PX": (0, "data_mosh", True),  # a division by it
+    "BLOCK_NOISE_SIZE_TILES": (0, "block_shuffle", True),  # a division by it
+    "BLOCK_RADIUS_TILES": (0, "block_shuffle", False),  # a range of tiles
+    "BLOCK_HOLD_MIN_FRAMES": (1, "block_shuffle", False),  # a range of frames
+    "JPEG_NOISE_SIZE_PX": (0, "jpeg_crush", True),  # a division by it
+    "JPEG_BLOCK_SCALE": (1, "jpeg_crush", False),  # the picture is divided by it
+    "JPEG_PASSES": (1, "jpeg_crush", False),  # the number of JPEG round trips
+    "BITWISE_NOISE_SIZE_PX": (0, "bitwise_databend", True),  # a division by it
+    "BITWISE_MAX_PLANES": (1, "bitwise_databend", False),  # a count of bit planes
 }
 # The largest value a tunable can have before the booth crashes (same rule as above).
 _CRASH_LIMITS_MAX = {
@@ -755,6 +884,9 @@ _CRASH_LIMITS_MAX = {
     ),  # the roll buffer holds half the height
     "POSTERIZE_BANDS_LOW": (256, "posterize"),  # the tone table has 256 entries
     "POSTERIZE_BANDS_HIGH": (256, "posterize"),
+    "BITWISE_MAX_PLANES": (8, "bitwise_databend"),  # a picture has 8 bit planes
+    "JPEG_BLOCK_SCALE": (16, "jpeg_crush"),  # the picture would shrink to nothing
+    "JPEG_PASSES": (5, "jpeg_crush"),  # each pass is a JPEG round trip
 }
 
 DISABLED_EFFECTS = set()
@@ -795,6 +927,23 @@ def _apply_crash_limits():
             "POSTERIZE_SECTION_PX",
             sp,
             f"must divide {FRAME_W} and {FRAME_H}",
+        )
+    if "block_shuffle" not in DISABLED_EFFECTS and not (
+        len(BLOCK_TILE_SIZES) > 0
+        and all(
+            isinstance(s, int)
+            and not isinstance(s, bool)
+            and s > 0
+            and FRAME_W % s == 0
+            and FRAME_H % s == 0
+            for s in BLOCK_TILE_SIZES
+        )
+    ):
+        _disable_effect(
+            "block_shuffle",
+            "BLOCK_TILE_SIZES",
+            BLOCK_TILE_SIZES,
+            f"must be whole numbers that each divide {FRAME_W} and {FRAME_H}",
         )
     if "slice_glitch" not in DISABLED_EFFECTS and not (
         SLICE_MIN_H < SLICE_MAX_H < FRAME_H

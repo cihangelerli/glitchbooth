@@ -21,6 +21,15 @@ from tuning import (
     MOSH_CELL_W,
     MOSH_DORMANT_BELOW,
     MOSH_DRAG_NEW_WEIGHT,
+    MOSH_ECHO_DRIFT_PX,
+    MOSH_ECHO_ENABLED,
+    MOSH_ECHO_MAX,
+    MOSH_ECHO_MODE,
+    MOSH_ECHO_NOISE_AMOUNT,
+    MOSH_ECHO_NOISE_ENABLED,
+    MOSH_ECHO_NOISE_SIZE_PX,
+    MOSH_ECHO_NOISE_SPEED,
+    MOSH_ECHO_ZOOM,
     MOSH_EDGE_ERODE_MAX_PX,
     MOSH_HOLD_MAX_FRAMES,
     MOSH_HOLD_MIN_FRAMES,
@@ -113,9 +122,22 @@ class DataMoshEngine:
         self.noise_table = noise.table_for("data_mosh")
         self.noise_x = np.arange(gw, dtype=np.float64)
         self.noise_y = np.arange(gh, dtype=np.float64)
+        # feedback echo (MOSH_ECHO_ENABLED): a half-resolution memory of the previous echoed picture
+        hh, hw = H // 2, W // 2
+        self.echo = np.zeros((hh, hw, 3), dtype=np.uint8)
+        self.echo_cur = np.zeros((hh, hw, 3), dtype=np.uint8)
+        self.echo_warp = np.zeros((hh, hw, 3), dtype=np.uint8)
+        self.echo_pos = np.zeros((hh, hw, 3), dtype=np.uint8)
+        self.echo_neg = np.zeros((hh, hw, 3), dtype=np.uint8)
+        self.echo_w = np.zeros((hh, hw), dtype=np.uint8)
+        self.echo_w3 = np.zeros((hh, hw, 3), dtype=np.uint8)
+        self.echo_up_pos, self.echo_up_neg = z3(), z3()
+        self.echo_x = np.arange(0, hw, 8, dtype=np.float64)  # noise zones on a coarse grid
+        self.echo_y = np.arange(0, hh, 8, dtype=np.float64)
+        self.echo_ready = False
 
     def is_dirty(self):
-        return self.have_prev or bool(self.timer.any())
+        return self.have_prev or bool(self.timer.any()) or self.echo_ready
 
     def reset(self):
         # Forget everything: no hold, no vector, no remembered picture.
@@ -124,6 +146,65 @@ class DataMoshEngine:
         self.direction[:] = 0
 
         self.have_prev = False
+        self.echo_ready = False  # the echo is forgotten too
+
+    def _echo(self, frame, strength, current_time):
+        # Feedback echo: the previous echoed picture, grown and slid a little, is mixed back in, so
+        # moving things leave decaying trails. Only the DIFFERENCE is added to the full-resolution
+        # frame, so still areas and fine detail stay as they are.
+        H, W = FRAME_H, FRAME_W
+        hh, hw = H // 2, W // 2
+        cv2.resize(frame, (hw, hh), dst=self.echo_cur, interpolation=cv2.INTER_AREA)
+        if not self.echo_ready:  # first frame: only remember
+            np.copyto(self.echo, self.echo_cur)
+            self.echo_ready = True
+            return
+        dx, dy = float(MOSH_ECHO_DRIFT_PX), 0.0
+        if noise.is_on(MOSH_ECHO_NOISE_ENABLED):  # the slide direction wanders slowly
+            ang = np.pi * float(
+                noise.noise2(self.noise_table, 0.7, current_time * MOSH_ECHO_NOISE_SPEED + 11.0)
+            )
+            dx, dy = MOSH_ECHO_DRIFT_PX * np.cos(ang), MOSH_ECHO_DRIFT_PX * np.sin(ang)
+        z = 1.0 + MOSH_ECHO_ZOOM
+        m = np.array(
+            [[z, 0.0, (1.0 - z) * hw / 2.0 + dx], [0.0, z, (1.0 - z) * hh / 2.0 + dy]], np.float32
+        )
+        cv2.warpAffine(
+            self.echo, m, (hw, hh), dst=self.echo_warp, flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REPLICATE,
+        )
+        w = min(max(MOSH_ECHO_MAX, 0.0), 0.95) * (strength ** 0.5)  # strength is knob squared: the echo follows the knob itself
+        if noise.is_on(MOSH_ECHO_NOISE_ENABLED):  # zones of long and short trails
+            zones = noise.field2(
+                self.noise_table, self.echo_x, self.echo_y, current_time,
+                MOSH_ECHO_NOISE_SIZE_PX, MOSH_ECHO_NOISE_SPEED, 1,
+            )
+            zones = np.clip(0.5 + 0.8 * zones, 0.0, 1.0)
+            grid = (w * ((1.0 - MOSH_ECHO_NOISE_AMOUNT) + MOSH_ECHO_NOISE_AMOUNT * zones) * 255.0).astype(
+                np.uint8
+            )
+            cv2.resize(grid, (hw, hh), dst=self.echo_w, interpolation=cv2.INTER_LINEAR)
+        else:
+            self.echo_w[:] = int(w * 255.0)
+        cv2.merge([self.echo_w, self.echo_w, self.echo_w], dst=self.echo_w3)
+        if MOSH_ECHO_MODE == "average":
+            # new echo = picture + (old echo - picture) * weight, done with unsigned parts
+            cv2.subtract(self.echo_warp, self.echo_cur, dst=self.echo_pos)
+            cv2.subtract(self.echo_cur, self.echo_warp, dst=self.echo_neg)
+            cv2.multiply(self.echo_pos, self.echo_w3, dst=self.echo_pos, scale=1.0 / 255.0)
+            cv2.multiply(self.echo_neg, self.echo_w3, dst=self.echo_neg, scale=1.0 / 255.0)
+            cv2.add(self.echo_cur, self.echo_pos, dst=self.echo)
+            cv2.subtract(self.echo, self.echo_neg, dst=self.echo)
+            cv2.resize(self.echo_pos, (W, H), dst=self.echo_up_pos, interpolation=cv2.INTER_LINEAR)
+            cv2.resize(self.echo_neg, (W, H), dst=self.echo_up_neg, interpolation=cv2.INTER_LINEAR)
+            cv2.add(frame, self.echo_up_pos, dst=frame)
+            cv2.subtract(frame, self.echo_up_neg, dst=frame)
+        else:  # "lighten": the old echo, faded, only ever ADDS light to the picture
+            cv2.multiply(self.echo_warp, self.echo_w3, dst=self.echo_pos, scale=1.0 / 255.0)
+            cv2.max(self.echo_cur, self.echo_pos, dst=self.echo)
+            cv2.subtract(self.echo, self.echo_cur, dst=self.echo_pos)  # the light that is added
+            cv2.resize(self.echo_pos, (W, H), dst=self.echo_up_pos, interpolation=cv2.INTER_LINEAR)
+            cv2.add(frame, self.echo_up_pos, dst=frame)
 
     @staticmethod
     def _cells_to_pixels(cells_u8, row0, row1, dst):
@@ -139,6 +220,9 @@ class DataMoshEngine:
     def step(self, frame, strength, current_time=0.0):
         # Apply one frame of Data Mosh to `frame` (modified in place).
         gh, gw, H, W = MOSH_GRID_H, MOSH_GRID_W, FRAME_H, FRAME_W
+
+        if MOSH_ECHO_ENABLED:  # feedback echo FIRST: the mosh then sees the trails
+            self._echo(frame, strength, current_time)
 
         vec = max(
             0, min(MOSH_VECTOR_PX, FRAME_H)

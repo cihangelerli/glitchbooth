@@ -8,11 +8,15 @@ buffers and tables. (Importing it imports every effect module.)
 import logging
 
 from core.effects.ascii_matrix import _acts_ascii_matrix, apply_ascii_matrix
+from core.effects.bitwise_databend import _acts_bitwise_databend, apply_bitwise_databend
+from core.effects.block_shuffle import _acts_block_shuffle, apply_block_shuffle
 from core.effects.chroma_bleed import _acts_chroma_bleed, apply_chroma_bleed
 from core.effects.chroma_shift import _acts_chroma_shift, apply_chroma_shift
 from core.effects.contour_ripple import _acts_contour_ripple, apply_contour_ripple
 from core.effects.crt import apply_crt_overlay
 from core.effects.data_mosh import _acts_data_mosh, apply_data_mosh
+from core.effects.fisheye import _acts_fisheye, apply_fisheye
+from core.effects.jpeg_crush import _acts_jpeg_crush, apply_jpeg_crush
 from core.effects.melt import _acts_melt, apply_melt
 from core.effects.moire_overlay import apply_moire_overlay
 from core.effects.packet_corruption import (
@@ -70,6 +74,10 @@ _ACTING = {
     "scanline_ridge": _acts_scanline_ridge,
     "contour_ripple": _acts_contour_ripple,
     "chroma_bleed": _acts_chroma_bleed,
+    "fisheye": _acts_fisheye,
+    "block_shuffle": _acts_block_shuffle,
+    "jpeg_crush": _acts_jpeg_crush,
+    "bitwise_databend": _acts_bitwise_databend,
 }
 
 
@@ -96,6 +104,10 @@ EFFECT_HANDLERS = {
     "scanline_ridge": apply_scanline_ridge,
     "contour_ripple": apply_contour_ripple,
     "chroma_bleed": apply_chroma_bleed,
+    "fisheye": apply_fisheye,
+    "block_shuffle": apply_block_shuffle,
+    "jpeg_crush": apply_jpeg_crush,
+    "bitwise_databend": apply_bitwise_databend,
 }
 _EFFECT_PLAN = []
 _KNOB_LABELS = [KNOB_EMPTY_LABEL] * 6
