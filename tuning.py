@@ -75,8 +75,8 @@ FRAME_W = 640
 # An effect that is not attached to any knob is skipped and costs nothing.
 # The CRT scanline overlay always runs last and is not part of this list.
 EFFECT_ORDER = [
-    "scanline_ridge",
     "pixellation",
+    "scanline_ridge",
     "signal_drift",
     "contour_ripple",
     "melt",
@@ -511,7 +511,7 @@ MOSH_NOISE_SPEED = 0.10  # noise cells per second
 
 # --- Scanline Ridge (new): the picture becomes lines lifted by the brightness beneath them ---
 
-RIDGE_LINE_SPACING = 9  # rows between lines [320x240: 5] [480x360: 7] [640x480: 9]
+RIDGE_LINE_SPACING = 7  # rows between lines [320x240: 5] [480x360: 7] [640x480: 9]
 RIDGE_LINE_THICKNESS = 2  # line width in px [320x240: 1]
 RIDGE_SAMPLE_STEP_PX = 3  # a line point every N px (bigger = faster, more angular)
 RIDGE_ANTIALIAS = False  # True = smooth line edges, about twice the drawing time
