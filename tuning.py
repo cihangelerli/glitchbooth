@@ -98,9 +98,9 @@ EFFECT_ORDER = [
 # effects are secondary and react to the same knob without appearing in the UI.
 KNOB_ATTACHMENTS = {
     0: ["ascii_matrix"],
-    1: ["scanline_ridge", "signal_drift"],
-    2: ["posterize", "contour_ripple"],
-    3: ["chroma_bleed", "pixellation"],
+    1: ["scanline_ridge"],
+    2: ["contour_ripple"],
+    3: ["chroma_bleed"],
     4: ["melt", "data_mosh"],
     5: ["chroma_shift", "slice_glitch", "packet_corruption"],
 }
@@ -494,12 +494,12 @@ CHROMA_NOISE_ROWS = (
 )
 CHROMA_NOISE_SPEED = 0.12  # noise cells per second
 # Posterize: the tone borders flow slowly (grey levels are added to / taken from the tones).
-POSTERIZE_NOISE_ENABLED = True
+POSTERIZE_NOISE_ENABLED = False
 POSTERIZE_NOISE_AMOUNT = 22  # grey levels of shift at full strength (0 = none)
 POSTERIZE_NOISE_SIZE_PX = 60  # size of one flow cell in half-resolution pixels
 POSTERIZE_NOISE_SPEED = 0.10  # noise cells per second
 # Data Mosh: sensitivity zones; some areas mosh easily and others hardly, and the zones drift.
-MOSH_NOISE_ENABLED = True
+MOSH_NOISE_ENABLED = False
 MOSH_NOISE_AMOUNT = 0.6  # 0 = same threshold everywhere; 1 = from 0 to 2x the threshold
 MOSH_NOISE_SIZE_CELLS = 6  # mosh cells per noise cell
 MOSH_NOISE_SPEED = 0.10  # noise cells per second
@@ -515,7 +515,7 @@ RIDGE_PHOTO_FADE_FROM = 0.10  # knob strength where the photo starts to fade ...
 RIDGE_PHOTO_FADE_TO = 0.75  # ... and where it is gone (pure lines above this)
 RIDGE_LINES_FULL_AT = 0.33  # knob strength where the lines reach full brightness
 RIDGE_COLOUR_SOURCE = (
-    "stops"  # "stops" = RIDGE_COLOUR_STOPS, "palette" = the booth neon palette
+    "palette"  # "stops" = RIDGE_COLOUR_STOPS, "palette" = the booth neon palette
 )
 RIDGE_COLOUR_STOPS = (  # (B, G, R) from dark to bright tones
     (80, 10, 30),
