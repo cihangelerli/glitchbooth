@@ -114,8 +114,8 @@ EFFECT_KNOB_WINDOW = {
     "packet_corruption": (0.0, 1.0),
     "contour_ripple": (0.6, 1.0),
     "pixellation": (0.0, 1.0),
-    "melt": (0.5, 1.0),
-    "data_mosh": (0.5, 1.0),
+    "melt": (0.3, 1.0),
+    "data_mosh": (0.3, 1.0),
 }
 
 # Cost weights follow effects when they move between knobs.
@@ -517,7 +517,7 @@ RIDGE_SAMPLE_STEP_PX = 3  # a line point every N px (bigger = faster, more angul
 RIDGE_ANTIALIAS = False  # True = smooth line edges, about twice the drawing time
 RIDGE_HEIGHT = 0.12  # tallest ridge at full knob, as a share of the picture height
 RIDGE_PHOTO_FADE_FROM = 0.10  # knob strength where the photo starts to fade ...
-RIDGE_PHOTO_FADE_TO = 0.55  # ... and where it is gone (pure lines above this)
+RIDGE_PHOTO_FADE_TO = 0.85  # ... and where it is gone (pure lines above this)
 RIDGE_LINES_FULL_AT = 0.33  # knob strength where the lines reach full brightness
 RIDGE_COLOUR_SOURCE = (
     "palette"  # "stops" = RIDGE_COLOUR_STOPS, "palette" = the booth neon palette
@@ -529,8 +529,8 @@ RIDGE_COLOUR_STOPS = (  # (B, G, R) from dark to bright tones
     (255, 170, 255),
     (255, 245, 255),
 )
-RIDGE_GLOW_GAIN = 0.2  # halo brightness (0 = no glow)
-RIDGE_GLOW_RADIUS_PX = 2  # halo size
+RIDGE_GLOW_GAIN = 0.005  # halo brightness (0 = no glow)
+RIDGE_GLOW_RADIUS_PX = 1  # halo size
 RIDGE_NOISE_ENABLED = True
 RIDGE_NOISE_CONTRAST = (
     0.8  # 0 = every line equally tall; 1 = from flat to full-height lines
@@ -572,7 +572,7 @@ BLEED_NOISE_ROWS = 40  # picture rows per noise cell
 BLEED_NOISE_SPEED = 0.20  # noise cells per second
 
 # --- Moire Overlay (new, like the CRT overlay: not in EFFECT_ORDER, no knob) ---
-MOIRE_ENABLED = True
+MOIRE_ENABLED = False
 MOIRE_STRENGTH = 0.15  # how dark the grid gaps are (0-1)
 MOIRE_PERIOD_PX = (
     4.0  # distance between grid dots [320x240: 2] [480x360: 3] [640x480: 4]
