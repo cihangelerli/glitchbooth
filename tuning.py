@@ -281,7 +281,7 @@ POSTERIZE_JITTER_MAX_PX = (
 POSTERIZE_FLICKER_ENABLED = (
     True  # False = no flashing sections at all (the whole step is skipped)
 )
-POSTERIZE_FLICKER_PROB = 0.05  # share of outline sections that flash
+POSTERIZE_FLICKER_PROB = 0.03  # share of outline sections that flash
 # "neon" = each flashing section takes a random colour of the neon palette, "white" = white-hot
 POSTERIZE_FLICKER_COLOUR = "neon"
 # ASCII CLARITY: ONE DIAL for how readable Posterize stays while the ASCII effect is acting.
@@ -307,7 +307,7 @@ POSTERIZE_GLOW_CORE_LIFT = (
 )
 # Outline colour: "glow" = the brightest neon next to the border (often near-white), "white", "black" (ink)
 POSTERIZE_OUTLINE_STYLE = "black"
-POSTERIZE_OUTLINE_MID_FROM = 0.85  # strength from which outlines are MID px thick
+POSTERIZE_OUTLINE_MID_FROM = 0.98  # strength from which outlines are MID px thick
 POSTERIZE_OUTLINE_MAX_FROM = 0.99  # strength from which outlines are MAX px thick
 POSTERIZE_OUTLINE_MAX_PX = 1  # maximum outline thickness (min to mid to max)
 POSTERIZE_OUTLINE_MID_PX = 1  # mid-level outline thickness
@@ -315,7 +315,7 @@ POSTERIZE_OUTLINE_MIN_PX = 1  # minimum outline thickness
 POSTERIZE_SECTION_PX = (
     2  # size of the dropout / flicker sections (must divide 640 and 480)
 )
-POSTERIZE_FRAGMENT_FROM = 0.61  # strength from which fine detail starts to break apart
+POSTERIZE_FRAGMENT_FROM = 0.91  # strength from which fine detail starts to break apart
 POSTERIZE_FRAGMENT_AMOUNT = 1  # grey levels of break-up noise at full strength
 POSTERIZE_ROTATE_SECONDS = (
     7  # 0 = fixed colours; N = the colour assignment shifts every N seconds
@@ -345,10 +345,10 @@ POSTERIZE_KNOB_MODES = (
     (0.0, 0.45, "bands"),  # lowest zone
     (
         0.35,
-        0.75,
+        0.85,
         "gradient",
     ),  # middle zone (blended with the zone below where they overlap)
-    (0.75, 1.0, "thermal"),  # top zone
+    (0.80, 1.0, "thermal"),  # top zone
 )
 # The knob must move this far (share of the travel) before the mode selection follows, so a knob
 # resting on an edge does not flip the mode back and forth. 0 = off.
