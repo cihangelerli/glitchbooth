@@ -643,17 +643,17 @@ BLOCK_TILE_SIZES = (
 )  # px; each shuffle uses one of them. Every size must divide the frame width and height
 BLOCK_MAX_FRACTION = 0.5  # share of the tiles shuffled at full knob
 BLOCK_RADIUS_TILES = 2  # a tile may come from up to this many tiles away
-BLOCK_HOLD_MIN_FRAMES = 3  # a shuffle is held for this many frames at least ...
-BLOCK_HOLD_MAX_FRAMES = 8  # ... and at most this many (a stutter, not a flicker)
+BLOCK_HOLD_MIN_FRAMES = 7  # a shuffle is held for this many frames at least ...
+BLOCK_HOLD_MAX_FRAMES = 15  # ... and at most this many (a stutter, not a flicker)
 BLOCK_CENTER_CALM = (
-    0.6  # 0 = the middle shuffles like the rest; 1 = the middle never shuffles
+    0.8  # 0 = the middle shuffles like the rest; 1 = the middle never shuffles
 )
 BLOCK_NOISE_ENABLED = True  # clusters of shuffled tiles that drift over the picture
 BLOCK_NOISE_AMOUNT = (
     0.8  # 0 = tiles chosen evenly; 1 = from no tile to twice the chance
 )
 BLOCK_NOISE_SIZE_TILES = 5  # tiles per noise cell
-BLOCK_NOISE_SPEED = 0.15  # noise cells per second
+BLOCK_NOISE_SPEED = 0.05  # noise cells per second
 
 # --- JPEG Crush (new): the picture goes through a real, very low quality JPEG ---
 
