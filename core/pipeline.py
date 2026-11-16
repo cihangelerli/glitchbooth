@@ -28,6 +28,7 @@ from core.effects.posterize import _acts_posterize, apply_posterize
 from core.effects.scanline_ridge import _acts_scanline_ridge, apply_scanline_ridge
 from core.effects.signal_drift import _acts_signal_drift, apply_signal_drift
 from core.effects.slice_glitch import _acts_slice_glitch, apply_slice_glitch
+from core.effects.vertical_roll import _acts_vertical_roll, apply_vertical_roll
 from core.scale import n
 # EFFECT_COST_WEIGHT, EFFECT_LABELS and EFFECT_STATS_NAME are also read by name from
 # globals() in _check_effect_tables(), so they must stay imported here.
@@ -69,6 +70,7 @@ _ACTING = {
     "slice_glitch": _acts_slice_glitch,
     "data_mosh": _acts_data_mosh,
     "signal_drift": _acts_signal_drift,
+    "vertical_roll": _acts_vertical_roll,
     "packet_corruption": _acts_packet_corruption,
     "posterize": _acts_posterize,
     "scanline_ridge": _acts_scanline_ridge,
@@ -96,6 +98,7 @@ EFFECT_HANDLERS = {
     "posterize": apply_posterize,
     "chroma_shift": apply_chroma_shift,
     "slice_glitch": apply_slice_glitch,
+    "vertical_roll": apply_vertical_roll,
     "signal_drift": apply_signal_drift,
     "melt": apply_melt,
     "data_mosh": apply_data_mosh,

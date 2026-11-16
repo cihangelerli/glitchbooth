@@ -77,6 +77,7 @@ FRAME_W = 640
 EFFECT_ORDER = [
     "scanline_ridge",
     "pixellation",
+    "vertical_roll",
     "signal_drift",
     "fisheye",
     "contour_ripple",
@@ -102,7 +103,7 @@ EFFECT_ORDER = [
 # effects are secondary and react to the same knob without appearing in the UI.
 KNOB_ATTACHMENTS = {
     0: ["ascii_matrix"],
-    1: ["signal_drift", "contour_ripple", "fisheye"],
+    1: ["signal_drift", "contour_ripple", "fisheye", "vertical_roll"],
     2: ["posterize"],
     3: ["scanline_ridge"],
     4: ["pixellation", "melt", "data_mosh"],
@@ -122,6 +123,7 @@ EFFECT_KNOB_WINDOW = {
     "block_shuffle": (0.6, 1.0),
     "contour_ripple": (0.6, 1.0),
     "fisheye": (0.5, 1.0),
+    "vertical_roll": (0.9, 1.0),
     "pixellation": (0.0, 1.0),
     "melt": (0.3, 1.0),
     "data_mosh": (0.3, 1.0),
@@ -131,6 +133,7 @@ EFFECT_KNOB_WINDOW = {
 EFFECT_COST_WEIGHT = {
     "ascii_matrix": 0.10,
     "signal_drift": 0.07,
+    "vertical_roll": 0.02,
     "data_mosh": 0.27,
     "pixellation": 0.07,
     "melt": 0.27,
@@ -154,6 +157,7 @@ EFFECT_SKIP_DURING_WARMUP = ("data_mosh",)
 EFFECT_LABELS = {
     "ascii_matrix": "ASCII Matrix",
     "signal_drift": "Signal Drift",
+    "vertical_roll": "Vertical Roll",
     "data_mosh": "Data Corruption",
     "pixellation": "Pixel Damage",
     "melt": "Data Melt",
@@ -186,6 +190,7 @@ CAPTURE_JPEG_QUALITY = 90
 EFFECT_STATS_NAME = {
     "ascii_matrix": "ascii_matrix",
     "signal_drift": "signal_drift",
+    "vertical_roll": "vertical_roll",
     "data_mosh": "data_mosh",
     "pixellation": "pixel_damage",
     "melt": "melt",
@@ -226,8 +231,6 @@ DRIFT_AMOUNT_SCALE = 0.6  # sideways drift in px = strength * DRIFT_MAX_AMOUNT *
 DRIFT_MIN_AMOUNT = (
     2  # smaller amounts round to a 0 px shift, so drift starts acting at this
 )
-# Signal Drift's vertical roll above this strength acts whatever the sideways amount is.
-DRIFT_ROLL_ABOVE = 0.85
 
 # Statistics count an effect only when it is acting AND its (windowed) knob is at least this,
 # so a knob resting at 1-10 (electrical noise) does not count Pixel Damage or Drift as used.
@@ -476,16 +479,10 @@ CORRUPTION_BLEND_BELOW = 0.95  # below this energy the damage is blended, not so
 
 # --- Signal Drift -------------------------------------------------------------------
 DRIFT_MAX_AMOUNT = 70  # [320x240: 30] [480x360: 45] [640x480: 60]
-DRIFT_SEAM_FRACTION = (
-    0.04  # thickness of the black seam at the vertical roll (share of the frame height)
-)
 DRIFT_WAVE_PER_ROW = (
     0.05  # radians per picture row: the wave is about 2*pi/this = 126 rows long
 )
 DRIFT_WAVE_SPEED = 0.15  # radians per second: one wave cycle in about 42 s
-DRIFT_ROLL_MAX_FRACTION = (
-    0.5  # the vertical roll scrolls at most this share of the height (0-0.5)
-)
 
 # Signal Drift noise mutation: a smooth, slowly moving noise bends the sine wave and decides,
 # zone by zone, how much of the wave is bent. Off = the plain sine wave as before.
@@ -500,6 +497,16 @@ DRIFT_SHAPE_SPEED = 0.37  # how fast the bends change, noise cells per second (a
 DRIFT_STRENGTH_CONTRAST = 1.0  # 0 = every part of the picture mutates equally, 1 = full range from calm to wild zones
 DRIFT_STRENGTH_ROWS = 110  # size of one calm / wild zone in rows [320x240: 55] [480x360: 82] [640x480: 110]
 DRIFT_STRENGTH_SPEED = 0.11  # how fast the zones change, noise cells per second (about 16 s per visible change)
+
+# --- Vertical Roll ------------------------------------------------------------------
+ROLL_ABOVE = 0.0  # active from the start of its window (0.9 on knob 1)
+ROLL_MAX_FRACTION = 0.5  # scroll at most half the screen height
+ROLL_SEAM_FRACTION = 0.04  # thickness of the black seam bar
+
+# Backward-compatibility aliases (so server.py continues to run untouched)
+DRIFT_ROLL_ABOVE = ROLL_ABOVE
+DRIFT_ROLL_MAX_FRACTION = ROLL_MAX_FRACTION
+DRIFT_SEAM_FRACTION = ROLL_SEAM_FRACTION
 
 # NOISE (the shared module core/noise.py) AND THE NEW EFFECTS
 # ==============================================================================
@@ -848,7 +855,7 @@ _CRASH_LIMITS = {
     "SLICE_MAX_SHIFT": (1, "slice_glitch", False),
     "SLICE_EVERY_N_STEPS": (1, "slice_glitch", False),  # a modulo by it
     "MELT_SEED_STEP_MIN": (1, "melt", False),  # a modulo by it
-    "DRIFT_ROLL_MAX_FRACTION": (0, "signal_drift", False),
+    "ROLL_MAX_FRACTION": (0, "vertical_roll", False),
     "DRIFT_SHAPE_ROWS": (0, "signal_drift", True),  # a division by it
     "DRIFT_STRENGTH_ROWS": (0, "signal_drift", True),  # a division by it
     "DRIFT_MUTATION_FULL_AT": (0, "signal_drift", True),  # a division by it
@@ -878,10 +885,11 @@ _CRASH_LIMITS = {
 }
 # The largest value a tunable can have before the booth crashes (same rule as above).
 _CRASH_LIMITS_MAX = {
-    "DRIFT_ROLL_MAX_FRACTION": (
+    "ROLL_MAX_FRACTION": (
         0.5,
-        "signal_drift",
+        "vertical_roll",
     ),  # the roll buffer holds half the height
+    "ROLL_ABOVE": (0.99, "vertical_roll"),
     "POSTERIZE_BANDS_LOW": (256, "posterize"),  # the tone table has 256 entries
     "POSTERIZE_BANDS_HIGH": (256, "posterize"),
     "BITWISE_MAX_PLANES": (8, "bitwise_databend"),  # a picture has 8 bit planes
