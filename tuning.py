@@ -517,7 +517,7 @@ RIDGE_SAMPLE_STEP_PX = 3  # a line point every N px (bigger = faster, more angul
 RIDGE_ANTIALIAS = False  # True = smooth line edges, about twice the drawing time
 RIDGE_HEIGHT = 0.12  # tallest ridge at full knob, as a share of the picture height
 RIDGE_PHOTO_FADE_FROM = 0.10  # knob strength where the photo starts to fade ...
-RIDGE_PHOTO_FADE_TO = 0.85  # ... and where it is gone (pure lines above this)
+RIDGE_PHOTO_FADE_TO = 0.35  # ... and where it is gone (pure lines above this)
 RIDGE_LINES_FULL_AT = 0.33  # knob strength where the lines reach full brightness
 RIDGE_COLOUR_SOURCE = (
     "palette"  # "stops" = RIDGE_COLOUR_STOPS, "palette" = the booth neon palette
@@ -530,7 +530,7 @@ RIDGE_COLOUR_STOPS = (  # (B, G, R) from dark to bright tones
     (255, 245, 255),
 )
 RIDGE_GLOW_GAIN = 0.005  # halo brightness (0 = no glow)
-RIDGE_GLOW_RADIUS_PX = 1  # halo size
+RIDGE_GLOW_RADIUS_PX = 0  # halo size
 RIDGE_NOISE_ENABLED = True
 RIDGE_NOISE_CONTRAST = (
     0.8  # 0 = every line equally tall; 1 = from flat to full-height lines
