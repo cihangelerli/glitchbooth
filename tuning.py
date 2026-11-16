@@ -98,9 +98,9 @@ EFFECT_ORDER = [
 # effects are secondary and react to the same knob without appearing in the UI.
 KNOB_ATTACHMENTS = {
     0: ["ascii_matrix"],
-    1: ["scanline_ridge"],
-    2: ["contour_ripple"],
-    3: ["chroma_bleed"],
+    1: ["signal_drift", "contour_ripple"],
+    2: ["posterize"],
+    3: ["scanline_ridge"],
     4: ["melt", "data_mosh"],
     5: ["chroma_shift", "slice_glitch", "packet_corruption"],
 }
@@ -113,7 +113,8 @@ EFFECT_KNOB_WINDOW = {
     "slice_glitch": (0.0, 1.0),
     "packet_corruption": (0.0, 1.0),
     "scanline_ridge": (0.0, 1.0),
-    "signal_drift": (0.5, 1.0),
+    "signal_drift": (0.0, 1.0),
+    "contour_ripple": (0.6, 1.0),
 }
 
 # Cost weights follow effects when they move between knobs.
@@ -510,7 +511,7 @@ RIDGE_LINE_SPACING = 9  # rows between lines [320x240: 5] [480x360: 7] [640x480:
 RIDGE_LINE_THICKNESS = 2  # line width in px [320x240: 1]
 RIDGE_SAMPLE_STEP_PX = 3  # a line point every N px (bigger = faster, more angular)
 RIDGE_ANTIALIAS = False  # True = smooth line edges, about twice the drawing time
-RIDGE_HEIGHT = 0.22  # tallest ridge at full knob, as a share of the picture height
+RIDGE_HEIGHT = 0.12  # tallest ridge at full knob, as a share of the picture height
 RIDGE_PHOTO_FADE_FROM = 0.10  # knob strength where the photo starts to fade ...
 RIDGE_PHOTO_FADE_TO = 0.75  # ... and where it is gone (pure lines above this)
 RIDGE_LINES_FULL_AT = 0.33  # knob strength where the lines reach full brightness
@@ -567,8 +568,8 @@ BLEED_NOISE_ROWS = 40  # picture rows per noise cell
 BLEED_NOISE_SPEED = 0.20  # noise cells per second
 
 # --- Moire Overlay (new, like the CRT overlay: not in EFFECT_ORDER, no knob) ---
-MOIRE_ENABLED = False
-MOIRE_STRENGTH = 0.35  # how dark the grid gaps are (0-1)
+MOIRE_ENABLED = True
+MOIRE_STRENGTH = 0.05  # how dark the grid gaps are (0-1)
 MOIRE_PERIOD_PX = (
     4.0  # distance between grid dots [320x240: 2] [480x360: 3] [640x480: 4]
 )
