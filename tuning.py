@@ -75,24 +75,32 @@ FRAME_W = 640
 # An effect that is not attached to any knob is skipped and costs nothing.
 # The CRT scanline overlay always runs last and is not part of this list.
 EFFECT_ORDER = [
+    "scanline_ridge",
     "pixellation",
     "signal_drift",
+    "contour_ripple",
     "melt",
     "data_mosh",
     "packet_corruption",
     "ascii_matrix",
     "posterize",
+    "chroma_bleed",
     "chroma_shift",
     "slice_glitch",
 ]
 
+# The new effects (scanline_ridge, contour_ripple, chroma_bleed) are registered below but not
+# attached to a knob yet. Try one at a time, for example:
+#   1: ["signal_drift", "contour_ripple"],
+#   5: ["chroma_shift", "slice_glitch", "packet_corruption", "chroma_bleed"],
+#   scanline_ridge on a knob of your choice (not together with ascii_matrix; it runs first)
 # Knob (0-5) -> effects. The FIRST effect is its visible primary name; remaining
 # effects are secondary and react to the same knob without appearing in the UI.
 KNOB_ATTACHMENTS = {
     0: ["ascii_matrix"],
-    1: ["signal_drift"],
-    2: ["posterize"],
-    3: ["pixellation"],
+    1: ["scanline_ridge", "signal_drift"],
+    2: ["posterize", "contour_ripple"],
+    3: ["chroma_bleed", "pixellation"],
     4: ["melt", "data_mosh"],
     5: ["chroma_shift", "slice_glitch", "packet_corruption"],
 }
@@ -104,6 +112,8 @@ EFFECT_KNOB_WINDOW = {
     "chroma_shift": (0.20, 1.0),
     "slice_glitch": (0.0, 1.0),
     "packet_corruption": (0.0, 1.0),
+    "scanline_ridge": (0.0, 1.0),
+    "signal_drift": (0.5, 1.0),
 }
 
 # Cost weights follow effects when they move between knobs.
@@ -117,6 +127,10 @@ EFFECT_COST_WEIGHT = {
     "slice_glitch": 0.02,
     "packet_corruption": 0.0,
     "posterize": 0.15,
+    # first guesses for the new effects, to be set after a [PERF] measurement on the Pi
+    "scanline_ridge": 0.12,
+    "contour_ripple": 0.10,
+    "chroma_bleed": 0.06,
 }
 
 EFFECT_SKIP_DURING_WARMUP = ("data_mosh",)
@@ -131,6 +145,9 @@ EFFECT_LABELS = {
     "slice_glitch": "Slice Glitch",
     "packet_corruption": "Packet Corruption",
     "posterize": "Posterize",
+    "scanline_ridge": "Scanline Ridge",
+    "contour_ripple": "Contour Ripple",
+    "chroma_bleed": "Chroma Bleed",
 }
 KNOB_EMPTY_LABEL = "-"
 # The clean (unprocessed) frame is saved as <id>_clean.jpg and uploaded next to the processed
@@ -156,6 +173,9 @@ EFFECT_STATS_NAME = {
     "slice_glitch": "slice_glitch",
     "packet_corruption": "packet_corruption",
     "posterize": "posterize",
+    "scanline_ridge": "scanline_ridge",
+    "contour_ripple": "contour_ripple",
+    "chroma_bleed": "chroma_bleed",
 }
 
 # EFFECT ACTIVITY: ONE DEFINITION OF "THIS EFFECT IS ACTING"
@@ -450,6 +470,115 @@ DRIFT_STRENGTH_CONTRAST = 1.0  # 0 = every part of the picture mutates equally, 
 DRIFT_STRENGTH_ROWS = 110  # size of one calm / wild zone in rows [320x240: 55] [480x360: 82] [640x480: 110]
 DRIFT_STRENGTH_SPEED = 0.11  # how fast the zones change, noise cells per second (about 16 s per visible change)
 
+# NOISE (the shared module core/noise.py) AND THE NEW EFFECTS
+# ==============================================================================
+# Noise = smooth, slowly moving random curves. Every effect that uses it has its own switch;
+# NOISE_ENABLED is the master switch (False = every effect behaves as it does without noise).
+# The new effects keep a plain look when their noise is off; the existing effects look exactly as
+# before (Signal Drift has its own DRIFT_MUTATION_ENABLED switch and does not use this module yet).
+NOISE_ENABLED = True
+# Tables: each effect reads its own table of random directions (its own random pattern), so
+# effects change smoothly but not in step. To make effects move together, share a table:
+NOISE_SHARE_ALL = False  # True = every effect reads one shared table
+NOISE_TABLE_GROUPS = {}  # e.g. {"scanline_ridge": "a", "chroma_bleed": "a"}: same name = same table
+NOISE_SEED = None  # None = a new random pattern at every start; a number = the same pattern every start
+
+# --- Noise in existing effects (all off until you switch them on) -------------------
+# Chroma Shift: the red-channel shift varies from row to row (fringes of changing width).
+CHROMA_NOISE_ENABLED = True
+CHROMA_NOISE_AMOUNT = (
+    0.6  # 0 = every row shifts the same; 1 = rows range from 0 to 2x the shift
+)
+CHROMA_NOISE_ROWS = (
+    60  # picture rows per noise cell (bigger = smoother bands)  [320x240: 30]
+)
+CHROMA_NOISE_SPEED = 0.12  # noise cells per second
+# Posterize: the tone borders flow slowly (grey levels are added to / taken from the tones).
+POSTERIZE_NOISE_ENABLED = True
+POSTERIZE_NOISE_AMOUNT = 22  # grey levels of shift at full strength (0 = none)
+POSTERIZE_NOISE_SIZE_PX = 60  # size of one flow cell in half-resolution pixels
+POSTERIZE_NOISE_SPEED = 0.10  # noise cells per second
+# Data Mosh: sensitivity zones; some areas mosh easily and others hardly, and the zones drift.
+MOSH_NOISE_ENABLED = True
+MOSH_NOISE_AMOUNT = 0.6  # 0 = same threshold everywhere; 1 = from 0 to 2x the threshold
+MOSH_NOISE_SIZE_CELLS = 6  # mosh cells per noise cell
+MOSH_NOISE_SPEED = 0.10  # noise cells per second
+
+# --- Scanline Ridge (new): the picture becomes lines lifted by the brightness beneath them ---
+RIDGE_ACTIVE_ABOVE = 0.01
+RIDGE_LINE_SPACING = 9  # rows between lines [320x240: 5] [480x360: 7] [640x480: 9]
+RIDGE_LINE_THICKNESS = 2  # line width in px [320x240: 1]
+RIDGE_SAMPLE_STEP_PX = 3  # a line point every N px (bigger = faster, more angular)
+RIDGE_ANTIALIAS = False  # True = smooth line edges, about twice the drawing time
+RIDGE_HEIGHT = 0.22  # tallest ridge at full knob, as a share of the picture height
+RIDGE_PHOTO_FADE_FROM = 0.10  # knob strength where the photo starts to fade ...
+RIDGE_PHOTO_FADE_TO = 0.75  # ... and where it is gone (pure lines above this)
+RIDGE_LINES_FULL_AT = 0.33  # knob strength where the lines reach full brightness
+RIDGE_COLOUR_SOURCE = (
+    "stops"  # "stops" = RIDGE_COLOUR_STOPS, "palette" = the booth neon palette
+)
+RIDGE_COLOUR_STOPS = (  # (B, G, R) from dark to bright tones
+    (80, 10, 30),
+    (230, 40, 110),
+    (255, 60, 220),
+    (255, 170, 255),
+    (255, 245, 255),
+)
+RIDGE_GLOW_GAIN = 1.6  # halo brightness (0 = no glow)
+RIDGE_GLOW_RADIUS_PX = 12  # halo size
+RIDGE_NOISE_ENABLED = True
+RIDGE_NOISE_CONTRAST = (
+    0.8  # 0 = every line equally tall; 1 = from flat to full-height lines
+)
+RIDGE_NOISE_ZONE_LINES = 10  # lines per calm / wild zone
+RIDGE_NOISE_ZONE_SPEED = 0.08  # noise cells per second (zones change over ~12 s)
+RIDGE_NOISE_BEND_PX = (
+    10  # sideways-uneven wobble along each line, in px of height (0 = none)
+)
+RIDGE_NOISE_BEND_SIZE_PX = 90  # px along the line per wobble
+RIDGE_NOISE_BEND_SPEED = 0.25  # noise cells per second
+
+# --- Contour Ripple (new): the picture is pushed sideways in waves that follow its brightness ---
+RIPPLE_ACTIVE_ABOVE = 0.01
+RIPPLE_MAX_SHIFT_PX = (
+    36  # sideways push at full knob [320x240: 18] [480x360: 27] [640x480: 36]
+)
+RIPPLE_CYCLES = 3.0  # ripples across the full brightness range
+RIPPLE_SPEED = 0.8  # radians per second the ripples crawl (0 = still)
+RIPPLE_TONE_BLUR_PX = (
+    2.0  # smoothing of the brightness the ripples follow (quarter-resolution px)
+)
+RIPPLE_NOISE_ENABLED = True
+RIPPLE_NOISE_AMOUNT = (
+    0.8  # 0 = same push everywhere; 1 = calm zones with no push at all
+)
+RIPPLE_NOISE_SIZE_PX = 170  # picture px per calm / wild zone
+RIPPLE_NOISE_SPEED = 0.10  # noise cells per second
+
+# --- Chroma Bleed (new): colour smears sideways and lags behind the sharp picture ---
+BLEED_ACTIVE_ABOVE = 0.01
+BLEED_MAX_PX = 40  # smear length at full knob [320x240: 20] [480x360: 30] [640x480: 40]
+BLEED_LAG_PX = 14  # how far the colour trails the picture at full knob [320x240: 7]
+BLEED_NOISE_ENABLED = True
+BLEED_NOISE_AMOUNT = (
+    0.8  # 0 = every row lags the same; above 1 some rows lag the other way
+)
+BLEED_NOISE_ROWS = 40  # picture rows per noise cell
+BLEED_NOISE_SPEED = 0.20  # noise cells per second
+
+# --- Moire Overlay (new, like the CRT overlay: not in EFFECT_ORDER, no knob) ---
+MOIRE_ENABLED = False
+MOIRE_STRENGTH = 0.35  # how dark the grid gaps are (0-1)
+MOIRE_PERIOD_PX = (
+    4.0  # distance between grid dots [320x240: 2] [480x360: 3] [640x480: 4]
+)
+MOIRE_ANGLE_DEG = 3.0  # middle angle between the two grids (small = wide moire bands)
+MOIRE_ANGLE_SPAN_DEG = 2.0  # the angle moves this far either way of the middle
+MOIRE_ANGLE_SPEED = 0.08  # noise cells per second (how fast the bands move)
+MOIRE_STEPS = 12  # prepared angles (more = smoother movement, about 0.3 MiB each)
+MOIRE_NOISE_ENABLED = True  # False = the angle stays at the middle (still bands)
+MOIRE_KEEP_BRIGHTNESS = True  # lift the picture so the grid does not darken it overall
+
 # --- Pixellation -------------------------------------------------------------------
 COMPRESSION_TILE_BASE = 4  # [320x240: 6 ] [480x360: 9 ] [640x480: 12]
 COMPRESSION_TILE_SCALE = 9  # [320x240: 3 ] [480x360: 4 ] [640x480: 6 ]
@@ -600,6 +729,18 @@ _CRASH_LIMITS = {
     "DRIFT_MUTATION_FULL_AT": (0, "signal_drift", True),  # a division by it
     "POSTERIZE_BANDS_LOW": (1, "posterize", False),
     "POSTERIZE_BANDS_HIGH": (1, "posterize", False),
+    "CHROMA_NOISE_ROWS": (0, "chroma_shift", True),  # a division by it
+    "POSTERIZE_NOISE_SIZE_PX": (0, "posterize", True),  # a division by it
+    "MOSH_NOISE_SIZE_CELLS": (0, "data_mosh", True),  # a division by it
+    "RIDGE_LINE_SPACING": (1, "scanline_ridge", False),  # a step of the line positions
+    "RIDGE_SAMPLE_STEP_PX": (1, "scanline_ridge", False),  # a step of the line points
+    "RIDGE_NOISE_ZONE_LINES": (0, "scanline_ridge", True),  # a division by it
+    "RIDGE_NOISE_BEND_SIZE_PX": (0, "scanline_ridge", True),  # a division by it
+    "RIDGE_LINES_FULL_AT": (0, "scanline_ridge", True),  # a division by it
+    "RIPPLE_NOISE_SIZE_PX": (0, "contour_ripple", True),  # a division by it
+    "BLEED_NOISE_ROWS": (0, "chroma_bleed", True),  # a division by it
+    "MOIRE_PERIOD_PX": (0, "moire_overlay", True),  # a division by it
+    "MOIRE_STEPS": (2, "moire_overlay", False),  # the angle stack needs 2 or more
 }
 # The largest value a tunable can have before the booth crashes (same rule as above).
 _CRASH_LIMITS_MAX = {

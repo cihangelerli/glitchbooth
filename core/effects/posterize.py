@@ -10,6 +10,7 @@ import logging
 import cv2
 import numpy as np
 
+from core import noise as smooth_noise  # not "noise": step() has a local variable of that name
 from core.palettes import _posterize_palette, _ramp_luts
 from state import MUTABLE_PROCESSING_BUFFER
 from tuning import (
@@ -64,6 +65,10 @@ from tuning import (
     POSTERIZE_MODE_FADE_SECONDS,
     POSTERIZE_MODE_SCHEDULE,
     POSTERIZE_MODE_SOURCE,
+    POSTERIZE_NOISE_AMOUNT,
+    POSTERIZE_NOISE_ENABLED,
+    POSTERIZE_NOISE_SIZE_PX,
+    POSTERIZE_NOISE_SPEED,
     POSTERIZE_OUTLINE_MAX_FROM,
     POSTERIZE_OUTLINE_MAX_PX,
     POSTERIZE_OUTLINE_MID_FROM,
@@ -164,6 +169,30 @@ class PosterizeEngine:
         self.gl_full, self.gl_full3, self.glow_col = z(), z3(), z3()
         self.glow_solid, self.glow_core_solid = z3(), z3()
         self._glow_key = None
+        # noise (POSTERIZE_NOISE_ENABLED): a coarse field grown to half resolution every frame
+        self.noise_table = smooth_noise.table_for("posterize")
+        self.flow_x = np.arange(0, hw, 8, dtype=np.float64)
+        self.flow_y = np.arange(0, hh, 8, dtype=np.float64)
+        self.flow_pos, self.flow_neg = z(hh, hw), z(hh, hw)
+
+    def _tone_flow(self, current_time, s):
+        # Smooth noise moves the tone borders: grey levels are added to / taken from the tones.
+        field = smooth_noise.field2(
+            self.noise_table,
+            self.flow_x,
+            self.flow_y,
+            current_time,
+            POSTERIZE_NOISE_SIZE_PX,
+            POSTERIZE_NOISE_SPEED,
+        )
+        off = field * (POSTERIZE_NOISE_AMOUNT * s)
+        hh, hw = self.g_half.shape
+        up = np.clip(off, 0, 255).astype(np.uint8)
+        down = np.clip(-off, 0, 255).astype(np.uint8)
+        cv2.resize(up, (hw, hh), dst=self.flow_pos, interpolation=cv2.INTER_LINEAR)
+        cv2.resize(down, (hw, hh), dst=self.flow_neg, interpolation=cv2.INTER_LINEAR)
+        cv2.add(self.g_half, self.flow_pos, dst=self.g_half)
+        cv2.subtract(self.g_half, self.flow_neg, dst=self.g_half)
 
     def strength(self, raw_knob):
         """Knob value 0-1023 -> strength 0-1 through the response curve (0 = off)."""
@@ -542,6 +571,8 @@ class PosterizeEngine:
             cv2.addWeighted(
                 self.g_half, 1.0, noise, amp / 255.0, -amp / 2.0, dst=self.g_half
             )
+        if smooth_noise.is_on(POSTERIZE_NOISE_ENABLED):  # the tone borders flow slowly
+            self._tone_flow(current_time, s)
         if POSTERIZE_SOLARIZE:  # fold the tone curve before bands and colours
             lut = self.solar_lut
             if clarity > 0.0:

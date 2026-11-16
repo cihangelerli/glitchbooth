@@ -8,6 +8,7 @@ buffers and tables.
 import cv2
 import numpy as np
 
+from core import noise
 from core.scale import n
 from state import MUTABLE_PROCESSING_BUFFER
 from tuning import (
@@ -23,13 +24,16 @@ from tuning import (
     MOSH_EDGE_ERODE_MAX_PX,
     MOSH_HOLD_MAX_FRAMES,
     MOSH_HOLD_MIN_FRAMES,
+    MOSH_NOISE_AMOUNT,
+    MOSH_NOISE_ENABLED,
+    MOSH_NOISE_SIZE_CELLS,
+    MOSH_NOISE_SPEED,
     MOSH_RELEASE_ERODE_PX,
     MOSH_RELEASE_FRAMES,
     MOSH_THRESH_BASE,
     MOSH_THRESH_SPAN,
     MOSH_VECTOR_PX,
 )
-
 
 # =========================================================================
 # DATA MOSH - INDEPENDENT EFFECT (SHARES NO STATE WITH OTHER EFFECTS)
@@ -105,6 +109,10 @@ class DataMoshEngine:
         self.prev_samp = np.zeros((gh, gw, 3), dtype=np.int16)
         self.have_prev = False
         self.rng = np.random.default_rng()
+        # noise (MOSH_NOISE_ENABLED): sensitivity zones over the cell grid
+        self.noise_table = noise.table_for("data_mosh")
+        self.noise_x = np.arange(gw, dtype=np.float64)
+        self.noise_y = np.arange(gh, dtype=np.float64)
 
     def is_dirty(self):
         return self.have_prev or bool(self.timer.any())
@@ -128,7 +136,7 @@ class DataMoshEngine:
             interpolation=cv2.INTER_NEAREST,
         )
 
-    def step(self, frame, strength):
+    def step(self, frame, strength, current_time=0.0):
         # Apply one frame of Data Mosh to `frame` (modified in place).
         gh, gw, H, W = MOSH_GRID_H, MOSH_GRID_W, FRAME_H, FRAME_W
 
@@ -149,6 +157,18 @@ class DataMoshEngine:
 
         # ---- 1. which cells show motion ----
         threshold = int(MOSH_THRESH_BASE + (1.0 - strength) * MOSH_THRESH_SPAN)
+        if noise.is_on(
+            MOSH_NOISE_ENABLED
+        ):  # one threshold per cell: easy and stubborn zones
+            zones = noise.field2(
+                self.noise_table,
+                self.noise_x,
+                self.noise_y,
+                current_time,
+                MOSH_NOISE_SIZE_CELLS,
+                MOSH_NOISE_SPEED,
+            )
+            threshold = np.maximum(threshold * (1.0 + MOSH_NOISE_AMOUNT * zones), 0.0)
         if np.array_equal(self.samp, self.prev_samp):
             motion = np.zeros((gh, gw), dtype=bool)  # duplicate camera frame
         else:
@@ -323,7 +343,7 @@ def apply_data_mosh(raw_knob, current_time):
         if _MOSH.is_dirty():  # lowering the knob cancels all moshing at once
             _MOSH.reset()
         return
-    _MOSH.step(MUTABLE_PROCESSING_BUFFER, n(raw_knob) ** 2)
+    _MOSH.step(MUTABLE_PROCESSING_BUFFER, n(raw_knob) ** 2, current_time)
 
 
 def _acts_data_mosh(raw):

@@ -8,16 +8,20 @@ buffers and tables. (Importing it imports every effect module.)
 import logging
 
 from core.effects.ascii_matrix import _acts_ascii_matrix, apply_ascii_matrix
+from core.effects.chroma_bleed import _acts_chroma_bleed, apply_chroma_bleed
 from core.effects.chroma_shift import _acts_chroma_shift, apply_chroma_shift
+from core.effects.contour_ripple import _acts_contour_ripple, apply_contour_ripple
 from core.effects.crt import apply_crt_overlay
 from core.effects.data_mosh import _acts_data_mosh, apply_data_mosh
 from core.effects.melt import _acts_melt, apply_melt
+from core.effects.moire_overlay import apply_moire_overlay
 from core.effects.packet_corruption import (
     _acts_packet_corruption,
     apply_packet_corruption,
 )
 from core.effects.pixellation import _acts_pixellation, apply_pixellation
 from core.effects.posterize import _acts_posterize, apply_posterize
+from core.effects.scanline_ridge import _acts_scanline_ridge, apply_scanline_ridge
 from core.effects.signal_drift import _acts_signal_drift, apply_signal_drift
 from core.effects.slice_glitch import _acts_slice_glitch, apply_slice_glitch
 from core.scale import n
@@ -63,6 +67,9 @@ _ACTING = {
     "signal_drift": _acts_signal_drift,
     "packet_corruption": _acts_packet_corruption,
     "posterize": _acts_posterize,
+    "scanline_ridge": _acts_scanline_ridge,
+    "contour_ripple": _acts_contour_ripple,
+    "chroma_bleed": _acts_chroma_bleed,
 }
 
 
@@ -86,6 +93,9 @@ EFFECT_HANDLERS = {
     "data_mosh": apply_data_mosh,
     "packet_corruption": apply_packet_corruption,
     "ascii_matrix": apply_ascii_matrix,
+    "scanline_ridge": apply_scanline_ridge,
+    "contour_ripple": apply_contour_ripple,
+    "chroma_bleed": apply_chroma_bleed,
 }
 _EFFECT_PLAN = []
 _KNOB_LABELS = [KNOB_EMPTY_LABEL] * 6
@@ -297,4 +307,5 @@ def apply_glitch_pipeline(current_time, control_packet):
                     _windowed_raw(control_packet.knobs[knob], window),
                     current_time,
                 )
+    apply_moire_overlay(current_time)  # grid overlay, just before the CRT overlay
     apply_crt_overlay()
