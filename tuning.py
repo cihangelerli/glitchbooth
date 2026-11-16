@@ -101,7 +101,7 @@ KNOB_ATTACHMENTS = {
     1: ["signal_drift", "contour_ripple"],
     2: ["posterize"],
     3: ["scanline_ridge"],
-    4: ["melt", "data_mosh"],
+    4: ["pixellation", "melt", "data_mosh"],
     5: ["chroma_shift", "slice_glitch", "packet_corruption"],
 }
 
@@ -112,9 +112,10 @@ EFFECT_KNOB_WINDOW = {
     "chroma_shift": (0.20, 1.0),
     "slice_glitch": (0.0, 1.0),
     "packet_corruption": (0.0, 1.0),
-    "scanline_ridge": (0.0, 1.0),
-    "signal_drift": (0.0, 1.0),
     "contour_ripple": (0.6, 1.0),
+    "pixellation": (0.0, 0.5),
+    "melt": (0.5, 1.0),
+    "data_mosh": (0.7, 1.0),
 }
 
 # Cost weights follow effects when they move between knobs.
@@ -191,6 +192,9 @@ PIXELLATION_ACTIVE_ABOVE = 0.0  # acts above this strength (0 = from knob 1)
 ASCII_ACTIVE_ABOVE = 0.02  # knob ~21
 MELT_ACTIVE_ABOVE = 0.03  # knob ~31
 CHROMA_ACTIVE_ABOVE = 0.05  # knob ~52
+RIPPLE_ACTIVE_ABOVE = 0.01
+RIDGE_ACTIVE_ABOVE = 0.01
+BLEED_ACTIVE_ABOVE = 0.01
 SLICE_ACTIVE_FROM_KNOB = 11  # first slice appears at this knob value (0-1023)
 DRIFT_AMOUNT_SCALE = 0.6  # sideways drift in px = strength * DRIFT_MAX_AMOUNT * this
 DRIFT_MIN_AMOUNT = (
@@ -506,14 +510,14 @@ MOSH_NOISE_SIZE_CELLS = 6  # mosh cells per noise cell
 MOSH_NOISE_SPEED = 0.10  # noise cells per second
 
 # --- Scanline Ridge (new): the picture becomes lines lifted by the brightness beneath them ---
-RIDGE_ACTIVE_ABOVE = 0.01
+
 RIDGE_LINE_SPACING = 9  # rows between lines [320x240: 5] [480x360: 7] [640x480: 9]
 RIDGE_LINE_THICKNESS = 2  # line width in px [320x240: 1]
 RIDGE_SAMPLE_STEP_PX = 3  # a line point every N px (bigger = faster, more angular)
 RIDGE_ANTIALIAS = False  # True = smooth line edges, about twice the drawing time
 RIDGE_HEIGHT = 0.12  # tallest ridge at full knob, as a share of the picture height
-RIDGE_PHOTO_FADE_FROM = 0.10  # knob strength where the photo starts to fade ...
-RIDGE_PHOTO_FADE_TO = 0.75  # ... and where it is gone (pure lines above this)
+RIDGE_PHOTO_FADE_FROM = 0.20  # knob strength where the photo starts to fade ...
+RIDGE_PHOTO_FADE_TO = 0.85  # ... and where it is gone (pure lines above this)
 RIDGE_LINES_FULL_AT = 0.33  # knob strength where the lines reach full brightness
 RIDGE_COLOUR_SOURCE = (
     "palette"  # "stops" = RIDGE_COLOUR_STOPS, "palette" = the booth neon palette
@@ -525,8 +529,8 @@ RIDGE_COLOUR_STOPS = (  # (B, G, R) from dark to bright tones
     (255, 170, 255),
     (255, 245, 255),
 )
-RIDGE_GLOW_GAIN = 1.6  # halo brightness (0 = no glow)
-RIDGE_GLOW_RADIUS_PX = 12  # halo size
+RIDGE_GLOW_GAIN = 0.7  # halo brightness (0 = no glow)
+RIDGE_GLOW_RADIUS_PX = 7  # halo size
 RIDGE_NOISE_ENABLED = True
 RIDGE_NOISE_CONTRAST = (
     0.8  # 0 = every line equally tall; 1 = from flat to full-height lines
@@ -536,11 +540,11 @@ RIDGE_NOISE_ZONE_SPEED = 0.08  # noise cells per second (zones change over ~12 s
 RIDGE_NOISE_BEND_PX = (
     10  # sideways-uneven wobble along each line, in px of height (0 = none)
 )
-RIDGE_NOISE_BEND_SIZE_PX = 90  # px along the line per wobble
+RIDGE_NOISE_BEND_SIZE_PX = 70  # px along the line per wobble
 RIDGE_NOISE_BEND_SPEED = 0.25  # noise cells per second
 
 # --- Contour Ripple (new): the picture is pushed sideways in waves that follow its brightness ---
-RIPPLE_ACTIVE_ABOVE = 0.01
+
 RIPPLE_MAX_SHIFT_PX = (
     36  # sideways push at full knob [320x240: 18] [480x360: 27] [640x480: 36]
 )
@@ -557,7 +561,7 @@ RIPPLE_NOISE_SIZE_PX = 170  # picture px per calm / wild zone
 RIPPLE_NOISE_SPEED = 0.10  # noise cells per second
 
 # --- Chroma Bleed (new): colour smears sideways and lags behind the sharp picture ---
-BLEED_ACTIVE_ABOVE = 0.01
+
 BLEED_MAX_PX = 40  # smear length at full knob [320x240: 20] [480x360: 30] [640x480: 40]
 BLEED_LAG_PX = 14  # how far the colour trails the picture at full knob [320x240: 7]
 BLEED_NOISE_ENABLED = True
