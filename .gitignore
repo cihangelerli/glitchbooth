@@ -51,3 +51,23 @@ pending_uploads.txt
 captures_archive
 captures_naked
 naked_archive
+
+# Added by code-review-graph
+AGENTS.md
+CLAUDE.md
+CODEBUDDY.md
+GEMINI.md
+QODER.md
+*code-review-graph*.md
+.code-review-graph/
+.claude/
+.codebuddy/
+.gemini/
+.github/
+.kiro/
+.qoder/
+.vscode/
+.windsurfrules
+.cursorrules
+opencode.jsonc
+.mcp.json

@@ -30,6 +30,7 @@ from core.effects.signal_drift import _acts_signal_drift, apply_signal_drift
 from core.effects.slice_glitch import _acts_slice_glitch, apply_slice_glitch
 from core.effects.vertical_roll import _acts_vertical_roll, apply_vertical_roll
 from core.scale import n
+
 # EFFECT_COST_WEIGHT, EFFECT_LABELS and EFFECT_STATS_NAME are also read by name from
 # globals() in _check_effect_tables(), so they must stay imported here.
 from tuning import (
