@@ -39,15 +39,17 @@ from tuning import (
     RIDGE_NOISE_ZONE_SPEED,
     RIDGE_PHOTO_FADE_FROM,
     RIDGE_PHOTO_FADE_TO,
+    RIDGE_ROTATE_SECONDS,
     RIDGE_SAMPLE_STEP_PX,
 )
 
 
-def _colour_luts():
-    # Three 256-entry tables (B, G, R): tone -> line colour.
+def _colour_luts(rotation=0):
+    # Three 256-entry tables (B, G, R): tone -> line colour. `rotation` shifts which colours of the
+    # booth palette are used (palette source only).
     if RIDGE_COLOUR_SOURCE == "palette":
         luma = NEON_PALETTES.astype(np.float32) @ np.array([0.114, 0.587, 0.299], np.float32)
-        pal = NEON_PALETTES[np.argsort(luma)]  # darkest hue to brightest
+        pal = np.roll(NEON_PALETTES[np.argsort(luma)], -int(rotation), axis=0)  # darkest hue to brightest, rotated
         stops = pal[np.round(np.linspace(0, len(pal) - 1, 4)).astype(int)]
     else:
         stops = np.asarray(RIDGE_COLOUR_STOPS, dtype=np.float32)
@@ -86,11 +88,17 @@ class RidgeEngine:
         self.poly[: self.npts, 0] = xs
         self.line_idx = np.arange(self.nlines, dtype=np.float64)
         self.luts = _colour_luts()
+        self.rotation = 0
         self.table = noise.table_for("scanline_ridge")
         self.lo, self.hi = 0.0, 255.0  # smoothed brightness range (no flicker)
 
     def step(self, frame, k, t):
         H, W = FRAME_H, FRAME_W
+        if RIDGE_COLOUR_SOURCE == "palette" and RIDGE_ROTATE_SECONDS > 0:  # the palette colours rotate
+            rotation = int(t / RIDGE_ROTATE_SECONDS) % len(NEON_PALETTES)
+            if rotation != self.rotation:
+                self.luts = _colour_luts(rotation)
+                self.rotation = rotation
         # tones at quarter resolution, stretched to the full range (smoothed over time)
         cv2.resize(frame, (self.qw, self.qh), dst=self.small3, interpolation=cv2.INTER_AREA)
         cv2.cvtColor(self.small3, cv2.COLOR_BGR2GRAY, dst=self.small_g)

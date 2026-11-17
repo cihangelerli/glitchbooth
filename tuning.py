@@ -107,26 +107,39 @@ KNOB_ATTACHMENTS = {
     2: ["posterize"],
     3: ["scanline_ridge"],
     4: ["pixellation", "melt", "data_mosh"],
-    5: ["chroma_shift", "slice_glitch", "packet_corruption", "block_shuffle"],
+    5: [
+        "chroma_shift",
+        "slice_glitch",
+        "packet_corruption",
+        "block_shuffle",
+        "chroma_bleed",
+        "bitwise_databend",
+    ],
 }
 
-# NOT HOOKED: "chroma_bleed", "jpeg_crush", "bitwise_databend",
-# NOT ACTIVE: "moire_overlay"
+# NOT HOOKED: "jpeg_crush"
+# ACTIVE OVERLAYS: "moire_overlay", "crt"
 
 # Optional range of the knob in which an effect works, as fractions of the knob travel.
 # Inside its window the effect sees the full 0-1023 range; outside it is off.
 # Example: {"chroma_shift": (0.0, 0.7), "packet_corruption": (0.35, 1.0)}
 EFFECT_KNOB_WINDOW = {
-    "chroma_shift": (0.20, 1.0),
+    # chroma effects
+    "chroma_shift": (0.2, 1.0),
+    "chroma_bleed": (0.5, 1.0),
     "slice_glitch": (0.0, 1.0),
-    "packet_corruption": (0.0, 1.0),
-    "block_shuffle": (0.6, 1.0),
-    "contour_ripple": (0.6, 1.0),
-    "fisheye": (0.5, 1.0),
+    "packet_corruption": (0.1, 1.0),
+    "block_shuffle": (0.7, 1.0),
+    "bitwise_databend": (0.5, 1.0),
+    # signal manipulation effects
+    "signal_drift": (0.0, 0.7),
+    "contour_ripple": (0.7, 1.0),
+    "fisheye": (0.6, 1.0),
     "vertical_roll": (0.9, 1.0),
+    # pixellation and data mosh effects
     "pixellation": (0.0, 1.0),
     "melt": (0.3, 1.0),
-    "data_mosh": (0.3, 1.0),
+    "data_mosh": (0.1, 1.0),
 }
 
 # Cost weights follow effects when they move between knobs.
@@ -152,7 +165,17 @@ EFFECT_COST_WEIGHT = {
     "bitwise_databend": 0.05,
 }
 
-EFFECT_SKIP_DURING_WARMUP = ("data_mosh",)
+EFFECT_SKIP_DURING_WARMUP = (
+    "data_mosh",
+    "scanline_ridge",
+    "contour_ripple",
+    "melt",
+    "jpeg_crush",
+    "ascii_matrix",
+    "bitwise_databend",
+    "posterize",
+    "chroma_bleed",
+)
 
 EFFECT_LABELS = {
     "ascii_matrix": "ASCII Matrix",
@@ -576,6 +599,9 @@ RIDGE_NOISE_BEND_PX = (
 RIDGE_NOISE_BEND_SIZE_PX = 70  # px along the line per wobble
 RIDGE_NOISE_BEND_SPEED = 0.25  # noise cells per second
 
+# --- Scanline Ridge: the booth-palette colours rotate (palette colour source only) (added in NZ3) ---
+RIDGE_ROTATE_SECONDS = 6  # 0 = fixed colours; N = the colours shift every N seconds
+
 # --- Contour Ripple (new): the picture is pushed sideways in waves that follow its brightness ---
 
 RIPPLE_MAX_SHIFT_PX = (
@@ -605,7 +631,7 @@ BLEED_NOISE_ROWS = 40  # picture rows per noise cell
 BLEED_NOISE_SPEED = 0.20  # noise cells per second
 
 # --- Moire Overlay (new, like the CRT overlay: not in EFFECT_ORDER, no knob) ---
-MOIRE_ENABLED = False
+MOIRE_ENABLED = True
 MOIRE_STRENGTH = 0.15  # how dark the grid gaps are (0-1)
 MOIRE_PERIOD_PX = (
     16.0  # distance between grid dots [320x240: 2] [480x360: 3] [640x480: 4]
@@ -616,6 +642,58 @@ MOIRE_ANGLE_SPEED = 0.08  # noise cells per second (how fast the bands move)
 MOIRE_STEPS = 12  # prepared angles (more = smoother movement, about 0.3 MiB each)
 MOIRE_NOISE_ENABLED = True  # False = the angle stays at the middle (still bands)
 MOIRE_KEEP_BRIGHTNESS = True  # lift the picture so the grid does not darken it overall
+
+# NZ3: OPTIONS FOR SCANLINE RIDGE, CHROMA BLEED AND THE MOIRE OVERLAY (each with its own switch)
+# ==============================================================================
+
+# --- Moire Overlay: four layers, each with its own switch (the overlay itself: MOIRE_ENABLED) ---
+MOIRE_SOFT_ENABLED = False  # the original soft dot grids (MOIRE_STRENGTH, MOIRE_PERIOD_PX): very faint bands
+MOIRE_LINES_ENABLED = True  # A: two line grids a few degrees apart
+MOIRE_LINES_MODE = "bands"  # A: "bands" = the bands drawn directly + fine lines (gentle); "hard" = hard dark grids (strong)
+MOIRE_LINES_PERIOD_PX = 4.0  # A: distance between lines [320x240: 2] [640x480: 4]
+MOIRE_LINES_STRENGTH = 0.45  # A "hard": how dark the lines are (0-1)
+MOIRE_BANDS_STRENGTH = 0.3  # A "bands": depth of the moire bands (0-1)
+MOIRE_BANDS_LINE_STRENGTH = 0.3  # A "bands": how dark the fine lines are (0-1)
+MOIRE_RGB_ENABLED = (
+    False  # B: hard red / green / blue dots, two grids (coloured moire; busy)
+)
+MOIRE_RGB_STRENGTH = 0.85  # B: how dark the gaps are (0-1)
+MOIRE_RGB_PIXEL_PX = 3.0  # B: width of one red-green-blue triple
+MOIRE_RGB_ROW_PX = 3.0  # B: distance between dot rows
+MOIRE_RESAMPLE_ENABLED = (
+    False  # C: fine lines, then a slight rotation without smoothing
+)
+MOIRE_RESAMPLE_PERIOD_PX = 3.0  # C: distance between the fine lines
+MOIRE_RESAMPLE_STRENGTH = 0.6  # C: how dark the fine lines are (0-1)
+MOIRE_RESAMPLE_ANGLE_DEG = 2.0  # C: rotation of the picture
+MOIRE_RESAMPLE_ANGLE_SPAN_DEG = (
+    0.8  # C: the rotation drifts this far either way (with noise on)
+)
+MOIRE_RESAMPLE_SCALE = 0.97  # C: scale of the picture (below 1 = slightly smaller)
+
+
+# --- Chroma Bleed: three looks, each with its own switch (all can be on together) ---
+BLEED_LONG_ENABLED = (
+    True  # A: a much longer smear and lag (colour spills far past the edges)
+)
+BLEED_LONG_SMEAR_PX = (
+    160  # A: smear length at full knob (replaces BLEED_MAX_PX while A is on)
+)
+BLEED_LONG_LAG_PX = (
+    50  # A: how far the colour trails at full knob (replaces BLEED_LAG_PX)
+)
+BLEED_SATURATION = 1.5  # more colour for every look (1 = unchanged)
+BLEED_TRAIL_ENABLED = (
+    True  # B: the colour follows from older frames (trails behind movement)
+)
+BLEED_TRAIL_DECAY = 0.88  # B: memory at full knob (0-0.99); higher = longer trails
+BLEED_SLABS_ENABLED = True  # C: the colour is held sideways in blocks of random length
+BLEED_SLAB_LENGTH_PX = 70  # C: average slab length in px
+BLEED_SLAB_ROWS_PX = 6  # C: rows per slab band
+BLEED_SLAB_REFRESH_FRAMES = (
+    6  # C: the slabs are redrawn every N frames (1 = every frame)
+)
+
 
 # NEW EFFECTS (NZ2): FEEDBACK ECHO IN DATA MOSH, BLOCK SHUFFLE, JPEG CRUSH, BITWISE DATABEND, FISHEYE
 # ==============================================================================
@@ -882,6 +960,26 @@ _CRASH_LIMITS = {
     "JPEG_PASSES": (1, "jpeg_crush", False),  # the number of JPEG round trips
     "BITWISE_NOISE_SIZE_PX": (0, "bitwise_databend", True),  # a division by it
     "BITWISE_MAX_PLANES": (1, "bitwise_databend", False),  # a count of bit planes
+    "BLEED_SLAB_LENGTH_PX": (0, "chroma_bleed", True),  # a division by it
+    "BLEED_SLAB_ROWS_PX": (
+        2,
+        "chroma_bleed",
+        False,
+    ),  # rows per slab band (half of it at half resolution)
+    "BLEED_SLAB_REFRESH_FRAMES": (
+        1,
+        "chroma_bleed",
+        False,
+    ),  # frames between two slab draws
+    "MOIRE_LINES_PERIOD_PX": (0, "moire_overlay", True),  # a division by it
+    "MOIRE_RGB_PIXEL_PX": (0, "moire_overlay", True),  # a division by it
+    "MOIRE_RGB_ROW_PX": (0, "moire_overlay", True),  # a division by it
+    "MOIRE_RESAMPLE_PERIOD_PX": (0, "moire_overlay", True),  # a division by it
+    "MOIRE_RESAMPLE_SCALE": (
+        0,
+        "moire_overlay",
+        True,
+    ),  # the picture would shrink to nothing
 }
 # The largest value a tunable can have before the booth crashes (same rule as above).
 _CRASH_LIMITS_MAX = {
@@ -895,6 +993,7 @@ _CRASH_LIMITS_MAX = {
     "BITWISE_MAX_PLANES": (8, "bitwise_databend"),  # a picture has 8 bit planes
     "JPEG_BLOCK_SCALE": (16, "jpeg_crush"),  # the picture would shrink to nothing
     "JPEG_PASSES": (5, "jpeg_crush"),  # each pass is a JPEG round trip
+    "BLEED_TRAIL_DECAY": (0.99, "chroma_bleed"),  # at 1 the colour memory never updates
 }
 
 DISABLED_EFFECTS = set()
