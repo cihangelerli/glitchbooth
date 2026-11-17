@@ -130,16 +130,16 @@ EFFECT_KNOB_WINDOW = {
     "slice_glitch": (0.0, 1.0),
     "packet_corruption": (0.1, 1.0),
     "block_shuffle": (0.7, 1.0),
-    "bitwise_databend": (0.5, 1.0),
+    "bitwise_databend": (0.9, 1.0),
     # signal manipulation effects
-    "signal_drift": (0.0, 0.7),
-    "contour_ripple": (0.7, 1.0),
-    "fisheye": (0.6, 1.0),
+    "signal_drift": (0.0, 0.8),
+    "contour_ripple": (0.8, 1.0),
+    "fisheye": (0.7, 1.0),
     "vertical_roll": (0.9, 1.0),
     # pixellation and data mosh effects
     "pixellation": (0.0, 1.0),
-    "melt": (0.3, 1.0),
-    "data_mosh": (0.1, 1.0),
+    "melt": (0.35, 1.0),
+    "data_mosh": (0.2, 1.0),
 }
 
 # Cost weights follow effects when they move between knobs.
@@ -147,7 +147,7 @@ EFFECT_COST_WEIGHT = {
     "ascii_matrix": 0.10,
     "signal_drift": 0.07,
     "vertical_roll": 0.02,
-    "data_mosh": 0.27,
+    "data_mosh": 0.17,
     "pixellation": 0.07,
     "melt": 0.27,
     "chroma_shift": 0.05,
@@ -651,9 +651,9 @@ MOIRE_SOFT_ENABLED = False  # the original soft dot grids (MOIRE_STRENGTH, MOIRE
 MOIRE_LINES_ENABLED = True  # A: two line grids a few degrees apart
 MOIRE_LINES_MODE = "bands"  # A: "bands" = the bands drawn directly + fine lines (gentle); "hard" = hard dark grids (strong)
 MOIRE_LINES_PERIOD_PX = 4.0  # A: distance between lines [320x240: 2] [640x480: 4]
-MOIRE_LINES_STRENGTH = 0.45  # A "hard": how dark the lines are (0-1)
-MOIRE_BANDS_STRENGTH = 0.3  # A "bands": depth of the moire bands (0-1)
-MOIRE_BANDS_LINE_STRENGTH = 0.3  # A "bands": how dark the fine lines are (0-1)
+MOIRE_LINES_STRENGTH = 0.25  # A "hard": how dark the lines are (0-1)
+MOIRE_BANDS_STRENGTH = 0.15  # A "bands": depth of the moire bands (0-1)
+MOIRE_BANDS_LINE_STRENGTH = 0.15  # A "bands": how dark the fine lines are (0-1)
 MOIRE_RGB_ENABLED = (
     False  # B: hard red / green / blue dots, two grids (coloured moire; busy)
 )
