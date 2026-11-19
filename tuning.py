@@ -147,15 +147,15 @@ EFFECT_COST_WEIGHT = {
     "ascii_matrix": 0.10,
     "signal_drift": 0.07,
     "vertical_roll": 0.02,
-    "data_mosh": 0.17,
+    "data_mosh": 0.15,
     "pixellation": 0.07,
-    "melt": 0.27,
+    "melt": 0.20,
     "chroma_shift": 0.05,
     "slice_glitch": 0.02,
     "packet_corruption": 0.0,
     "posterize": 0.15,
     # first guesses for the new effects, to be set after a [PERF] measurement on the Pi
-    "scanline_ridge": 0.12,
+    "scanline_ridge": 0.21,
     "contour_ripple": 0.10,
     "chroma_bleed": 0.06,
     # first guesses again, to be set after a [PERF] measurement on the Pi
@@ -573,11 +573,9 @@ RIDGE_SAMPLE_STEP_PX = 3  # a line point every N px (bigger = faster, more angul
 RIDGE_ANTIALIAS = False  # True = smooth line edges, about twice the drawing time
 RIDGE_HEIGHT = 0.12  # tallest ridge at full knob, as a share of the picture height
 RIDGE_PHOTO_FADE_FROM = 0.05  # knob strength where the photo starts to fade ...
-RIDGE_PHOTO_FADE_TO = 0.20  # ... and where it is gone (pure lines above this)
+RIDGE_PHOTO_FADE_TO = 0.25  # ... and where it is gone (pure lines above this)
 RIDGE_LINES_FULL_AT = 0.20  # knob strength where the lines reach full brightness
-RIDGE_COLOUR_SOURCE = (
-    "palette"  # "stops" = RIDGE_COLOUR_STOPS, "palette" = the booth neon palette
-)
+RIDGE_COLOUR_SOURCE = "palette"  # the mode used when RIDGE_MODE_SOURCE = "fixed": "stops" = RIDGE_COLOUR_STOPS, "palette" = the booth neon palette, "image" = the picture's own colours
 RIDGE_COLOUR_STOPS = (  # (B, G, R) from dark to bright tones
     (80, 10, 30),
     (230, 40, 110),
@@ -601,6 +599,33 @@ RIDGE_NOISE_BEND_SPEED = 0.25  # noise cells per second
 
 # --- Scanline Ridge: the booth-palette colours rotate (palette colour source only) (added in NZ3) ---
 RIDGE_ROTATE_SECONDS = 6  # 0 = fixed colours; N = the colours shift every N seconds
+# What chooses the line colour mode (like POSTERIZE_MODE_SOURCE):
+#   "knob"  = the position of the ridge knob (RIDGE_KNOB_MODES below)
+#   "fixed" = always RIDGE_COLOUR_SOURCE
+RIDGE_MODE_SOURCE = "knob"
+# Mode by knob position: (lower edge, upper edge, mode), edges as a share of the knob travel
+# (0.0 = knob fully down, 1.0 = fully up). Where the ranges of two entries OVERLAP the two modes
+# are blended across the overlap; where they only touch the mode changes at once. A mode can be
+# "stops", "palette" or "image", or two joined by "+" (shown mixed by RIDGE_OVERLAY_MIX), for
+# example "image+palette". A gap between entries: the nearest edge decides.
+RIDGE_KNOB_MODES = (
+    (0.0, 0.75, "image"),
+    (0.70, 0.90, "palette"),
+    (0.85, 1.0, "stops"),
+)
+# The knob must move this far (share of the travel) before the mode selection follows, so a knob
+# resting on an edge does not flip the mode back and forth. 0 = off.
+RIDGE_KNOB_MODE_HYSTERESIS = 0.01
+RIDGE_OVERLAY_MIX = 0.4  # share of the 2nd mode in an "a+b" overlay (0-1)
+# "image" mode: "row" = each line carries the colours of its own picture row (the picture stays
+# recognizable); "drawn" = the colour of the picture where the line is drawn
+RIDGE_IMAGE_COLOUR_AT = "row"
+RIDGE_IMAGE_GAIN = (
+    1.0  # brightness of the picture's colours (above 1 washes light areas out to white)
+)
+RIDGE_IMAGE_SATURATION = (
+    1.4  # colour strength of the picture's colours (1 = as in the picture)
+)
 
 # --- Contour Ripple (new): the picture is pushed sideways in waves that follow its brightness ---
 
@@ -632,7 +657,7 @@ BLEED_NOISE_SPEED = 0.20  # noise cells per second
 
 # --- Moire Overlay (new, like the CRT overlay: not in EFFECT_ORDER, no knob) ---
 MOIRE_ENABLED = True
-MOIRE_STRENGTH = 0.15  # how dark the grid gaps are (0-1)
+MOIRE_STRENGTH = 0.05  # how dark the grid gaps are (0-1)
 MOIRE_PERIOD_PX = (
     16.0  # distance between grid dots [320x240: 2] [480x360: 3] [640x480: 4]
 )
@@ -651,13 +676,13 @@ MOIRE_SOFT_ENABLED = False  # the original soft dot grids (MOIRE_STRENGTH, MOIRE
 MOIRE_LINES_ENABLED = True  # A: two line grids a few degrees apart
 MOIRE_LINES_MODE = "bands"  # A: "bands" = the bands drawn directly + fine lines (gentle); "hard" = hard dark grids (strong)
 MOIRE_LINES_PERIOD_PX = 4.0  # A: distance between lines [320x240: 2] [640x480: 4]
-MOIRE_LINES_STRENGTH = 0.25  # A "hard": how dark the lines are (0-1)
+MOIRE_LINES_STRENGTH = 0.15  # A "hard": how dark the lines are (0-1)
 MOIRE_BANDS_STRENGTH = 0.15  # A "bands": depth of the moire bands (0-1)
-MOIRE_BANDS_LINE_STRENGTH = 0.15  # A "bands": how dark the fine lines are (0-1)
+MOIRE_BANDS_LINE_STRENGTH = 0.05  # A "bands": how dark the fine lines are (0-1)
 MOIRE_RGB_ENABLED = (
     False  # B: hard red / green / blue dots, two grids (coloured moire; busy)
 )
-MOIRE_RGB_STRENGTH = 0.85  # B: how dark the gaps are (0-1)
+MOIRE_RGB_STRENGTH = 0.15  # B: how dark the gaps are (0-1)
 MOIRE_RGB_PIXEL_PX = 3.0  # B: width of one red-green-blue triple
 MOIRE_RGB_ROW_PX = 3.0  # B: distance between dot rows
 MOIRE_RESAMPLE_ENABLED = (
