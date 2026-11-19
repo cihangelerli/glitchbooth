@@ -1,10 +1,10 @@
-"""Tuning: how the booth looks, feels and performs. ONE source of truth for every tunable.
+# Tuning: how the booth looks, feels and performs. ONE source of truth for every tunable.
 
-Plain values you edit in this file. Moved from server.py unchanged and in the same order.
-At the very end the startup check (the crash-limit tables and the two functions that apply
-them) runs, so every importer of this file always sees the final values. Values that .env
-controls are in config/settings.py.
-"""
+# Plain values you edit in this file. Moved from server.py unchanged and in the same order.
+# At the very end the startup check (the crash-limit tables and the two functions that apply
+# them) runs, so every importer of this file always sees the final values. Values that .env
+# controls are in config/settings.py.
+
 
 import logging
 
@@ -21,12 +21,24 @@ FLASH_COLOUR = (
     255,
 )  # (R, G, B) of the capture flash; the kiosk screen reads this too
 REVIEW_DIM_FACTOR = 0.4  # after the flash the frozen photo is shown at this brightness (0-1) during the countdown screen
-UI_GREEN = (0, 255, 0)  # (R, G, B) main terminal colour: text, borders, lines
+UI_GREEN = (0, 255, 0)  # (R, G, B) main terminal colour: text, borders, lines (#00ff00)
 UI_HIGHLIGHT = (209, 255, 201)  # a knob row that was just moved (#d1ffc9)
-UI_GLOW_DIM = (0, 80, 0)  # soft shadow behind a highlighted knob row
-UI_ALERT = (255, 60, 60)  # "HATA!" mark on a knob whose effect was switched off
-UI_NOTICE = (255, 90, 90)  # message box text and border (camera or print problem)
-UI_VIDEO_PLACEHOLDER = (20, 20, 25)  # video area while no camera frame has arrived
+UI_GLOW_DIM = (0, 80, 0)  # soft shadow behind a highlighted knob row (#005000)
+UI_ALERT = (
+    255,
+    60,
+    60,
+)  # "HATA!" mark on a knob whose effect was switched off (#ff3c3c)
+UI_NOTICE = (
+    255,
+    90,
+    90,
+)  # message box text and border (camera or print problem) (#ff5a5a)
+UI_VIDEO_PLACEHOLDER = (
+    20,
+    20,
+    25,
+)  # video area while no camera frame has arrived (#141419)
 UI_KNOB_HIGHLIGHT_SECONDS = 0.2  # how long a moved knob row stays highlighted
 
 # The pose countdown: the ONE place its length is set. The capture flow, the digits on the
@@ -65,6 +77,7 @@ CRT_GREEN_GLOW = 0.07
 FRAME_H = 480
 FRAME_W = 640
 
+
 # SCALABLE GLITCH MATRIX CONSTANTS
 # ==============================================================================
 
@@ -94,11 +107,6 @@ EFFECT_ORDER = [
     "slice_glitch",
 ]
 
-# The new effects (scanline_ridge, contour_ripple, chroma_bleed) are registered below but not
-# attached to a knob yet. Try one at a time, for example:
-#   1: ["signal_drift", "contour_ripple"],
-#   5: ["chroma_shift", "slice_glitch", "packet_corruption", "chroma_bleed"],
-#   scanline_ridge on a knob of your choice (not together with ascii_matrix; it runs first)
 # Knob (0-5) -> effects. The FIRST effect is its visible primary name; remaining
 # effects are secondary and react to the same knob without appearing in the UI.
 KNOB_ATTACHMENTS = {
@@ -118,7 +126,8 @@ KNOB_ATTACHMENTS = {
 }
 
 # NOT HOOKED: "jpeg_crush"
-# ACTIVE OVERLAYS: "moire_overlay", "crt"
+# ACTIVE OVERLAYS: "crt"
+# INACTIVE OVERLAYS: "moire_overlay"
 
 # Optional range of the knob in which an effect works, as fractions of the knob travel.
 # Inside its window the effect sees the full 0-1023 range; outside it is off.
@@ -142,7 +151,7 @@ EFFECT_KNOB_WINDOW = {
     "data_mosh": (0.2, 1.0),
 }
 
-# Cost weights follow effects when they move between knobs.
+# Cost weights follow effects when they move between knobs. now it is mostly guess work, needs performance references.
 EFFECT_COST_WEIGHT = {
     "ascii_matrix": 0.10,
     "signal_drift": 0.07,
@@ -154,11 +163,9 @@ EFFECT_COST_WEIGHT = {
     "slice_glitch": 0.02,
     "packet_corruption": 0.0,
     "posterize": 0.15,
-    # first guesses for the new effects, to be set after a [PERF] measurement on the Pi
     "scanline_ridge": 0.21,
     "contour_ripple": 0.10,
     "chroma_bleed": 0.06,
-    # first guesses again, to be set after a [PERF] measurement on the Pi
     "fisheye": 0.08,
     "block_shuffle": 0.06,
     "jpeg_crush": 0.10,
@@ -230,6 +237,7 @@ EFFECT_STATS_NAME = {
     "bitwise_databend": "bitwise_databend",
 }
 
+
 # EFFECT ACTIVITY: ONE DEFINITION OF "THIS EFFECT IS ACTING"
 # ------------------------------------------------------------------------------
 # The effect handlers, the statistics and Posterize's ASCII check all ask the same question,
@@ -255,9 +263,11 @@ DRIFT_MIN_AMOUNT = (
     2  # smaller amounts round to a 0 px shift, so drift starts acting at this
 )
 
+
 # Statistics count an effect only when it is acting AND its (windowed) knob is at least this,
 # so a knob resting at 1-10 (electrical noise) does not count Pixel Damage or Drift as used.
 EFFECT_STATS_MIN_KNOB = 11
+
 
 # NEON_PALETTES defined in native OpenCV BGR format: [Blue, Green, Red]
 # these palettes are shared by Melt and Posterize, CORRECT hexcodes should ALWAYS be here for reference.
@@ -284,7 +294,8 @@ NEON_PALETTES = np.array(
 )
 NEON_PALETTES_FLOAT = np.ascontiguousarray(NEON_PALETTES.astype(np.float32))
 
-# POSTERIZE TUNABLES (neon tone bands with glitchy outlines)
+
+# POSTERIZE TUNABLES
 # ==============================================================================
 # Posterize acts only while it is attached to a knob in KNOB_ATTACHMENTS (a knob can
 # drive several effects, for example 3: ["pixellation", "posterize"]).
@@ -456,7 +467,7 @@ POSTERIZE_GLOW_KEEP_BLACKS = True  # no glow spill onto the untouched black area
 POSTERIZE_GLOW_FROM = 0.0  # strength (0-1) from which the glow appears
 
 
-# DATA MOSH AND PACKET CORRUPTION TUNABLES
+# DATA MOSH TUNABLES
 # ==============================================================================
 
 # --- Data Mosh -------------------------------------------------------------------
@@ -482,10 +493,32 @@ MOSH_BLEED_MAX = 0.23  # bleed mix = MAX * strength (0-1)
 MOSH_CELL_H = 16
 MOSH_CELL_W = 12
 
+# --- Feedback Echo inside Data Mosh (before the mosh; off until switched on) ---
+MOSH_ECHO_ENABLED = False
+MOSH_ECHO_MODE = "lighten"  # "lighten" = bright trails, the picture stays full; "average" = ghosts (the picture fades too)
+MOSH_ECHO_MAX = (
+    0.80  # share of the old echo carried into the next frame at full strength (0-0.95)
+)
+MOSH_ECHO_ZOOM = 0.004  # the echo grows by this share every frame (0 = stays in place)
+MOSH_ECHO_DRIFT_PX = (
+    1.0  # the echo slides this many half-resolution px per frame (0 = none)
+)
+MOSH_ECHO_NOISE_ENABLED = (
+    True  # zones of long and short trails; the slide direction wanders
+)
+MOSH_ECHO_NOISE_AMOUNT = (
+    0.7  # 0 = equally long trails everywhere; 1 = from no trail to full trails
+)
+MOSH_ECHO_NOISE_SIZE_PX = 120  # half-resolution px per zone
+MOSH_ECHO_NOISE_SPEED = 0.12  # noise cells per second
+
 # All Data Mosh tuning lives in this block. Nothing limits or resets these values;
 # only an unknown MOSH_BLEED_MODE name is reported at startup.
 
-# --- Corruption -------------------------------------------------------------------
+
+# CORRUPTION TUNABLES
+# ==============================================================================
+
 CORRUPTION_CELL_H = 12
 CORRUPTION_CELL_W = 16
 CORRUPTION_CLEAR_BELOW = 0.01  # below this strength all damage is cleared
@@ -500,7 +533,10 @@ CORRUPTION_DECAY = 0.9  # energy multiplier per frame
 CORRUPTION_CLEAR_ENERGY = 0.005  # damage at or below this energy disappears
 CORRUPTION_BLEND_BELOW = 0.95  # below this energy the damage is blended, not solid
 
-# --- Signal Drift -------------------------------------------------------------------
+
+# SIGNAL DRIFT TUNABLES
+# ==============================================================================
+
 DRIFT_MAX_AMOUNT = 70  # [320x240: 30] [480x360: 45] [640x480: 60]
 DRIFT_WAVE_PER_ROW = (
     0.05  # radians per picture row: the wave is about 2*pi/this = 126 rows long
@@ -521,7 +557,10 @@ DRIFT_STRENGTH_CONTRAST = 1.0  # 0 = every part of the picture mutates equally, 
 DRIFT_STRENGTH_ROWS = 110  # size of one calm / wild zone in rows [320x240: 55] [480x360: 82] [640x480: 110]
 DRIFT_STRENGTH_SPEED = 0.11  # how fast the zones change, noise cells per second (about 16 s per visible change)
 
-# --- Vertical Roll ------------------------------------------------------------------
+
+# VERTICAL ROLL TUNABLES
+# ==============================================================================
+
 ROLL_ABOVE = 0.0  # active from the start of its window (0.9 on knob 1)
 ROLL_MAX_FRACTION = 0.5  # scroll at most half the screen height
 ROLL_SEAM_FRACTION = 0.04  # thickness of the black seam bar
@@ -530,6 +569,7 @@ ROLL_SEAM_FRACTION = 0.04  # thickness of the black seam bar
 DRIFT_ROLL_ABOVE = ROLL_ABOVE
 DRIFT_ROLL_MAX_FRACTION = ROLL_MAX_FRACTION
 DRIFT_SEAM_FRACTION = ROLL_SEAM_FRACTION
+
 
 # NOISE (the shared module core/noise.py) AND THE NEW EFFECTS
 # ==============================================================================
@@ -565,7 +605,9 @@ MOSH_NOISE_AMOUNT = 0.6  # 0 = same threshold everywhere; 1 = from 0 to 2x the t
 MOSH_NOISE_SIZE_CELLS = 6  # mosh cells per noise cell
 MOSH_NOISE_SPEED = 0.10  # noise cells per second
 
-# --- Scanline Ridge (new): the picture becomes lines lifted by the brightness beneath them ---
+
+# SCANLINE RIDGE TUNABLES
+# ==============================================================================
 
 RIDGE_LINE_SPACING = 7  # rows between lines [320x240: 5] [480x360: 7] [640x480: 9]
 RIDGE_LINE_THICKNESS = 2  # line width in px [320x240: 1]
@@ -610,7 +652,7 @@ RIDGE_MODE_SOURCE = "knob"
 # example "image+palette". A gap between entries: the nearest edge decides.
 RIDGE_KNOB_MODES = (
     (0.0, 0.65, "image"),
-    (0.65, 0.80, "image+palette"),
+    (0.55, 0.85, "image+palette"),
     (0.80, 0.90, "palette"),
     (0.85, 1.0, "stops"),
 )
@@ -628,7 +670,9 @@ RIDGE_IMAGE_SATURATION = (
     1.4  # colour strength of the picture's colours (1 = as in the picture)
 )
 
-# --- Contour Ripple (new): the picture is pushed sideways in waves that follow its brightness ---
+
+# CONTOUR RIPPLE TUNABLES
+# ==============================================================================
 
 RIPPLE_MAX_SHIFT_PX = (
     36  # sideways push at full knob [320x240: 18] [480x360: 27] [640x480: 36]
@@ -645,7 +689,9 @@ RIPPLE_NOISE_AMOUNT = (
 RIPPLE_NOISE_SIZE_PX = 170  # picture px per calm / wild zone
 RIPPLE_NOISE_SPEED = 0.10  # noise cells per second
 
-# --- Chroma Bleed (new): colour smears sideways and lags behind the sharp picture ---
+
+# CHROMA BLEED TUNABLES
+# ==============================================================================
 
 BLEED_MAX_PX = 40  # smear length at full knob [320x240: 20] [480x360: 30] [640x480: 40]
 BLEED_LAG_PX = 14  # how far the colour trails the picture at full knob [320x240: 7]
@@ -656,7 +702,32 @@ BLEED_NOISE_AMOUNT = (
 BLEED_NOISE_ROWS = 40  # picture rows per noise cell
 BLEED_NOISE_SPEED = 0.20  # noise cells per second
 
-# --- Moire Overlay (new, like the CRT overlay: not in EFFECT_ORDER, no knob) ---
+# --- three looks, each with its own switch (all can be on together) ---
+BLEED_LONG_ENABLED = (
+    True  # A: a much longer smear and lag (colour spills far past the edges)
+)
+BLEED_LONG_SMEAR_PX = (
+    160  # A: smear length at full knob (replaces BLEED_MAX_PX while A is on)
+)
+BLEED_LONG_LAG_PX = (
+    50  # A: how far the colour trails at full knob (replaces BLEED_LAG_PX)
+)
+BLEED_SATURATION = 1.5  # more colour for every look (1 = unchanged)
+BLEED_TRAIL_ENABLED = (
+    True  # B: the colour follows from older frames (trails behind movement)
+)
+BLEED_TRAIL_DECAY = 0.88  # B: memory at full knob (0-0.99); higher = longer trails
+BLEED_SLABS_ENABLED = True  # C: the colour is held sideways in blocks of random length
+BLEED_SLAB_LENGTH_PX = 70  # C: average slab length in px
+BLEED_SLAB_ROWS_PX = 6  # C: rows per slab band
+BLEED_SLAB_REFRESH_FRAMES = (
+    6  # C: the slabs are redrawn every N frames (1 = every frame)
+)
+
+
+# MOIRE OVERLAY TUNABLES
+# ==============================================================================
+
 MOIRE_ENABLED = False
 MOIRE_STRENGTH = 0.005  # how dark the grid gaps are (0-1)
 MOIRE_PERIOD_PX = (
@@ -669,10 +740,6 @@ MOIRE_STEPS = 12  # prepared angles (more = smoother movement, about 0.3 MiB eac
 MOIRE_NOISE_ENABLED = True  # False = the angle stays at the middle (still bands)
 MOIRE_KEEP_BRIGHTNESS = True  # lift the picture so the grid does not darken it overall
 
-# NZ3: OPTIONS FOR SCANLINE RIDGE, CHROMA BLEED AND THE MOIRE OVERLAY (each with its own switch)
-# ==============================================================================
-
-# --- Moire Overlay: four layers, each with its own switch (the overlay itself: MOIRE_ENABLED) ---
 MOIRE_SOFT_ENABLED = False  # the original soft dot grids (MOIRE_STRENGTH, MOIRE_PERIOD_PX): very faint bands
 MOIRE_LINES_ENABLED = True  # A: two line grids a few degrees apart
 MOIRE_LINES_MODE = "bands"  # A: "bands" = the bands drawn directly + fine lines (gentle); "hard" = hard dark grids (strong)
@@ -698,54 +765,8 @@ MOIRE_RESAMPLE_ANGLE_SPAN_DEG = (
 MOIRE_RESAMPLE_SCALE = 0.97  # C: scale of the picture (below 1 = slightly smaller)
 
 
-# --- Chroma Bleed: three looks, each with its own switch (all can be on together) ---
-BLEED_LONG_ENABLED = (
-    True  # A: a much longer smear and lag (colour spills far past the edges)
-)
-BLEED_LONG_SMEAR_PX = (
-    160  # A: smear length at full knob (replaces BLEED_MAX_PX while A is on)
-)
-BLEED_LONG_LAG_PX = (
-    50  # A: how far the colour trails at full knob (replaces BLEED_LAG_PX)
-)
-BLEED_SATURATION = 1.5  # more colour for every look (1 = unchanged)
-BLEED_TRAIL_ENABLED = (
-    True  # B: the colour follows from older frames (trails behind movement)
-)
-BLEED_TRAIL_DECAY = 0.88  # B: memory at full knob (0-0.99); higher = longer trails
-BLEED_SLABS_ENABLED = True  # C: the colour is held sideways in blocks of random length
-BLEED_SLAB_LENGTH_PX = 70  # C: average slab length in px
-BLEED_SLAB_ROWS_PX = 6  # C: rows per slab band
-BLEED_SLAB_REFRESH_FRAMES = (
-    6  # C: the slabs are redrawn every N frames (1 = every frame)
-)
-
-
-# NEW EFFECTS (NZ2): FEEDBACK ECHO IN DATA MOSH, BLOCK SHUFFLE, JPEG CRUSH, BITWISE DATABEND, FISHEYE
+# BLOCK SHUFFLE TUNABLES
 # ==============================================================================
-# Each has its own noise switch (see NOISE_ENABLED above for the master switch). With its noise off
-# an effect keeps a plain look. Pixel sizes are for 640x480.
-
-# --- Feedback Echo inside Data Mosh (before the mosh; off until switched on) ---
-MOSH_ECHO_ENABLED = False
-MOSH_ECHO_MODE = "lighten"  # "lighten" = bright trails, the picture stays full; "average" = ghosts (the picture fades too)
-MOSH_ECHO_MAX = (
-    0.80  # share of the old echo carried into the next frame at full strength (0-0.95)
-)
-MOSH_ECHO_ZOOM = 0.004  # the echo grows by this share every frame (0 = stays in place)
-MOSH_ECHO_DRIFT_PX = (
-    1.0  # the echo slides this many half-resolution px per frame (0 = none)
-)
-MOSH_ECHO_NOISE_ENABLED = (
-    True  # zones of long and short trails; the slide direction wanders
-)
-MOSH_ECHO_NOISE_AMOUNT = (
-    0.7  # 0 = equally long trails everywhere; 1 = from no trail to full trails
-)
-MOSH_ECHO_NOISE_SIZE_PX = 120  # half-resolution px per zone
-MOSH_ECHO_NOISE_SPEED = 0.12  # noise cells per second
-
-# --- Block Shuffle (new): tiles are replaced by tiles from their neighbourhood ---
 
 BLOCK_TILE_SIZES = (
     16,
@@ -766,7 +787,9 @@ BLOCK_NOISE_AMOUNT = (
 BLOCK_NOISE_SIZE_TILES = 5  # tiles per noise cell
 BLOCK_NOISE_SPEED = 0.05  # noise cells per second
 
-# --- JPEG Crush (new): the picture goes through a real, very low quality JPEG ---
+
+# JPEG CRUSH TUNABLES
+# ==============================================================================
 
 JPEG_QUALITY_START = (
     70  # JPEG quality just above the start of the knob (1-100, lower = worse)
@@ -789,7 +812,10 @@ JPEG_NOISE_AMOUNT = 0.7  # 0 = the whole picture is crushed; 1 = only the wilder
 JPEG_NOISE_SIZE_PX = 150  # picture px per zone
 JPEG_NOISE_SPEED = 0.10  # noise cells per second
 
-# --- Bitwise Databend (new): the top bit planes are combined with a shifted copy of the picture ---
+
+# BITWISE DATABEND TUNABLES
+# ==============================================================================
+# --- Bitwise Databend: the top bit planes are combined with a shifted copy of the picture ---
 
 BITWISE_MODE = "xor"  # "xor", "or" or "and"
 BITWISE_MAX_PLANES = (
@@ -805,7 +831,9 @@ BITWISE_NOISE_AMOUNT = 0.7  # 0 = the whole picture is bent; 1 = only the wilder
 BITWISE_NOISE_SIZE_PX = 140  # picture px per zone
 BITWISE_NOISE_SPEED = 0.10  # noise cells per second
 
-# --- Fisheye (new): a bulge in the middle, the edges move only slightly ---
+
+# FISHEYE TUNABLES
+# ==============================================================================
 
 FISHEYE_MAX = 0.45  # strength of the bulge at full knob (0 = none); the middle is magnified by 1 / (1 - this)
 FISHEYE_FALLOFF = 1.3  # bigger = a smaller, tighter bulge
@@ -815,18 +843,27 @@ FISHEYE_NOISE_AMOUNT = 0.3  # how much the strength breathes (0 = not at all)
 FISHEYE_NOISE_CENTER_PX = 40  # how far the centre wanders
 FISHEYE_NOISE_SPEED = 0.15  # noise cells per second
 
-# --- Pixellation -------------------------------------------------------------------
+
+# PIXELLATION TUNABLES
+# ==============================================================================
+
 COMPRESSION_TILE_BASE = 4  # [320x240: 6 ] [480x360: 9 ] [640x480: 12]
 COMPRESSION_TILE_SCALE = 9  # [320x240: 3 ] [480x360: 4 ] [640x480: 6 ]
 
-# --- Chroma Shift -------------------------------------------------------------------
+
+# CHROMA SHIFT TUNABLES
+# ==============================================================================
+
 ANA_SHIFT_MAX = 48  # [320x240: 18] [480x360: 27] [640x480: 36]
 ANA_GHOST_OFFSET = 40  # [320x240: 20] [480x360: 30] [640x480: 40]
 CHROMA_GHOST_MIX = (
     0.20  # share of the shifted ghost copy blended over the picture (0-1)
 )
 
-# --- Slice Glitch -------------------------------------------------------------------
+
+# SLICE GLITCH TUNABLES
+# ==============================================================================
+
 SLICE_CLOCK_HZ = 15  # the slices are re-rolled on this clock ...
 SLICE_EVERY_N_STEPS = (
     3  # ... on every Nth step of it (15 / 3 = 5 new slice sets a second)
@@ -839,7 +876,10 @@ SLICE_MIN_H = 8  # [320x240: 4 ] [480x360: 6 ] [640x480: 8 ]
 SLICE_MAX_H = 36  # [320x240: 12] [480x360: 18] [640x480: 24]
 SLICE_MAX_SHIFT = 50  # [320x240: 15] [480x360: 23] [640x480: 30]
 
-# --- Melt -------------------------------------------------------------------
+
+# MELT TUNABLES
+# ==============================================================================
+
 MELT_CHUNK_ROWS = 4096  # drip-rows processed per chunk. Keeps temporaries in cache.
 # Tune 2048-16384 on the Pi; it only affects speed.
 
@@ -881,7 +921,9 @@ MELT_REROLL_HZ = 4  # the drip pattern is re-rolled this many times a second
 MELT_BOTTOM_MARGIN_PX = 4  # no drips start in the bottom rows
 
 
-# --- CRT SCANLINES -------------------------------------------------------------------
+# CRT SCANLINES OVERLAY TUNABLES
+# ==============================================================================
+
 CRT_SCANLINE_PERIOD = 8  # [320x240: 4 ] [480x360: 6 ] [640x480: 8 ]
 CRT_SCANLINE_THICKNESS = 4  # [320x240: 2 ] [480x360: 3 ] [640x480: 4 ]
 CRT_APERTURE_PERIOD = 6  # [320x240: 3 ] [480x360: 4 ] [640x480: 6 ]
@@ -890,7 +932,10 @@ PREVIEW_DOWNSCALE_WIDTH = (
     480  # [320x240: 240] [480x360: 320] [640x480: 480 or keep 240]
 )
 
-# --- ASCII grid -------------------------------------------------------------------
+
+# ASCII MATRIX - GRID TUNABLES
+# ==============================================================================
+
 ASCII_GRID_W = 80  # character columns
 ASCII_GRID_H = 60  # character rows
 ASCII_COLOUR = (
@@ -925,6 +970,7 @@ ASCII_CLAHE_TILES = (
     8,
     8,
 )  # the picture is split into this many tiles (across, down) for local contrast
+
 
 # STARTUP CHECK: VALUES THAT WOULD CRASH THE BOOTH
 # ==============================================================================
