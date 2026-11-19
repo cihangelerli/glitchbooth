@@ -609,8 +609,9 @@ RIDGE_MODE_SOURCE = "knob"
 # "stops", "palette" or "image", or two joined by "+" (shown mixed by RIDGE_OVERLAY_MIX), for
 # example "image+palette". A gap between entries: the nearest edge decides.
 RIDGE_KNOB_MODES = (
-    (0.0, 0.75, "image"),
-    (0.70, 0.90, "palette"),
+    (0.0, 0.65, "image"),
+    (0.65, 0.80, "image+palette"),
+    (0.80, 0.90, "palette"),
     (0.85, 1.0, "stops"),
 )
 # The knob must move this far (share of the travel) before the mode selection follows, so a knob
@@ -656,8 +657,8 @@ BLEED_NOISE_ROWS = 40  # picture rows per noise cell
 BLEED_NOISE_SPEED = 0.20  # noise cells per second
 
 # --- Moire Overlay (new, like the CRT overlay: not in EFFECT_ORDER, no knob) ---
-MOIRE_ENABLED = True
-MOIRE_STRENGTH = 0.05  # how dark the grid gaps are (0-1)
+MOIRE_ENABLED = False
+MOIRE_STRENGTH = 0.005  # how dark the grid gaps are (0-1)
 MOIRE_PERIOD_PX = (
     16.0  # distance between grid dots [320x240: 2] [480x360: 3] [640x480: 4]
 )
@@ -676,8 +677,8 @@ MOIRE_SOFT_ENABLED = False  # the original soft dot grids (MOIRE_STRENGTH, MOIRE
 MOIRE_LINES_ENABLED = True  # A: two line grids a few degrees apart
 MOIRE_LINES_MODE = "bands"  # A: "bands" = the bands drawn directly + fine lines (gentle); "hard" = hard dark grids (strong)
 MOIRE_LINES_PERIOD_PX = 4.0  # A: distance between lines [320x240: 2] [640x480: 4]
-MOIRE_LINES_STRENGTH = 0.15  # A "hard": how dark the lines are (0-1)
-MOIRE_BANDS_STRENGTH = 0.15  # A "bands": depth of the moire bands (0-1)
+MOIRE_LINES_STRENGTH = 0.005  # A "hard": how dark the lines are (0-1)
+MOIRE_BANDS_STRENGTH = 0.005  # A "bands": depth of the moire bands (0-1)
 MOIRE_BANDS_LINE_STRENGTH = 0.05  # A "bands": how dark the fine lines are (0-1)
 MOIRE_RGB_ENABLED = (
     False  # B: hard red / green / blue dots, two grids (coloured moire; busy)
