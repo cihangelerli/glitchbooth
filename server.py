@@ -3075,18 +3075,54 @@ def _load_previous_fault():
     )
 
 
+def _restart_pending():
+    # True while systemd is restarting this very service ("systemctl restart"). The booth is
+    # about to start again, so it must not start the login prompt now: that start job conflicts
+    # with the pending start of the booth and cancels it ("Job for glitchbooth.service
+    # canceled", and the screen stays at the login prompt). A plain "systemctl stop" is not a
+    # restart: its job type is "stop", and the login prompt is wanted then.
+    try:
+        listing = subprocess.run(
+            ["systemctl", "list-jobs", "--no-legend", "--no-pager"],
+            check=False,
+            timeout=5,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        ).stdout.decode("utf-8", "replace")
+    except Exception as exc:
+        logger.warning(
+            "[SHUTDOWN TTY RESCUE] Could not ask systemd for pending jobs: %s", exc
+        )
+        return False
+    for line in listing.splitlines():
+        fields = line.split()
+        if len(fields) >= 3 and fields[1] == SERVICE_UNIT_NAME:
+            if "restart" in fields[2]:
+                return True
+    return False
+
+
 def _terminal_rescue():
     # Hands the console back to a login prompt (the unit has Conflicts=getty@tty1.service, so
-    # nothing else starts it). Every command is non-interactive and has a timeout.
-    logger.info(
-        "[SHUTDOWN TTY RESCUE] Resetting console input streams and starting a login prompt on tty1"
-    )
+    # nothing else starts it). Every command is non-interactive and has a timeout. While
+    # systemd is restarting the booth the login prompt is NOT started (see _restart_pending).
+    restarting = _restart_pending()
+    if restarting:
+        logger.info(
+            "[SHUTDOWN TTY RESCUE] systemd is restarting the booth: no login prompt is started"
+        )
+    else:
+        logger.info(
+            "[SHUTDOWN TTY RESCUE] Resetting console input streams and starting a login prompt on tty1"
+        )
     for argv in (
         ["stty", "sane"],
         ["sudo", "-n", "kbd_mode", "-a"],
         ["sudo", "-n", "systemctl", "start", "getty@tty1.service"],
         ["sudo", "-n", "chvt", "1"],
     ):
+        if restarting and "getty@tty1.service" in argv:
+            continue
         try:
             result = subprocess.run(
                 argv,
